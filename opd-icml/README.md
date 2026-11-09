@@ -1,10 +1,10 @@
 # opd-icml
 
-Qwen3-1.7B / 4B on-policy distillation 实验代码。所有命令以此目录为项目根目录。训练采用本目录随附的修改版 verl。绘图输入与论文源码可以单独使用。
+Qwen3-1.7B / 4B、Qwen3-8B Base → 32B 教师，以及 Gemma-3-12B PT → IT 的 on-policy distillation 实验代码。所有命令以此目录为项目根目录。训练采用本目录随附的修改版 verl。绘图输入与论文源码可以单独使用。
 
 | 目录或入口 | 内容 |
 |---|---|
-| `train.py`、`configs/{1.7b,4b}/` | 训练入口、各实验的 Hydra 配置、学生和教师模型的固定 revision |
+| `train.py`、`configs/{1.7b,4b,8b,gemma3-12b}/` | 训练入口、各实验的 Hydra 配置、学生和教师模型的固定 revision |
 | `runtime/verl/workers/actor/` | Top-16 OPD、token 诊断、表征谱、梯度一致性和表征稳定性停止判据 |
 | `runtime/verl/trainer/ppo/` | rollout、优化更新、复用、验证集与 checkpoint 管理 |
 | `scripts/` | 安装 GPU 环境、准备 DAPO14k、Mean@8 数学评测 |
@@ -20,7 +20,7 @@ Qwen3-1.7B / 4B on-policy distillation 实验代码。所有命令以此目录�
 | `early-stop` | RQ4 Adaptive early stop，每五步检查一次稳定性 | 上限 106，原运行在 40 / 50 步停止 | 1 | 1 / 2 |
 | `reuse` | RQ4 Rollout reuse，按相同优化更新预算比较 | 53 | 2 | 1 / 2 |
 
-配置来自成功运行的训练日志中实际解析的参数。paired FULL 的 rollout batch 是 128；原始研究的 batch 是 160，使用其原有的 128/32 协议。两套协议分别有自己的 FULL 参考结果。模型和数据路径在运行时注入，日志默认输出到控制台。启动入口用于新实验，每个配置使用独立输出目录。
+原有 1.7B / 4B 配置来自成功运行的训练日志中实际解析的参数。paired FULL 的 rollout batch 是 128；原始研究的 batch 是 160，使用其原有的 128/32 协议。两套协议分别有自己的 FULL 参考结果。模型和数据路径在运行时注入，日志默认输出到控制台。启动入口用于新实验，每个配置使用独立输出目录。
 
 ## 安装和准备数据
 
@@ -33,6 +33,41 @@ python scripts/prepare_dapo14k.py --output data/dapo14k_train.parquet
 ```
 
 默认使用模型配置中记录的 Hugging Face revision。已有模型可通过 `--student /path/to/student --teacher /path/to/teacher` 指定。训练数据可通过 `--data` 指定。首次下载模型和训练集需要网络。
+
+## 新增模型配对与模型准备
+
+`--scale 8b` 对应学生 `Qwen/Qwen3-8B-Base`、教师 `Qwen/Qwen3-32B`（该系列后训练模型的官方仓库名不带 `Instruct` 后缀）。`--scale gemma3-12b` 对应学生 `google/gemma-3-12b-pt`、教师 `google/gemma-3-12b-it`。两组的具体 commit 固定在各自 `configs/<scale>/models.json`。
+
+先查看模型配置，或单独准备模型，不需要训练 parquet，也不会启动训练：
+
+```bash
+python train.py --scale 8b --prepare-only --dry-run
+python train.py --scale 8b --prepare-only
+python train.py --scale gemma3-12b --prepare-only
+```
+
+也可使用 `python scripts/prepare_models.py --scale 8b`；两个入口都支持 `--student`、`--teacher` 本地目录，`--cache-dir` 自定义 Hugging Face 缓存，及 `--model-dir` 自定义 Gemma 文本权重输出根目录。未提供本地目录的模型会按固定 revision 下载，已缓存的文件会复用。Gemma 需要先在对应 Hugging Face 模型页面获得访问权限，再在服务器运行 `huggingface-cli login`，或提供已获得的本地模型目录；命令和配置中不保存 token。
+
+Gemma 官方 12B checkpoint 包含视觉模块，本项目的数学任务使用纯文本。准备阶段按 shard 提取语言模型权重到 `models/gemma3-12b/{student,teacher}/`，保留原始 tensor 数值与 dtype，供 Transformers、vLLM、checkpoint 合并和现有数学评测共用。输出采用 `Gemma3ForCausalLM`，统一使用 Gemma 的 user/model turn 格式和 `<end_of_turn>` EOS。转换会额外占用一份文本权重的磁盘空间，按一个原始 shard 的大小使用 CPU 内存；重复运行会复用同源的完成输出。`models/` 已加入 `.gitignore`。
+
+新增两组各提供 `paired-full`、`original-full`、`early-stop`、`reuse` 四种配置。例如：
+
+```bash
+python train.py --scale 8b --experiment paired-full --dry-run
+python train.py --scale 8b --experiment paired-full
+python train.py --scale gemma3-12b --experiment paired-full
+```
+
+新配置默认使用单节点 4 GPU、rollout TP=4、每 GPU micro-batch=1、梯度检查点、actor optimizer CPU offload 和 teacher parameter CPU offload。GPU 数需与配置中的 `trainer.n_gpus_per_node`、`actor_rollout_ref.rollout.tensor_model_parallel_size`、`actor_rollout_ref.actor.policy_loss.replication17.distributed_world_size` 保持一致。它们是新实验起始配置；显存、主存和吞吐需在训练服务器实测，并非已有成功运行的资源记录。
+
+新增配对的 `paired-full`、`early-stop`、`reuse` 使用 batch=128 和独立固定 128 道验证题；`reuse` 使用 53 轮、每轮 2 次更新，并在本次运行中采集自己的表征参考，无需先复制 FULL 子空间文件。`original-full` 保留 batch=160 的 128/32 协议。Gemma 学生和教师使用相同词表、模板和 EOS；Qwen 跨规模配对在准备阶段也会检查词表 token IDs 一致。
+
+CPU 兼容性测试（使用随机微型模型，无需下载真实权重）：
+
+```bash
+python -m pytest tests/test_model_assets.py -q
+python tests/check_distributed_cpu.py
+```
 
 ## 启动实验
 

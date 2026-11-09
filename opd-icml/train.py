@@ -6,23 +6,39 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+from model_assets import model_profiles, prepare_models
 
 ROOT = Path(__file__).resolve().parent
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scale", choices=["1.7b", "4b"], required=True)
-    parser.add_argument("--experiment", choices=["paired-full", "original-full", "early-stop", "reuse"], required=True)
+    parser.add_argument("--scale", choices=model_profiles(), required=True)
+    parser.add_argument("--experiment", choices=["paired-full", "original-full", "early-stop", "reuse"])
     parser.add_argument("--data", type=Path, default=ROOT / "data/dapo14k_train.parquet")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--student", type=Path, help="Local student model directory")
     parser.add_argument("--teacher", type=Path, help="Local teacher model directory")
+    parser.add_argument("--prepare-only", action="store_true", help="Prepare both model checkpoints without starting training")
+    parser.add_argument("--cache-dir", type=Path, help="Hugging Face download cache")
+    parser.add_argument("--model-dir", type=Path, help="Root for Gemma text-only exports; defaults to models/")
     parser.add_argument("--dry-run", action="store_true", help="Show the configuration without downloading models or starting training")
     args = parser.parse_args()
     profile = ROOT / "configs" / args.scale
+    models = json.loads((profile / "models.json").read_text(encoding="utf-8"))
+    if args.prepare_only:
+        if args.dry_run:
+            print(json.dumps(dict(scale=args.scale, models=models, training=False), indent=2))
+            return
+        try:
+            paths = prepare_models(args.scale, args.student, args.teacher, args.cache_dir, args.model_dir)
+        except ValueError as error:
+            parser.error(str(error))
+        print(json.dumps(dict(scale=args.scale, training=False, **paths), indent=2))
+        return
+    if args.experiment is None:
+        parser.error("--experiment is required unless --prepare-only is used")
     cfg = json.loads((profile / (args.experiment + ".yaml")).read_text())
-    models = json.loads((profile / "models.json").read_text())
     output = (args.output or ROOT / "runs" / args.scale / args.experiment).resolve()
     data = args.data.resolve()
     command = [sys.executable, "-m", "verl.trainer.main_ppo", "--config-dir", str(profile),
@@ -38,16 +54,12 @@ def main():
     if output.exists() and any(output.iterdir()):
         parser.error(f"Choose an empty output directory: {output}")
     env = os.environ.copy()
-    for role in ["student", "teacher"]:
-        local = getattr(args, role)
-        if local:
-            if not (local / "config.json").is_file():
-                parser.error(f"Missing {role} config.json in {local}")
-            path = local.resolve()
-        else:
-            from huggingface_hub import snapshot_download
-            path = snapshot_download(models[role]["repo"], revision=models[role]["revision"])
-        env["OPD_" + role.upper()] = str(path)
+    try:
+        paths = prepare_models(args.scale, args.student, args.teacher, args.cache_dir, args.model_dir)
+    except ValueError as error:
+        parser.error(str(error))
+    for role, path in paths.items():
+        env["OPD_" + role.upper()] = path
     output.mkdir(parents=True, exist_ok=True)
     (output / "assets").mkdir(exist_ok=True)
     env.update(OPD_DATA=str(data), OPD_RUN=str(output), TOKENIZERS_PARALLELISM="true",

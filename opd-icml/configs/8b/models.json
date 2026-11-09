@@ -1,0 +1,12 @@
+{
+  "student": {
+    "repo": "Qwen/Qwen3-8B-Base",
+    "revision": "49e3418fbbbca6ecbdf9608b4d22e5a407081db4"
+  },
+  "teacher": {
+    "repo": "Qwen/Qwen3-32B",
+    "revision": "9216db5781bf21249d130ec9da846c4624c16137"
+  },
+  "validate_tokenizers": true,
+  "text_only_export": false
+}

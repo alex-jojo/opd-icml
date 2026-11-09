@@ -1,0 +1,12 @@
+{
+  "student": {
+    "repo": "google/gemma-3-12b-pt",
+    "revision": "295efb63d01a7017928f273a94ebb86105c9526f"
+  },
+  "teacher": {
+    "repo": "google/gemma-3-12b-it",
+    "revision": "96b6f1eccf38110c56df3a15bffe176da04bfd80"
+  },
+  "validate_tokenizers": true,
+  "text_only_export": true
+}

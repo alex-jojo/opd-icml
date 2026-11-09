@@ -13,3 +13,7 @@ paper/*.bbl
 paper/*.fls
 paper/*.fdb_latexmk
 paper/main.pdf
+
+# Prepared full-size model checkpoints and text-only exports
+models/
+.pytest_cache/

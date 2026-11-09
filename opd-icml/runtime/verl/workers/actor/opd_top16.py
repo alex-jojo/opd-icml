@@ -361,11 +361,11 @@ def update(actor,data):
         return adapter_update(actor,data)
     world=dp.size();rep_cfg=actor.config.policy_loss.get('replication17',{})
     study_payload=data.meta_info.pop('gradient_study_payload',None)
-    if world!=1 and (world!=2 or int(rep_cfg.get('distributed_world_size',1))!=world):
-        raise ValueError('Multi-GPU OPD requires the explicit validated DP2 replication configuration')
+    if world!=1 and int(rep_cfg.get('distributed_world_size',1))!=world:
+        raise ValueError('Multi-GPU OPD requires replication distributed_world_size to match the worker count')
     if world>1:
         if rep_cfg.get('heavy_steps') or not rep_cfg.get('enabled'):
-            raise ValueError('DP2 supports passive replication diagnostics, not disposable shadow updates')
+            raise ValueError('Distributed OPD supports passive replication diagnostics, not disposable shadow updates')
         if len(data)!=actor.config.ppo_mini_batch_size:raise ValueError('Wrong rank-local rollout batch')
         data=dp.global_batch(data)
     if getattr(actor,'scaler',None) is not None:raise ValueError('Use BF16, not FP16 GradScaler, for this experiment')
