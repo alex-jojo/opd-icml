@@ -1,0 +1,21 @@
+\begin{table}[!htbp]
+\centering
+\caption{Spectrum of four sampled parameter gradients in FULL, recomputed from their exact $4\times4$ Gram matrix. Columns $p_1$--$p_4$ are descending eigenvalue energy shares. $r_{\mathrm{PR}}=1/\sum_i p_i^2$ measures concentration across these four vectors. The unit-norm column repeats the calculation after normalizing each gradient, reducing sensitivity to differences in gradient magnitude. Both dimensions are bounded by four and describe this sampled gradient panel.}
+\label{tab:parameter_gradient_spectrum}
+\small\setlength{\tabcolsep}{5pt}
+\begin{tabular}{llrrrrrr}
+\toprule
+Model & Step & $p_1$ (\%) & $p_2$ (\%) & $p_3$ (\%) & $p_4$ (\%) & $r_{\mathrm{PR}}$ & Unit-norm $r_{\mathrm{PR}}$ \\
+\midrule
+\multirow{4}{*}{1.7B} & 10 & 79.7996 & 8.9037 & 6.4452 & 4.8515 & 1.5355 & 1.5310 \\
+ & 30 & 33.6677 & 26.1973 & 20.9268 & 19.2082 & 3.8071 & 3.8473 \\
+ & 60 & 32.8627 & 24.5767 & 22.7589 & 19.8017 & 3.8550 & 3.9724 \\
+ & 100 & 33.1277 & 25.8583 & 21.7333 & 19.2807 & 3.8312 & 3.9063 \\
+\midrule
+\multirow{4}{*}{4B} & 10 & 82.7199 & 6.3077 & 6.0838 & 4.8886 & 1.4402 & 1.4401 \\
+ & 30 & 50.1693 & 20.6059 & 16.0582 & 13.1666 & 2.9649 & 2.9891 \\
+ & 60 & 36.5036 & 25.8851 & 19.4727 & 18.1386 & 3.6890 & 3.8682 \\
+ & 100 & 40.2558 & 25.3514 & 18.0428 & 16.3500 & 3.5013 & 3.9491 \\
+\bottomrule
+\end{tabular}
+\end{table}

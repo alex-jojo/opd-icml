@@ -1,0 +1,42 @@
+\FloatBarrier
+\section{Detailed FULL Observations}
+\label{app:observations}
+This appendix reports FULL validation histories, one-update measurements, and gradient geometry in both model sizes.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/accuracy_history.pdf}
+\caption{FULL training and validation answer accuracy at both scales. Light curves retain raw observations; dark curves use trailing windows of ten updates for training and three observations for validation. Training responses are scored before optimization. Validation responses are freshly generated on the same excluded questions at each observation.}
+\label{fig:accuracy_history}
+\end{figure}
+\input{tables/two_scale_validation}
+\input{tables/paired_transfer}
+\input{tables/paired4b_transfer}
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/two_scale_layers.pdf}
+\caption{Layer-resolved FULL parameter-gradient agreement in both scales. Each heatmap compares four disjoint subsets at a fixed checkpoint; color is mean pairwise gradient cosine.}
+\label{fig:two_scale_layers}
+\end{figure}
+
+\input{tables/two_scale_temporal}
+
+\paragraph{Scale and directional factors of held-out gains.}
+Table~\ref{tab:gain_factors} reports the factors in Equation~\ref{eq:gain_factors} at every recorded FULL observation. The product is checked against the stored linear prediction. Norms and cosines describe the actual parameter update and validation gradient; the residual compares the predicted and measured before/after KL change.
+The actual parameter-step norm decreases substantially early in training and subsequently fluctuates at a lower level. The recorded learning rate remains $10^{-5}$ throughout both FULL runs. AdamW's gradient history and adaptive scaling remain part of the realized update. This norm measures the magnitude of the parameter displacement.
+\input{tables/gain_factors}
+
+\FloatBarrier
+\subsection{Matched Diagnostics and Subsequent Held-Out Gains}
+\label{app:matched_diagnostics}
+Table~\ref{tab:joint_checkpoint_audit} aligns the available diagnostics at the four checkpoints with complete cross-subset measurements in each model. Gradient statistics use four disjoint subsets evaluated at the checkpoint parameters. For subset $b$, let $g_h$ be a token-level gradient in the full hidden space. The reported coherence is
+\begin{equation}
+ C_h=\frac14\sum_{b=1}^4
+ \frac{\|\mathbb E_b[g_h]\|^2}{\mathbb E_b[\|g_h\|^2]}.
+\end{equation}
+Table~\ref{tab:space_coherence} gives the corresponding projected-space measurements. The mean parameter-gradient norm averages the four subset norms; the pairwise cosines and covariance overlap average the six subset pairs. Each row pairs these checkpoint diagnostics with the measured effect of the next actual training update on validation responses held fixed across that update. Training-loss summaries use only batches completed by the checkpoint.
+
+This alignment makes the concurrent changes in loss, gradient scale, agreement, geometry, and actual gain directly inspectable. Coherence falls as the squared mean gradient becomes smaller relative to its second moment. The matched observations comprise four checkpoints from one FULL trajectory per scale. The linear prediction in Table~\ref{tab:gain_factors} uses the validation gradient and realized update to describe that same step.
+
+\input{tables/joint_checkpoint_audit}
+\input{sections/parameter_dynamics}

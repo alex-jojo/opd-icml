@@ -1,0 +1,19 @@
+\begin{table*}[!htbp]
+\centering
+\caption{Final token-gradient spectra at both scales. Nuclear norm is divided by $\sqrt N$. Effective, stable, and participation ranks are $\exp(-\sum_jw_j\log w_j)$, $1/\max_jw_j$, and $1/\sum_jw_j^2$, with normalized squared singular values $w_j$. FULL uses its fixed step-10 observation basis.}
+\label{tab:two_scale_ranks}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lllrrrrr}
+\toprule
+Model & Phase & Space & RMS & Nuclear & Effective & Stable & Participation \\
+\midrule
+1.7B & FULL & Full & 0.2397 & 6.4185 & 303.36 & 15.13 & 89.26 \\
+1.7B & FULL & $U$ & 0.0980 & 0.8507 & 46.13 & 8.55 & 24.48 \\
+1.7B & FULL & $U^\perp$ & 0.2188 & 6.0101 & 353.50 & 15.01 & 107.14 \\
+4B & FULL & Full & 0.1238 & 3.6852 & 371.55 & 15.48 & 97.47 \\
+4B & FULL & $U$ & 0.0482 & 0.4040 & 40.24 & 7.93 & 20.59 \\
+4B & FULL & $U^\perp$ & 0.1140 & 3.4948 & 439.17 & 14.78 & 117.46 \\
+\bottomrule
+\end{tabular}
+\end{table*}

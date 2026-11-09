@@ -1,0 +1,44 @@
+\section{Supplementary Token-Score Diagnostics}
+\label{app:token_scores}
+We compare token scores as supplementary diagnostics at the final 1.7B and 4B checkpoints (Tables~\ref{tab:paired_selectors} and~\ref{tab:paired4b_selectors}). Each score selects the same fraction of positions. The tables report captured KL and hidden-gradient energy; these scores do not alter the recorded training updates.
+
+\paragraph{Disagreement, uncertainty, and log-ratio variance.}
+All scores use the conditional distributions in Equation~\ref{eq:loss}. We record KL, total variation $\frac12\sum_v|\tilde p_v-\tilde q_v|$, and student entropy $H=-\sum_v\tilde p_v\log\tilde p_v$. For $r_v=\log(\tilde p_v/\tilde q_v)$, the log-ratio variance is $V=\operatorname{Var}_{\tilde p}(r_v)$. This variance appears as the reverse-KL local utility in \citet{sadagopan2026utility} and as the Fisher-metric signal term in \citet{sheng2026ier}.
+
+\paragraph{TIP-inspired entropy--KL combination.}
+Following the Soft-OR construction of \citet{xu2026tip}, we compute $s=\bar H+\bar K-\bar H\bar K$, where bars denote batchwise min--max normalization. Our measurements apply this score to the recorded Top-16 conditional distributions. They evaluate the score under our checkpoint protocol; the paper's complete token-selection training procedure is outside this comparison.
+
+\paragraph{Information-efficiency ratio.}
+Following \citet{sheng2026ier}, we evaluate the conditional-support information-efficiency ratio (IER)
+\begin{equation}
+ b=\frac{\sum_v(1-\tilde p_v)r_v}{\sum_v(1-\tilde p_v)},\qquad
+ \operatorname{IER}=\frac{V}{\sum_v(1-\tilde p_v)(r_v-b)^2-V}.
+\end{equation}
+We rank valid positive-denominator cases. IER concerns a sampled next-token gradient estimator; our training directly evaluates the selected-support loss. Thus, the table measures a hypothetical estimator's reliability under the cached conditional distributions.
+
+\paragraph{Representation-dependent diagnostics.}
+We additionally define retention $\rho=\|U^\top g_h\|^2/\|g_h\|^2$ and the combined score $s\rho$ to inspect the measured subspace. These are geometric diagnostics used in this study. At both scales, disagreement and log-ratio variance capture more full-hidden gradient energy than entropy; retention alone captures little total energy, while the combination shifts selection toward projected energy. A training intervention would be needed to establish benefits from using these rankings during optimization.
+
+\input{tables/paired_selectors}
+\input{tables/paired4b_selectors}
+
+\FloatBarrier
+\section{Displacement and Basis Discovery}
+\label{app:displacement}
+Figure~\ref{fig:rq2_adaptation} uses the paired FULL trajectories, matching the main supervision and gradient analyses. Tables~\ref{tab:paired_adapter_geometry} and~\ref{tab:paired4b_adapter_geometry} provide their endpoint values. The separate original studies replicate the displacement/gradient coverage contrast and show strong overlap between nearby late-checkpoint bases (Table~\ref{tab:subspace}). For rank-$r$ orthonormal bases, overlap is $\|U_a^\top U_b\|_F^2/r$.
+
+
+
+
+\input{tables/subspace}
+\input{tables/paired_adapter_geometry}
+\input{tables/paired4b_adapter_geometry}
+
+\input{tables/stopping}
+
+\FloatBarrier
+\subsection{Cumulative Displacement Magnitudes and Early-Basis Coverage}
+\label{app:cumulative_magnitudes}
+Table~\ref{tab:cumulative_motion_audit} reports every paired FULL motion observation from basis discovery onward. The fixed panels contain 5,203 positions for 1.7B and 6,481 for 4B. Both cumulative displacement magnitudes and early-basis coverage are retained, so the coverage percentages can be read alongside the absolute scale of the measured change.
+
+\input{tables/cumulative_motion_audit}

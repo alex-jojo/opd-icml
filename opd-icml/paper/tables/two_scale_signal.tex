@@ -1,0 +1,25 @@
+\begin{table*}[!htbp]
+\centering
+\caption{Supervision in paired-study FULL at both scales. High is the percentage above the initial KL threshold (1.7B: $0.843653$; 4B: $0.644093$). KL-top is the full hidden-gradient energy share of the current highest-KL decile.}
+\label{tab:two_scale_signal}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrrr}
+\toprule
+Model & Step & KL & RMS & High (\%) & KL-top (\%) \\
+\midrule
+1.7B & 1 & 0.3848 & 0.7149 & 10.00 & 82.12 \\
+1.7B & 10 & 0.1874 & 0.4218 & 5.92 & 82.32 \\
+1.7B & 30 & 0.0984 & 0.2746 & 2.26 & 83.50 \\
+1.7B & 60 & 0.0898 & 0.2672 & 1.92 & 84.14 \\
+1.7B & 100 & 0.0755 & 0.2436 & 1.48 & 85.50 \\
+1.7B & 106 & 0.0751 & 0.2397 & 1.47 & 84.69 \\
+4B & 1 & 0.3208 & 0.4469 & 10.00 & 87.43 \\
+4B & 10 & 0.1025 & 0.1986 & 3.41 & 79.36 \\
+4B & 30 & 0.0637 & 0.1568 & 1.43 & 79.85 \\
+4B & 60 & 0.0506 & 0.1366 & 1.07 & 81.67 \\
+4B & 100 & 0.0431 & 0.1254 & 0.84 & 83.31 \\
+4B & 106 & 0.0435 & 0.1238 & 0.79 & 81.87 \\
+\bottomrule
+\end{tabular}
+\end{table*}

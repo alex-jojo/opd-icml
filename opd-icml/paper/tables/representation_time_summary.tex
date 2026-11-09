@@ -1,0 +1,25 @@
+\begin{table*}[!t]
+\centering
+\caption{Training budgets and total time, including initialization, warmup, basis discovery within the run, and diagnostics; benchmark evaluation and merge are excluded. Reductions use FULL from the same study; $\dagger$ rows use the original-study references in Table~\ref{tab:reference_full}.}
+\label{tab:representation_time_summary}
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{llrrrr}
+\toprule
+Model & Method & Rollouts & Updates & Minutes & Reduction \\
+\midrule
+\multirow{5}{*}{\textbf{1.7B}} & Base & 0 & 0 & -- & -- \\
+ & FULL & 106 & 106 & 146.36 & -- \\
+ & Adaptive FULL$^{\dagger}$ & 40 & 40 & 75.2 & \textbf{$\downarrow$ 65.0\%} \\
+ & Reuse$^{\dagger}$ & 53 & 106 & 118.6 & \textbf{$\downarrow$ 44.8\%} \\
+ & Adapter & 106 & 106 & 128.99 & $\boldsymbol{\downarrow 11.87\%}$ \\
+\midrule
+\multirow{5}{*}{\textbf{4B}} & Base & 0 & 0 & -- & -- \\
+ & FULL & 106 & 106 & 330.40 & -- \\
+ & Adaptive FULL$^{\dagger}$ & 50 & 50 & 121.6 & \textbf{$\downarrow$ 48.1\%} \\
+ & Reuse$^{\dagger}$ & 53 & 106 & 152.5 & \textbf{$\downarrow$ 35.0\%} \\
+ & Adapter & 106 & 106 & 294.69 & $\boldsymbol{\downarrow 10.81\%}$ \\
+\bottomrule
+\end{tabular}
+\end{table*}

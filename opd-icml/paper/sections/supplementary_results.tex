@@ -1,0 +1,74 @@
+\FloatBarrier
+\section{Supplementary Dynamics and Efficiency}
+\label{app:supplementary}
+This appendix retains the original-study trajectories and the detailed measurements supporting the main-text summaries. The original and paired studies retain separate FULL baselines. Memory measurements distinguish actor allocation from whole-device occupancy.
+\subsection{Efficiency Procedures and Evaluation Scope}
+\label{app:efficiency_procedures}
+\paragraph{Stopping.}
+Adaptive FULL estimates its displacement subspace during training and stops at the first window satisfying the prescribed stability conditions. Checks occur every five updates and use three observations, starting no earlier than update 15. The thresholds and accepted windows are in Tables~\ref{tab:settings} and~\ref{tab:stopping}. Final task performance and total time evaluate the selected checkpoint against original-study FULL. A matched fixed-step comparison would isolate the selection value of the stability criterion.
+
+\paragraph{Compact adaptation.}
+Each paired Adapter run learns its basis within its own full-parameter warmup and fixes it as $U_{\mathrm A}\in\mathbb R^{d\times r}$. The backbone and output head are frozen, and a zero-initialized $A\in\mathbb R^{r\times d}$ is inserted after final normalization:
+\begin{equation}
+h'=h+U_{\mathrm A}Ah,\qquad z=Wh'.
+\label{eq:adapter}
+\end{equation}
+Only $A$ updates after the switch; initialization preserves $h'=h$. The frozen backbone supplies features through forward evaluation, and $W'=W+WU_{\mathrm A}A$ merges the correction into the output map for generation. Tables~\ref{tab:paired_settings} and~\ref{tab:paired4b_settings} specify switching, guards, and learning rates. Reported time includes warmup, basis discovery, and compact continuation. Actor allocator peaks and whole-device occupancy have separate accounting (Table~\ref{tab:two_scale_adapter_cost}). Random-basis and ordinary low-rank controls would isolate basis choice; warmup-only evaluation would isolate continued adaptation.
+
+\paragraph{Response reuse.}
+Reuse caches sampled responses and teacher targets for a second optimizer update. Training KL is measured before and after both steps. The final comparison uses 53 fresh rollout rounds and 106 updates, matching FULL's update budget. Table~\ref{tab:reuse_summary} reports second-update gains and generation, teacher-query, actor, and diagnostic costs. An equal-wall-clock comparison would evaluate reuse against spending the saved time on additional fresh training.
+
+\paragraph{References and accounting.}
+Adaptive FULL and Reuse use original-study FULL. Adapter training time and memory use paired FULL at each scale. The 1.7B Adapter benchmark comparison uses the paired protocol; the reported 4B FULL benchmark uses the original protocol. Total training time includes recorded initialization, checkpointing, and diagnostics, with benchmark evaluation and model merging excluded. Complete budgets and reductions are in Table~\ref{tab:representation_time_summary}.
+
+\begin{figure*}[!htbp]
+ \centering
+ \includegraphics[width=\textwidth]{figures/dynamics.pdf}
+ \caption{Training accuracy and supervision dynamics in the original two-scale FULL runs. (a) Accuracy on the 128 responses used for optimization, generated before each update. Light curves show raw accuracy; dark curves show the trailing 10-round mean. (b) Training KL. (c) Fraction of positions above the initial KL threshold. (d) Share of individual-token hidden-gradient energy contributed by the current highest-KL decile. Panels (b--d) show raw training observations.}
+ \label{fig:dynamics}
+\end{figure*}
+\input{tables/dynamics}
+\input{tables/two_scale_signal}
+\paragraph{Mode-level signed coherence.}
+For projected token gradients $a_t(x)=U^\top g_{h,t}(x)$ in the fixed early basis, let $v_j$ be a principal eigenvector of their second moment and $z_j(x)=v_j^\top a_t(x)$. We define $\kappa_j=(\mathbb E_x z_j)^2/\mathbb E_x z_j^2$ and average it over the stated modes. The statistic compares a signed mean with a second moment; its small values can reflect cancellation or heterogeneous magnitudes. This mode average differs from the space-aggregated coherence in Table~\ref{tab:space_coherence}.
+\begin{figure*}[!htbp]
+ \centering
+ \includegraphics[width=\textwidth]{figures/utilization.pdf}
+ \caption{Recurrent directions and residual fitting signal. Panels compare both scales through (a) leading demand-space overlap across recorded batches in the fixed early basis, (b) mode-averaged signed coherence, and (c) cached training KL before the first and second updates in equal-update reuse runs. Line samples and markers identify each series; the tail contains modes 33--128. The second curve measures residual loss after one update. The improvement produced by the second update is measured separately in Table~\ref{tab:reuse_summary}.}
+ \label{fig:utilization}
+\end{figure*}
+\input{tables/reuse_summary}
+\input{tables/demand}
+\input{tables/two_scale_batch}
+\input{tables/reference_full}
+\input{tables/representation_cost}
+\input{tables/two_scale_adapter_cost}
+\input{tables/spectrum_summary}
+\input{tables/ranks}
+\input{tables/matched}
+\input{tables/two_scale_ranks}
+\input{tables/space_coherence}
+
+\input{tables/representation_time_summary}
+
+\input{tables/supervision_summary}
+
+
+\FloatBarrier
+\clearpage
+\subsection{Complete Temporal Views of Paired FULL}
+\label{app:complete_trajectories}
+These plots retain the paired FULL trajectories underlying the structural comparisons in the main text.
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=.86\textwidth]{figures/full_trajectory_two_scale_dynamics.pdf}
+\caption{Paired FULL training KL, fixed-threshold token frequency, and current top-KL decile energy throughout training. The energy trajectory complements the endpoint contribution bars in Figure~\ref{fig:two_scale_dynamics}.}
+\label{fig:full_signal_trajectory}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=.86\textwidth]{figures/full_trajectory_two_scale_transfer.pdf}
+\caption{Relative actual held-out gains and complete normalized local-prediction factor trajectories from step 10 onward. These observations supplement the step-10/100 factor comparison in Figure~\ref{fig:two_scale_transfer}.}
+\label{fig:full_update_trajectory}
+\end{figure}

@@ -1,0 +1,25 @@
+\begin{table}[!htbp]
+\centering
+\caption{Freshly generated answers on 128 validation questions excluded from training at each scale. Entries report FULL. Accuracy is percent; KL averages per-response token-mean losses.}
+\label{tab:two_scale_validation}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{rrrrr}
+\toprule
+Step & 1.7B KL & 1.7B accuracy & 4B KL & 4B accuracy \\
+\midrule
+0 & 2.41500 & 1.56 & 1.97164 & 7.81 \\
+10 & 0.17422 & 7.03 & 0.09756 & 25.78 \\
+20 & 0.11939 & 12.50 & 0.07225 & 29.69 \\
+30 & 0.10461 & 14.06 & 0.05850 & 26.56 \\
+40 & 0.09494 & 10.94 & 0.05360 & 27.34 \\
+50 & 0.08926 & 11.72 & 0.05054 & 29.69 \\
+60 & 0.08781 & 14.84 & 0.04840 & 25.78 \\
+70 & 0.08389 & 14.06 & 0.04799 & 26.56 \\
+80 & 0.08461 & 14.84 & 0.04613 & 26.56 \\
+90 & 0.08332 & 14.06 & 0.04441 & 28.13 \\
+100 & 0.07893 & 12.50 & 0.04462 & 24.22 \\
+106 & 0.07841 & 12.50 & 0.04450 & 28.13 \\
+\bottomrule
+\end{tabular}
+\end{table}

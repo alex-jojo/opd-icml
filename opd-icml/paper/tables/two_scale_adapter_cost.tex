@@ -1,0 +1,18 @@
+\begin{table*}[!htbp]
+\centering
+\caption{Training costs at both scales. Total time includes warmup, basis discovery, and diagnostics; benchmark evaluation is excluded. Actor memory compares the FULL and Adapter phases. Whole-device peaks include teacher, rollout, and other processes.}
+\label{tab:two_scale_adapter_cost}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrrrr}
+\toprule
+Measurement & 1.7B FULL & 1.7B Adapter & 4B FULL & 4B Adapter \\
+\midrule
+Total training (min) & 146.36 & 128.99 & 330.40 & 294.69 \\
+Change relative to FULL & -- & $\boldsymbol{\downarrow 11.87\%}$ & -- & $\boldsymbol{\downarrow 10.81\%}$ \\
+Actor peak GPU 0 (GiB) & 66.64 & 21.38 & 47.36 & 21.61 \\
+Actor peak GPU 1 (GiB) & 66.48 & 23.60 & 47.22 & 21.69 \\
+Whole-device sampled peak (GiB) & 75.01 & 74.97 & 48.83 & 74.83 \\
+\bottomrule
+\end{tabular}
+\end{table*}

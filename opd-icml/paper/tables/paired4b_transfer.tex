@@ -1,0 +1,24 @@
+\begin{table}[!htbp]
+\centering
+\caption{4B. One-step validation transfer in paired-study FULL. Before/after losses use identical freshly generated validation prefixes. Actual and linear-predicted gains are multiplied by $10^3$; positive fraction uses gain $>10^{-6}$. Relative gain is $100G_V/(K_V(\theta)+10^{-12})$, with $K_V(\theta)$ evaluated on the same prefixes before the update. $c_g$ compares training and validation gradients.}
+\label{tab:paired4b_transfer}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrrrrr}
+\toprule
+Before step  &  Actual  &  Predicted  &  Relative (\%)  &  Positive (\%)  &  $c_g$  \\
+\midrule
+0  &  966.1828  &  15190.3290  &  49.004  &  100.00  &  0.7868  \\
+10  &  6.3733  &  12.3741  &  6.533  &  98.44  &  0.9220  \\
+20  &  1.2939  &  2.3732  &  1.791  &  87.50  &  0.7011  \\
+30  &  0.9536  &  1.6808  &  1.630  &  82.03  &  0.6321  \\
+40  &  0.5023  &  0.8043  &  0.937  &  75.78  &  0.5518  \\
+50  &  0.2109  &  0.4383  &  0.417  &  66.41  &  0.2588  \\
+60  &  0.1734  &  0.3961  &  0.358  &  61.72  &  0.3278  \\
+70  &  -0.0491  &  0.2486  &  -0.102  &  53.13  &  0.1267  \\
+80  &  -0.0360  &  0.2738  &  -0.078  &  47.66  &  0.2230  \\
+90  &  0.0017  &  0.3096  &  0.004  &  56.25  &  0.3463  \\
+100  &  0.0319  &  0.2680  &  0.072  &  47.66  &  0.1927  \\
+\bottomrule
+\end{tabular}
+\end{table}

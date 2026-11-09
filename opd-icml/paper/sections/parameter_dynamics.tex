@@ -1,0 +1,36 @@
+\clearpage
+\makeatletter
+\setlength{\@fptop}{0pt}
+\makeatother
+\subsection{Parameter-Space Update Dynamics}
+\label{app:parameter_dynamics}
+This section consolidates the parameter-level measurements from the paired FULL trajectories: realized update magnitude, its distribution across parameter groups and layers, update direction, and the spectrum of sampled parameter gradients. All measurements refer to the same two training runs used in the main analysis. Tables~\ref{tab:parameter_update_groups}--\ref{tab:parameter_gradient_spectrum} report the numerical results.
+
+\paragraph{Measured objects and parameter groups.}
+For an observed training step starting at checkpoint $t$, we capture the parameters before and after the optimizer step and form $\Delta\theta_t=\theta_{t+1}-\theta_t$. For group $S$, its update magnitude and squared-norm share are
+\begin{equation}
+ m_{S,t}=\|\Delta\theta_{S,t}\|_2,\qquad
+ f_{S,t}=\frac{\|\Delta\theta_{S,t}\|_2^2}{\|\Delta\theta_t\|_2^2}.
+\end{equation}
+The diagnostics sum exact inner products over distributed parameter shards. Both models tie their input embeddings and output weights, so these coordinates form one shared embedding/head group. Backbone denotes the remaining parameters and includes Transformer blocks and the final normalization parameters. Layer groups index individual Transformer blocks. The backbone and shared group partition the full parameter vector; layer groups are subsets of the backbone. Norms are absolute and unnormalized by parameter count. The recorded gradient $g_T$ is captured at the optimizer boundary, while the independent cross-subset gradients are computed for their respective diagnostic batches.
+
+\paragraph{How much do parameters move?}
+The realized parameter-step magnitude falls sharply during early training, followed by smaller fluctuations (Table~\ref{tab:parameter_update_groups}). The late 4B trajectory includes a temporary rebound. All recorded learning rates are constant, so this trend occurs with a fixed nominal step size. AdamW's moments, adaptive scaling, and the current gradient jointly determine the actual displacement. Training-gradient norms also decrease between the early and late observations, while the optimizer step retains its own temporal profile. The complete validation-gradient and update-norm series in Table~\ref{tab:gain_factors} connects these parameter changes to the measured held-out gains.
+
+\paragraph{Where do updates occur?}
+Most squared update magnitude lies in the backbone at every recorded diagnostic. The shared embedding/head contributes a smaller fraction, whose relative share increases between the selected early and late observations (Table~\ref{tab:parameter_update_groups}). Tables~\ref{tab:parameter_layers_17} and~\ref{tab:parameter_layers_4b} resolve every Transformer block at the checkpoints with complete cross-subset diagnostics. Every layer has a nonzero aggregate update norm, and every layer's norm is smaller at the last selected checkpoint than at the first. The largest-update layers change over training, so the spatial profile also changes. These group-level measurements locate update magnitude within the network. Group sizes affect their absolute norms, and a nonzero layer norm permits many unchanged coordinates inside that layer.
+
+\paragraph{How do update directions change?}
+We distinguish agreement across training subsets, agreement between training and validation gradients, and the direction of the realized optimizer step. Cross-subset parameter-gradient cosines weaken across the network (Tables~\ref{tab:parameter_layers_17} and~\ref{tab:parameter_layers_4b}; Figure~\ref{fig:two_scale_layers}). At the full-model level, most measured pairs remain nonnegative (Table~\ref{tab:two_scale_batch}). The cosine $c_{T,V}=\cos(g_T,g_V)$ compares the current training and validation gradients. The cosine $c_{T,\Delta}=\cos(-g_T,\Delta\theta)$ compares the actual step with current training descent; its early-to-late increase in both models coexists with the decrease in update alignment to validation descent reported in Table~\ref{tab:gain_factors}. In these observations, AdamW follows current training descent more closely while providing less improvement on validation responses.
+
+\input{tables/parameter_update_groups}
+\input{tables/parameter_layers_17}
+\input{tables/parameter_layers_4b}
+
+\FloatBarrier
+\paragraph{Spectrum of sampled parameter gradients.}
+At each complete cross-subset checkpoint, let $g_1,\ldots,g_4\in\mathbb R^P$ be the four parameter gradients and $G=[g_1,\ldots,g_4]$. The saved Gram matrix $K=G^\top G$ gives the nonzero eigenvalues of $GG^\top$ exactly. With $p_i=\lambda_i(K)/\operatorname{tr}K$, we report its participation dimension $r_{\mathrm{PR}}=(\sum_i p_i^2)^{-1}$ and all four energy shares in Table~\ref{tab:parameter_gradient_spectrum}. We also repeat the calculation on $D^{-1/2}KD^{-1/2}$, where $D=\operatorname{diag}(K)$, to compare unit-normalized gradients.
+
+The first spectral component loses share and the participation dimension increases between the early and late checkpoints at both scales. The increase persists after individual gradient normalization, supporting a broader spread of directions within the sampled panel. Together with the smaller parameter-step norms, these measurements show that update magnitude can shrink while sampled gradient directions become less concentrated. The panel contains four vectors and has an effective dimension bounded by four, describing variation across those sampled gradients.
+
+\input{tables/parameter_gradient_spectrum}

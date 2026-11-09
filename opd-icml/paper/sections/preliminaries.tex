@@ -1,0 +1,36 @@
+\section{Preliminaries and Setup}
+\label{sec:preliminaries and setup}
+\subsection{Preliminaries}
+\paragraph{On-policy distillation.}
+Given a question $x$ from the training set $\mathcal D$, OPD samples a response $y=(y_1,\ldots,y_n)$ from the current student $p_{\theta_t}$. A fixed teacher $q$ supplies a next-token distribution at each student-generated prefix $c_i=(x,y_{<i})$. The student is updated to reduce its discrepancy from the teacher on these prefixes, and subsequent rollouts use the updated student.
+
+We use reverse KL on a vocabulary support $S(c)$. Full-vocabulary reverse KL takes $S(c)=\mathcal V$, where $\mathcal V$ is the vocabulary; our experiments use the student's Top-16 support. Define $\tilde p_\theta(v\mid c)=p_\theta(v\mid c)/\sum_{u\in S(c)}p_\theta(u\mid c)$ and $\tilde q$ analogously. The position loss is
+\begin{equation}
+\ell_\theta(c)=\sum_{v\in S(c)}\tilde p_\theta(v\mid c)
+\log\frac{\tilde p_\theta(v\mid c)}{\tilde q(v\mid c)}.
+\label{eq:loss}
+\end{equation}
+For a sampled batch $\mathcal B$ with response lengths $n_b$, we minimize
+\begin{equation}
+L_{\mathcal B}(\theta)=\frac1{N_{\mathcal B}}\sum_{b\in\mathcal B}\sum_{i=1}^{n_b}\ell_\theta(c_{bi}),
+\qquad N_{\mathcal B}=\sum_{b\in\mathcal B}n_b.
+\label{eq:training_loss}
+\end{equation}
+Responses, student-selected support, and teacher targets are fixed during each update.
+
+Further more, to keep notation consistent throughout the paper, we define the following quantities. At checkpoint $t$, write $\ell_t=\ell_{\theta_t}$ and $h_t(c)=h_{\theta_t}(c)\in\mathbb R^d$ for the loss and final hidden state. The output head $W_t$ produces logits $z_t(c)=W_t h_t(c)$. We denote the individual-position hidden gradient by $g_{h,t}(c)=\nabla_h\ell_t(c)$, the training parameter gradient by $g_T=\nabla_\theta L_{\mathcal B}$, and the realized optimizer step by $\Delta\theta=\theta^+-\theta$, where $\theta^+$ denotes the parameters after the update. Checkpoint subscripts are omitted when clear from context. We study OPD training dynamics from four perspectives: the origins and changes of the learning signal, adaptation in representation space, transfer to unseen responses, and training efficiency.
+
+\subsection{Setup}
+
+\paragraph{Experimental setup.}
+We distill Qwen3-1.7B-Base and Qwen3-4B-Base from their respective
+post-trained teachers, Qwen3-1.7B and Qwen3-4B. After filtering,
+DAPO14k contains 13,534 math questions. For the paired experiments,
+we reserve 128 questions for validation and train on the remaining
+13,406. We use AdamW with a constant learning rate of $10^{-5}$ for
+full-parameter training (FULL). We evaluate on MATH500, HMMT25,
+HMMT26, AIME26, and Minerva. For each benchmark, we report Mean@8,
+the percentage of correct answers averaged over eight sampled responses
+per question and then over questions. We compute the overall score
+as the unweighted mean of the five benchmark scores.
+Appendix~\ref{app:settings} gives the full experimental settings.

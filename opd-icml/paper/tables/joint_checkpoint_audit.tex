@@ -1,0 +1,39 @@
+\begin{table}[!htbp]
+\centering
+\caption{Matched checkpoint observations in paired FULL. Panels share the same rows. $K_t$ is the last training-batch KL and $s_t=(K_{t-5}-K_t)/5$ is its preceding five-update decline per update; the batches differ. $\overline{\|g_\theta\|}$ averages parameter-gradient norms across four disjoint subsets. $C_h$ averages full-hidden token coherence over those subsets. $c_h$ and $c_\theta$ average six mean-hidden and parameter-gradient pairwise cosines; $O_4$ averages centered top-4 covariance overlap. $E_U$ is cumulative displacement coverage. $G_V$ is the actual validation KL reduction from one training update starting at that checkpoint; its relative value uses pre-update validation KL. These are aligned descriptive observations.}
+\label{tab:joint_checkpoint_audit}
+\small\setlength{\tabcolsep}{7pt}
+\textbf{(a) Training loss, gradient scale, and agreement}\par\smallskip
+\begin{tabular}{llrrrrrr}
+\toprule
+Model & Step & $K_t$ & $10^3s_t$ & $\overline{\|g_\theta\|}$ & $10^3C_h$ & $c_h$ & $c_\theta$ \\
+\midrule
+\multirow{4}{*}{1.7B} & 10 & 0.18739 & 24.1974 & 2.37265 & 0.79223 & 0.8977 & 0.7325 \\
+ & 30 & 0.09843 & 1.3070 & 1.09367 & 0.07463 & 0.3874 & 0.1100 \\
+ & 60 & 0.08981 & -0.4135 & 1.00090 & 0.04696 & 0.0944 & 0.0396 \\
+ & 100 & 0.07552 & 0.4286 & 0.96489 & 0.05441 & 0.2323 & 0.0828 \\
+\midrule
+\multirow{4}{*}{4B} & 10 & 0.10250 & 15.3189 & 1.14362 & 0.39586 & 0.8891 & 0.7696 \\
+ & 30 & 0.06374 & -0.0057 & 0.55616 & 0.13150 & 0.6550 & 0.3346 \\
+ & 60 & 0.05059 & 0.3247 & 0.47274 & 0.05913 & 0.3434 & 0.1029 \\
+ & 100 & 0.04314 & -0.2902 & 0.51272 & 0.05805 & 0.2460 & 0.0596 \\
+\bottomrule
+\end{tabular}
+\par\medskip
+\textbf{(b) Geometry and the subsequent actual validation gain}\par\smallskip
+\begin{tabular}{llrrrrr}
+\toprule
+Model & Step & $O_4$ & $E_U$ (\%) & $K_V$ before & $10^3G_V$ & Relative gain (\%) \\
+\midrule
+\multirow{4}{*}{1.7B} & 10 & 0.9528 & 85.66 & 0.17422 & 12.54712 & 7.202 \\
+ & 30 & 0.8411 & 86.48 & 0.10461 & 0.79386 & 0.759 \\
+ & 60 & 0.7881 & 87.00 & 0.08781 & 0.42954 & 0.489 \\
+ & 100 & 0.8895 & 87.28 & 0.07893 & 0.16135 & 0.204 \\
+\midrule
+\multirow{4}{*}{4B} & 10 & 0.9700 & 80.50 & 0.09756 & 6.37332 & 6.533 \\
+ & 30 & 0.9553 & 80.09 & 0.05850 & 0.95356 & 1.630 \\
+ & 60 & 0.8917 & 79.46 & 0.04840 & 0.17338 & 0.358 \\
+ & 100 & 0.9471 & 79.06 & 0.04462 & 0.03191 & 0.072 \\
+\bottomrule
+\end{tabular}
+\end{table}

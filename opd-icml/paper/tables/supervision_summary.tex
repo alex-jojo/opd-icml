@@ -1,0 +1,17 @@
+\begin{table}[!htbp]
+\centering
+\caption{Paired FULL supervision at updates 1 / 106. High frequency uses each scale's fixed initial upper-decile KL threshold; KL-top is the full hidden-gradient energy share of the current highest-KL decile. Intermediate observations appear in Appendix~\ref{app:supplementary}.}
+\label{tab:supervision_summary}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrr}
+\toprule
+Measurement & 1.7B & 4B \\
+\midrule
+Training KL & 0.3848 / 0.0751 & 0.3208 / 0.0435 \\
+Hidden RMS & 0.7149 / 0.2397 & 0.4469 / 0.1238 \\
+High frequency (\%) & 10.00 / 1.47 & 10.00 / 0.79 \\
+KL-top energy (\%) & 82.12 / 84.69 & 87.43 / 81.87 \\
+\bottomrule
+\end{tabular}
+\end{table}

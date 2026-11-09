@@ -1,0 +1,17 @@
+\begin{table*}[t]
+\centering
+\caption{Training time for FULL and Adaptive FULL, in minutes. Bold $\downarrow$/$\uparrow$ percentages indicate reduced/increased process time relative to FULL of the same scale; FULL is the reference. Process sums training subprocess wall times, including initialization, checkpointing, and diagnostics; model merge and all benchmark evaluations are excluded. The last two columns subtract recorded diagnostic time from logged round and actor time. For 1.7B Adaptive FULL, round timings cover 39 of 40 updates, so only complete process time is reported. Within-scale runtime and diagnostic differences affect these measurements.}
+\label{tab:training_time_overview}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrrrrr}
+\toprule
+Model & Configuration & Rollouts & Updates & Process & \shortstack{Time change\\vs. FULL} & \shortstack{Rounds excl.\\diag.} & \shortstack{Actor excl.\\diag.} \\
+\midrule
+1.7B & FULL & 106 & 106 & 214.8 & -- & 181.8 & 40.5 \\
+1.7B & Adaptive FULL & 40 & 40 & 75.2 & \textbf{$\downarrow$ 65.0\%} & -- & -- \\
+4B & FULL & 106 & 106 & 234.6 & -- & 193.9 & 61.7 \\
+4B & Adaptive FULL & 50 & 50 & 121.6 & \textbf{$\downarrow$ 48.1\%} & 91.8 & 29.7 \\
+\bottomrule
+\end{tabular}
+\end{table*}

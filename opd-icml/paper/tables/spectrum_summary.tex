@@ -1,0 +1,23 @@
+\begin{table*}[!t]
+\centering
+\caption{Final paired-study hidden-gradient spectra: entries show RMS / energy effective rank. The upper block compares full hidden space, $U$, and its complement in FULL. The lower block uses equal-count KL groups: 18,870 positions per group in 1.7B and 19,767 in 4B. Low-KL residuals have extremely small magnitude. Additional spectral measures and original-study results appear in Appendix~\ref{app:supplementary}.}
+\label{tab:spectrum_summary}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrr}
+\toprule
+Model & Phase / KL group & Full hidden & $U$ & $U^\perp$ \\
+\midrule
+1.7B & FULL & 0.2397 / 303.36 & 0.0980 / 46.13 & 0.2188 / 353.50 \\
+4B & FULL & 0.1238 / 371.55 & 0.0482 / 40.24 & 0.1140 / 439.17 \\
+\midrule
+\multicolumn{5}{l}{\textit{Equal-count KL groups in final FULL}} \\
+1.7B & High & 0.698 / 306.26 & 0.285 / 47.11 & 0.637 / 355.26 \\
+1.7B & Middle & 0.105 / 177.35 & 0.0436 / 33.08 & 0.0951 / 209.33 \\
+1.7B & Low & 1.55e-08 / 39.18 & 7.43e-09 / 22.06 & 1.36e-08 / 41.10 \\
+4B & High & 0.354 / 383.28 & 0.136 / 42.20 & 0.327 / 446.54 \\
+4B & Middle & 0.0591 / 213.17 & 0.0249 / 30.43 & 0.0536 / 259.95 \\
+4B & Low & 5.98e-08 / 74.28 & 2.74e-08 / 21.70 & 5.32e-08 / 86.16 \\
+\bottomrule
+\end{tabular}
+\end{table*}

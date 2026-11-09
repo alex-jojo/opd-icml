@@ -1,0 +1,27 @@
+\section{RQ1: Learning Signal Dynamics in OPD}
+\label{sec:RQ1}
+
+To understand where the learning signals in OPD originate and how they evolve throughout training, we examine two aspects: (1) \textbf{Global Learning Signal Dynamics}, which tracks changes in KL divergence and gradient magnitude over training; and (2) \textbf{Role of High-KL Tokens in Learning}, which examines their contribution to gradient energy and their importance for effective learning.
+
+We analyze the paired full training trajectories at both model scales and conduct ablations to assess the contribution of high-KL tokens.
+
+\subsection{Global Learning Signal Dynamics}
+
+We first examine how training loss evolves throughout OPD training. From step 1 to step 106, training loss decreases from 0.473 to 0.077 for the 1.7B model and from 0.397 to 0.044 for the 4B model (Figure X(a)). By step 10, the models have already completed 74\% and 84\% of these net decreases, respectively. After step 10, training loss continues to decrease, but at a much slower rate.
+
+The gradient norm follows a similar trend, with a rapid initial decrease followed by fluctuations at lower levels (Appendix X). These observations show that loss reduction is concentrated in the early stages of OPD training, with diminishing progress in later steps.
+
+\subsection{Role of High-KL Tokens in Learning}
+
+The preceding analysis shows that training loss decreases more slowly as training progresses, but leaves open how the remaining learning signal is distributed across tokens. We therefore examine the distribution of gradient energy at the token level.
+
+High-KL tokens become increasingly sparse, yet gradient energy remains highly concentrated. As training progresses, the fraction of tokens exceeding a fixed KL threshold (defined as the top-10\% KL cutoff at step 1) decreases from 10\% to 0.99\% for the 1.7B model and 0.46\% for the 4B model by step 106 (Figure X(a)). Nevertheless, the top 10\% of tokens ranked by KL loss at each measured step consistently account for 77.9--86.5\% of total gradient energy in the 1.7B model and 78.2--85.6\% in the 4B model (Figure X(b)). These results show that while fewer tokens exceed the initial KL threshold as training progresses, the highest-KL tokens continue to account for most of the training signals.
+
+\textcolor{red}{
+The preceding analysis shows that high-KL positions account for most of the gradient energy, but whether they provide more useful supervision remains unclear. To test this, we compare removing supervision from high-KL tokens with randomly removing supervision from the same number of tokens throughout training on the 1.7B model. Removing high-KL supervision consistently leads to smaller performance gains than random removal. As shown in Figure Z, this gap persists throughout training, suggesting that high-KL tokens make a greater contribution to learning in OPD.
+}
+
+\begin{tcolorbox}
+\textbf{\textcolor{findingblue}{Key Finding}} Learning signals in OPD diminish as training progresses, with most of the reduction in training KL occurring during the early stages. Despite this overall decline, gradient energy remains highly concentrated among tokens with the highest KL divergence throughout training, suggesting that although OPD provides dense token-level supervision, effective learning signals are inherently sparse.
+\end{tcolorbox}
+

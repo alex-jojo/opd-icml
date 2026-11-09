@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Training dynamics of FULL. $\|g_\theta\|$ is the parameter gradient norm before clipping; hidden RMS aggregates individual token gradients. High frequency uses the fixed initial KL threshold. KL-top is the gradient-energy share of the current highest-KL decile. Frequency and energy shares are percentages. Entries are initial / final (updates 1 / 106).}
+\label{tab:dynamics}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrr}
+\toprule
+Metric & 1.7B & 4B \\
+\midrule
+Train accuracy (\%) & 3.13 / 16.41 & 6.25 / 29.69 \\
+Training KL & 0.473 / 0.077 & 0.397 / 0.044 \\
+$\|g_\theta\|$ & 9.808 / 0.556 & 6.874 / 0.258 \\
+Hidden RMS & 0.774 / 0.244 & 0.505 / 0.125 \\
+High frequency (\%) & 10.00 / 0.99 & 10.00 / 0.46 \\
+KL-top energy (\%) & 77.85 / 85.99 & 85.57 / 81.83 \\
+\bottomrule
+\end{tabular}
+\end{table}

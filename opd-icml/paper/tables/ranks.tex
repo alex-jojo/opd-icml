@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\caption{Gradient strength and spectral spread. The nuclear norm is normalized by the square root of the number of token positions; effective rank is the entropy rank of normalized squared singular values. The available directional spectra cover the selected subspace for 1.7B and all three spaces for 4B. Cells report updates 15 / 106.}
+\label{tab:ranks}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrr}
+\toprule
+Model / space & Nuclear norm & Effective rank \\
+\midrule
+1.7B $U$ & 1.103 / 0.862 & 47.61 / 46.72 \\
+4B $U$ & 0.563 / 0.411 & 37.76 / 40.87 \\
+4B Full & 5.056 / 3.689 & 342.51 / 366.13 \\
+4B $U^\perp$ & 4.792 / 3.498 & 411.14 / 432.99 \\
+\bottomrule
+\end{tabular}
+\end{table}

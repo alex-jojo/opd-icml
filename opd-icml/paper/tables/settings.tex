@@ -1,0 +1,29 @@
+\begin{table}[!htbp]
+\centering
+\caption{Experimental settings. Each student is distilled from the post-trained Qwen3 model of the same size. Training uses one sampled response per prompt; benchmark evaluation uses independent repeated samples.}
+\label{tab:settings}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lll}
+\toprule
+Setting & 1.7B & 4B \\
+\midrule
+Student & Qwen3-1.7B-Base & Qwen3-4B-Base \\
+Teacher & Qwen3-1.7B & Qwen3-4B \\
+Training set & Filtered DAPO14k & Filtered DAPO14k \\
+Training prompts & 13,534 & 13,534 \\
+Hidden dim. / probe positions & 2,048 / 5,514 & 2,560 / 6,146 \\
+Generated / optimized responses & 160 / 128 & 160 / 128 \\
+Optimizer & AdamW & AdamW \\
+Learning rate / schedule & $10^{-5}$ / constant & $10^{-5}$ / constant \\
+$\beta_1,\beta_2$ / weight decay & (0.9, 0.999) / 0.01 & (0.9, 0.999) / 0.01 \\
+Gradient clipping / warmup & 1.0 / none & 1.0 / none \\
+Max. prompt / training response & 1,024 / 2,048 & 1,024 / 2,048 \\
+Sampling temperature / top-p & 1.0 / 1.0 & 1.0 / 1.0 \\
+Benchmark samples / max. response & 8 / 8,192 & 8 / 8,192 \\
+Evaluation seed & 42 & 42 \\
+Benchmark scoring & Original grader & Lenient answer grader \\
+Observation basis rank / step & 128 / 10 & 128 / 10 \\
+\bottomrule
+\end{tabular}
+\end{table}

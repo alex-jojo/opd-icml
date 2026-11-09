@@ -1,0 +1,21 @@
+\begin{table*}[!htbp]
+\centering
+\caption{Cross-batch geometry at both scales: four disjoint subsets and six pairs at each checkpoint. Param. is mean complete-parameter gradient cosine; Neg. is the percentage of negative pairs. Hidden gives the all-dimension mean-gradient cosine; axes columns give centered full-hidden eigenspace overlap.}
+\label{tab:two_scale_batch}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrrrrr}
+\toprule
+Model & Phase & Step & Param. & Neg. & Hidden & Axes-4 & Axes-128 \\
+\midrule
+1.7B & FULL & 10 & 0.7325 & 0.0 & 0.8977 & 0.9528 & 0.6284 \\
+1.7B & FULL & 30 & 0.1100 & 0.0 & 0.3874 & 0.8411 & 0.5875 \\
+1.7B & FULL & 60 & 0.0396 & 16.7 & 0.0944 & 0.7881 & 0.5776 \\
+1.7B & FULL & 100 & 0.0828 & 0.0 & 0.2323 & 0.8895 & 0.5997 \\
+4B & FULL & 10 & 0.7696 & 0.0 & 0.8891 & 0.9700 & 0.6283 \\
+4B & FULL & 30 & 0.3346 & 0.0 & 0.6550 & 0.9553 & 0.5877 \\
+4B & FULL & 60 & 0.1029 & 0.0 & 0.3434 & 0.8917 & 0.5869 \\
+4B & FULL & 100 & 0.0596 & 0.0 & 0.2460 & 0.9471 & 0.5629 \\
+\bottomrule
+\end{tabular}
+\end{table*}

@@ -1,0 +1,35 @@
+\begin{table}[!htbp]
+\centering
+\caption{Cumulative displacement magnitude and fixed early-basis coverage at every recorded checkpoint from step 10 in paired FULL. RMS is the square root of the mean squared vector norm across fixed probe positions. Raw RMS uses unnormalized hidden states; unit RMS uses unit-normalized states. Coverage is measured on the unit-normalized displacement relative to initialization, using the fixed step-10 rank-128 basis. All entries describe cumulative changes.}
+\label{tab:cumulative_motion_audit}
+\small\setlength{\tabcolsep}{8pt}
+\begin{tabular}{rrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{1.7B} & \multicolumn{3}{c}{4B} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Step & Raw RMS & Unit RMS & $U$ coverage (\%) & Raw RMS & Unit RMS & $U$ coverage (\%) \\
+\midrule
+10 & 47.357 & 0.33499 & 85.66 & 57.784 & 0.36566 & 80.50 \\
+15 & 56.045 & 0.40512 & 86.50 & 62.306 & 0.39057 & 80.92 \\
+20 & 58.821 & 0.42436 & 86.57 & 63.665 & 0.40182 & 80.59 \\
+25 & 62.165 & 0.44992 & 86.79 & 64.463 & 0.40821 & 80.29 \\
+30 & 61.876 & 0.44841 & 86.48 & 65.053 & 0.41356 & 80.09 \\
+35 & 60.366 & 0.43684 & 86.10 & 65.947 & 0.42071 & 79.80 \\
+40 & 61.393 & 0.44512 & 86.32 & 66.744 & 0.42587 & 79.72 \\
+45 & 62.098 & 0.45074 & 86.51 & 67.666 & 0.43196 & 79.61 \\
+50 & 62.610 & 0.45513 & 86.64 & 67.905 & 0.43286 & 79.62 \\
+55 & 63.720 & 0.46361 & 86.92 & 67.924 & 0.43262 & 79.59 \\
+60 & 64.293 & 0.46756 & 87.00 & 68.456 & 0.43603 & 79.46 \\
+65 & 64.854 & 0.47148 & 87.08 & 68.694 & 0.43763 & 79.39 \\
+70 & 66.268 & 0.48192 & 87.29 & 68.937 & 0.43856 & 79.27 \\
+75 & 65.890 & 0.47819 & 87.24 & 68.876 & 0.43779 & 79.21 \\
+80 & 66.648 & 0.48370 & 87.30 & 69.016 & 0.43847 & 79.24 \\
+85 & 67.046 & 0.48624 & 87.24 & 69.241 & 0.43977 & 79.18 \\
+90 & 67.386 & 0.48835 & 87.27 & 69.404 & 0.44056 & 79.19 \\
+95 & 67.485 & 0.48898 & 87.24 & 69.804 & 0.44260 & 79.08 \\
+100 & 67.865 & 0.49170 & 87.28 & 69.852 & 0.44290 & 79.06 \\
+105 & 68.632 & 0.49771 & 87.44 & 70.200 & 0.44534 & 79.14 \\
+106 & 68.707 & 0.49835 & 87.46 & 70.269 & 0.44572 & 79.16 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,22 @@
+\begin{table}[!htbp]
+\centering
+\caption{Second-update gains and component costs of reuse at equal update budget. Entries show FULL / reuse. Second-update training gains are multiplied by $10^3$ and averaged over six late readouts at cumulative updates $\geq60$; positive-gain counts cover all paired readouts. Actor time includes diagnostics; adjusted rows subtract them.}
+\label{tab:reuse_summary}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrr}
+\toprule
+Measurement & 1.7B & 4B \\
+\midrule
+Second-update gain & -- / 5.686 & -- / 4.677 \\
+Positive second gains & -- / 11 of 11 & -- / 11 of 11 \\
+\midrule
+Generation (min) & 93.6 / 46.0 & 86.1 / 43.9 \\
+Teacher (min) & 24.6 / 12.3 & 24.4 / 12.2 \\
+Actor (min) & 64.7 / 46.4 & 95.2 / 83.0 \\
+Diagnostic (min) & 24.1 / 6.2 & 33.5 / 23.2 \\
+Rounds excl. diag. (min) & 181.8 / 109.9 & 193.9 / 126.6 \\
+Actor excl. diag. (min) & 40.5 / 40.1 & 61.7 / 59.7 \\
+\bottomrule
+\end{tabular}
+\end{table}

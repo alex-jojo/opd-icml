@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+runs/
+outputs/
+data/*.parquet
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.blg
+paper/*.bbl
+paper/*.fls
+paper/*.fdb_latexmk
+paper/main.pdf

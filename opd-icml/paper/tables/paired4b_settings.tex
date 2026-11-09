@@ -1,0 +1,30 @@
+\begin{table}[!htbp]
+\centering
+\caption{4B. Additional protocol for the paired 4B study. Both branches use the same student--teacher pair and Top-16 objective as the original study. The fixed validation questions are excluded from the training pool. The Adapter branch learns its basis within its own warmup.}
+\label{tab:paired4b_settings}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{ll}
+\toprule
+Paired-study setting & Value \\
+\midrule
+Train / validation questions & 128 / 128 \\
+Updates / reuse / GPUs / microbatch & 106 / 1 / 2 / 4 \\
+Validation interval / terminal step & 10 / 106 \\
+Cross-batch checkpoints & 10, 30, 60, 100 \\
+Disjoint batches / questions each & 4 / 32 \\
+Repeated-rollout steps & 10, 50, 100 \\
+Questions / rollouts per question & 4 / 4 \\
+Adapter rank / hidden dimension & 128 / 2,560 \\
+Stability interval / minimum step & 5 / 15 \\
+Window / adjacent / endpoint & 3 / 0.98 / 0.97 \\
+Decile $\cos^2$ / energy-gap limit & 0.90 / 0.005 \\
+Switch step / Adapter updates & 50 / 56 \\
+Adapter LR / warmup updates & $10^{-5}$ / 10 \\
+Guard tokens per GPU / backtracks & 128 / 6 \\
+Mean / max. policy-KL limit & 0.002 / 0.02 \\
+Hidden / relative teacher-KL limit & 0.01 / 0.05 \\
+Benchmark scoring / samples & Lenient answer / 8 \\
+\bottomrule
+\end{tabular}
+\end{table}

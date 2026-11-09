@@ -1,0 +1,52 @@
+\section{RQ4}
+\label{sec:efficiency}
+
+RQ2 showed that the leading directions of accumulated representation change become similar across successive checkpoints. This suggests a possible stopping rule. Once those directions stabilize, how much benchmark performance can the student retain if training ends there? We test this with \textbf{Adaptive early stop}. RQ3 motivates a second question. Even when the student generates fresh responses for every update, late updates produce only small KL improvements on unseen responses. Given the cost of generation and teacher scoring, how much does refreshing the batch at every update buy? We test this with \textbf{Rollout reuse}, keeping the number of updates fixed and refreshing the batch every other update.
+
+\subsection{Adaptive early stop}
+Every five updates, we evaluate the same probe prefixes and compute the leading $r=128$ eigenvectors $U_t$ of the representation-change matrix $C_t$ defined in Equation~\ref{eq:rq2_representation_change}. For checkpoints $i$ and $j$, let $s_k=\sigma_k^2(U_i^\top U_j)$ for $k=1,\ldots,r$. Their mean $O_{ij}=r^{-1}\sum_k s_k$ measures subspace overlap, and their tenth percentile $Q_{ij}$ checks whether the overlap extends to the less aligned directions. We also measure the fraction of change energy at step $t$ captured by a basis $U$ as $E_t(U)=\operatorname{tr}(U^\top C_t U)/\operatorname{tr}(C_t)$.
+
+At each check $t\geq15$, let $a=t-10$ and $b=t-5$. We stop at the first check for which all four conditions hold:
+\begin{equation}
+\begin{aligned}
+ \min(O_{ab},O_{bt}) &\geq 0.98,\\
+ O_{at} &\geq 0.97,\\
+ \min(Q_{ab},Q_{bt},Q_{at}) &\geq 0.90,\\
+ [E_t(U_t)-E_t(U_a)]_+ &\leq 0.005 .
+\end{aligned}
+\label{eq:rq4_stop}
+\end{equation}
+Here $[x]_+=\max(x,0)$. The adjacent and endpoint checks require stability throughout the three-checkpoint window. The last condition requires the earliest basis in the window to capture the latest representation changes to within half a percentage point of the current basis.
+
+The rule first triggered at update 40 for 1.7B and update 50 for 4B, compared with 106 updates in FULL. Stopping at those checkpoints saved 65.0\% and 48.1\% of total training time. The five-benchmark average decreased by 0.40 and 0.38 percentage points, respectively (Table~\ref{tab:benchmark_summary}).
+
+\subsection{Rollout reuse}
+FULL generates a batch of responses, queries the teacher, and takes one optimizer step. Rollout reuse takes a second step on the same responses and cached teacher targets. Before that second step, we recompute the student predictions and gradients at the updated parameters. Both runs take 106 optimizer steps, so the comparison tests the cost of reducing fresh rollout rounds from 106 to 53.
+
+The second update reduced KL on the cached responses at all 11 measured checkpoints in each model. The saved generation and teacher work translated into a 44.8\% reduction in total training time for 1.7B and a 35.0\% reduction for 4B. The corresponding benchmark averages fell by 0.29 and 0.96 percentage points (Table~\ref{tab:benchmark_summary}). Thus, both students could fit the cached responses further, while the larger student incurred a greater benchmark cost from refreshing the training data less often.
+
+\begin{table*}[t]
+\centering
+\caption{Training cost and final performance. Rounds count fresh rollout batches. Time covers the full training run, and savings are relative to FULL at the same model size. Task scores are Mean@8 (\%), and Avg.\ is their arithmetic mean. Each trained configuration was run once.}
+\label{tab:benchmark_summary}
+\scriptsize
+\setlength{\tabcolsep}{2.8pt}
+\begin{tabular}{@{}llrrrrrrrrrr@{}}
+\toprule
+Model & Method & Rounds & Updates & Min. & Time saved & MATH500 & HMMT25 & HMMT26 & AIME26 & Minerva & Avg.\\
+\midrule
+\multirow{4}{*}{1.7B}
+ & Base                & 0 & 0 & -- & -- & 13.35 & 0.00 & 0.76 & 0.00 & 3.72 & 3.57\\
+ & FULL                & 106 & 106 & 214.8 & -- & 65.53 & 1.25 & 3.41 & 8.33 & 26.79 & 21.06\\
+ & Adaptive early stop & 40 & 40 & 75.2 & 65.0\% & 65.60 & 1.67 & 4.92 & 4.58 & 26.52 & 20.66\\
+ & Rollout reuse       & 53 & 106 & 118.6 & 44.8\% & 66.48 & 1.25 & 3.41 & 6.67 & 26.06 & 20.77\\
+\midrule
+\multirow{4}{*}{4B}
+ & Base                & 0 & 0 & -- & -- & 23.12 & 0.00 & 1.14 & 1.25 & 9.88 & 7.08\\
+ & FULL                & 106 & 106 & 234.6 & -- & 80.28 & 6.67 & 12.12 & 12.92 & 39.94 & 30.38\\
+ & Adaptive early stop & 50 & 50 & 121.6 & 48.1\% & 79.58 & 7.92 & 9.09 & 14.17 & 39.25 & 30.00\\
+ & Rollout reuse       & 53 & 106 & 152.5 & 35.0\% & 78.60 & 8.33 & 8.71 & 13.33 & 38.10 & 29.42\\
+\bottomrule
+\end{tabular}
+\end{table*}
+\FloatBarrier
