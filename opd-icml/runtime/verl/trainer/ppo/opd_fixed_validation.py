@@ -83,6 +83,8 @@ def readout(trainer,checkpoint):
                             response_tokens=int(mask[i].sum()),response_ids=batch.batch['responses'][i][mask[i].bool()].cpu().tolist()))
     report=dict(checkpoint_optimizer_updates=checkpoint,fixed_prompts=128,fresh_on_policy_rollout=True,
                 kl=float(np.mean(per)),accuracy=float(np.mean(reward)),responses=records)
+    if trainer.config.data.get('opd_task', 'math') == 'code':
+        report.update(task='code', accuracy_definition='fraction of responses passing all code tests')
     target=trainer.opd_validation_output/f'checkpoint_{checkpoint:03d}.json'
     target.write_text(json.dumps(report,ensure_ascii=False),encoding='utf-8')
     trainer.opd_last_validation_report=report

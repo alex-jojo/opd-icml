@@ -33,7 +33,19 @@ from io import StringIO
 from unittest.mock import mock_open, patch
 
 import numpy as np
-from pyext import RuntimeModule
+try:
+    from pyext import RuntimeModule
+except ImportError:
+    from types import ModuleType
+
+    class RuntimeModule:
+        """The small from_string subset used by the PRIME judge, without pyext."""
+
+        @staticmethod
+        def from_string(name, doc, source):
+            module = ModuleType(name, doc)
+            exec(compile(source, '<string>', 'exec'), module.__dict__)
+            return module
 
 
 def truncatefn(s, length=300):

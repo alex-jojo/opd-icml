@@ -596,6 +596,9 @@ class RayPPOTrainer:
 
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""
+        if self.config.data.get('opd_task', 'math') == 'code':
+            from verl.trainer.ppo.opd_task_metrics import code_ground_truth_reference
+            gts = [code_ground_truth_reference(value) for value in gts]
         os.makedirs(dump_path, exist_ok=True)
         filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
 
@@ -639,6 +642,11 @@ class RayPPOTrainer:
             sample_gts = [item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in batch]
 
             reward_extra_infos_to_dump = reward_extra_infos_dict.copy()
+            if self.config.data.get('opd_task', 'math') == 'code':
+                reward_extra_infos_to_dump['data_source'] = batch.non_tensor_batch['data_source'].tolist()
+                extras = batch.non_tensor_batch['extra_info']
+                for key in ('source_index', 'source_split', 'source_dataset', 'source_revision'):
+                    reward_extra_infos_to_dump[key] = [item.get(key) for item in extras]
             if "request_id" in batch.non_tensor_batch:
                 reward_extra_infos_dict.setdefault(
                     "request_id",
@@ -1779,7 +1787,7 @@ class RayPPOTrainer:
                 # collect metrics
                 data_metrics = compute_data_metrics(batch=batch, use_critic=self.use_critic)
                 metrics.update(data_metrics)
-                # Rule-based math correctness is monitoring only. Vanilla OPD
+                # Rule-based correctness is monitoring only. Vanilla OPD
                 # Vanilla OPD uses teacher/student log probabilities; direction training uses
                 # its ordered-token hidden loss directly in the actor.
                 generated_mask = batch.batch["response_mask"].bool()
@@ -1823,8 +1831,12 @@ class RayPPOTrainer:
                     train_semantic_accuracy = correct_mask.float().mean().item()
                     train_boxed_accuracy = train_semantic_accuracy
                 incorrect_mask = ~correct_mask
-                metrics["monitor/train_boxed_accuracy"] = train_boxed_accuracy
-                metrics["monitor/train_semantic_accuracy"] = train_semantic_accuracy
+                if self.config.data.get('opd_task', 'math') == 'code':
+                    from verl.trainer.ppo.opd_task_metrics import code_accuracy_metrics
+                    metrics.update(code_accuracy_metrics(train_semantic_accuracy, batch.non_tensor_batch))
+                else:
+                    metrics["monitor/train_boxed_accuracy"] = train_boxed_accuracy
+                    metrics["monitor/train_semantic_accuracy"] = train_semantic_accuracy
                 # Keep the old dashboard key as a strict 0..1 compatibility
                 # alias. For math_dapo this is exactly boxed accuracy.
                 metrics["monitor/train_accuracy_reward"] = train_boxed_accuracy

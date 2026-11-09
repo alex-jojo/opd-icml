@@ -88,6 +88,48 @@ python train.py --scale 1.7b --experiment reuse
 
 默认输出为 `runs/<scale>/<experiment>/`；也可以传入 `--output /path/to/new-run`。其中 `checkpoints/` 保存权重，`training_records/` 保存训练记录，`replication/` 保存该协议开启的诊断。早停步数由当前运行的规则判定。
 
+## Code 实验：Eurus-2-RL-Data Code
+
+通过 `--task code` 切换到 [PRIME-RL/Eurus-2-RL-Data](https://huggingface.co/datasets/PRIME-RL/Eurus-2-RL-Data) 的 code 子集。固定 revision 为 `9776b13264b5aaa0b16495fcf086a0a8d86fd655`，仅提取 `ability == "code"` 的题：训练 25,276 题、官方 validation 1,024 题，来源为 APPS、CodeContests、TACO、Codeforces。原始两个 parquet 混合了 math/code；准备脚本按 parquet row-group 统计跳过纯 math 分块，再精确按 ability 过滤，不将 math 题混入 code 训练。
+
+在训练环境中先准备数据：
+
+```bash
+python scripts/prepare_eurus_code.py
+```
+
+输出 `data/eurus_code_train.parquet`、`data/eurus_code_validation.parquet` 和各自 `.manifest.json`。源文件较大，完整准备需要下载 code 测试用例并占用相应磁盘；本仓库不包含下载后的训练数据。若已有原始文件，可指定 `--source-dir /data/Eurus-2-RL-Data`，其中应有原始 `train.parquet`、`validation.parquet`；`--output-dir` 可更换输出位置。重复运行会校验版本、题量和输出 SHA-256 后复用；不覆盖其他协议或未完成的数据文件。
+
+转换保留原始题目、Python 代码输出要求，以及完整的 `reward_model.ground_truth` JSON 测试用例（含可选 `fn_name`）。原始 PRIME system 指令折叠到第一条 user 消息，保留内容，统一兼容 Qwen 和 Gemma；不会添加数学 `\boxed{}` 指令。每题保存原始 split、原始行号、数据来源、prompt hash、测试用例数和固定 revision。
+
+四组模型均支持四种 code 实验模式：
+
+```bash
+python train.py --task code --scale 4b --experiment paired-full --dry-run
+python train.py --task code --scale 4b --experiment paired-full
+python train.py --task code --scale 8b --experiment early-stop
+python train.py --task code --scale gemma3-12b --experiment reuse
+```
+
+`--task` 默认仍是 `math`。Code 默认读上述独立训练/验证文件，并输出到 `runs/code/<scale>/<experiment>/`；可用 `--data`、`--val-data`、`--output` 指定路径。Code 配置为 `configs/<scale>/code-<experiment>.yaml`，继承已有模型/实验设置，默认 prompt 上限 2,048、response 上限 3,072；超长 prompt 会被过滤，实际参与训练的题数可能少于原始 25,276。新模型两组仍默认 4 GPU，1.7B / 4B 沿用其基础配置的 GPU 数。较长 code 序列的资源开销需在服务器实测。
+
+蒸馏目标仍为学生 Top-16 支持上的 reverse KL；测试用例得分只用于监测，既不筛选训练 token，也不变成 PPO/GRPO 奖励。默认调用已有 PRIME Python 判题器，使用 Linux/Unix 训练环境，最多并发 8 个提交（`--code-workers` 可调整）。也可接已有 Sandbox Fusion 服务：
+
+```bash
+python train.py --task code --scale 4b --experiment paired-full \
+  --sandbox-url http://127.0.0.1:8080/run_code --code-workers 8
+```
+
+监测指标为“一个回答通过该题全部测试用例”的比例；单个用例通过比例不会当作整题正确率。记录 `monitor/train_code_accuracy`、代码块格式率、编译/运行失败指标、token 长度、训练 KL、梯度与表征诊断；code 日志不使用数学 boxed accuracy 名称。`training_records/*.jsonl` 保存回答、得分、来源行号及测试集 hash/用例数，官方验证回答另存于 `validation_records/`；完整测试用例保留在数据 parquet 中，避免每轮重复写入。`paired-full` 及其 early-stop/reuse 保留独立固定 128 题诊断；另每 20 轮及结束时在官方 code validation 上做正确性监测。128 题诊断从训练池中排除，官方 validation 不参与训练。Code reuse 在本次运行中建立自己的表征参考，不依赖复制 FULL 子空间资产。
+
+现有六项数学 benchmark 仍用于数学评测；新增 code 官方 validation 结果与数学均分分别记录。
+
+CPU 数据和接入测试：
+
+```bash
+python -m pytest tests/test_code_task.py -q
+```
+
 ## 合并模型与评测
 
 在激活训练环境后，下面的命令评测 1.7B Rollout reuse。修改 `RUN` 可评测其他实验。读取 checkpoint 记录中的末步编号，避免混用 rollout 轮数和优化器更新数。
