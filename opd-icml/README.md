@@ -8,7 +8,7 @@ Qwen3-1.7B / 4B on-policy distillation 实验代码。所有命令以此目录�
 | `runtime/verl/workers/actor/` | Top-16 OPD、token 诊断、表征谱、梯度一致性和表征稳定性停止判据 |
 | `runtime/verl/trainer/ppo/` | rollout、优化更新、复用、验证集与 checkpoint 管理 |
 | `scripts/` | 安装 GPU 环境、准备 DAPO14k、Mean@8 数学评测 |
-| `analysis/`、`data/` | 结果提取、作图、参数层附录，以及绘图输入和五项 benchmark 题目 |
+| `analysis/`、`data/` | 结果提取、作图、参数层附录，以及绘图输入和六项 benchmark 题目 |
 | `paper/main.tex` | 论文入口及当前正文和附录引用的文件 |
 
 ## 训练配置
@@ -68,7 +68,15 @@ python scripts/evaluate.py --model_path "$RUN/merged" --input_file data/benchmar
   --compact_output --scoring_mode lenient_answers_v1
 ```
 
-`benchmarks.jsonl` 包含 MATH500、HMMT25、HMMT26、AIME26、Minerva。以上命令明确使用 lenient 计分，复核历史报告时按该次运行原有的计分协议比较。新环境下的耗时应以本次实测为准。
+`benchmarks.jsonl` 包含 MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23，共 905 道题。AMC23 使用 `math-ai/amc23` 的 40 道 test 题，固定 revision 为 `80815d37005feb82cd7f8fbc6901d5d3eff43057`；记录中的 `benchmark` 为 `amc23`，答案统一为整数字符串。现有评测命令会自动纳入 AMC23，并在 `.summary.json` 中按 benchmark 分别输出 Mean@8。
+
+题目已随仓库提供，无需重新下载。从尚未包含 AMC23 的五项题库补齐时，可执行以下命令；重复执行不会重复添加，脚本会校验固定数据源的 SHA-256：
+
+```bash
+python scripts/prepare_amc23.py
+```
+
+以上评测命令明确使用 lenient 计分。归档的 `data/rq4.csv`、现有 RQ4 图和论文中的 Avg. 仍为原五项 benchmark 的实测平均分；AMC23 需要运行评测后才能纳入新的六项平均分。新增题目会改变评测缓存的数据集校验值，评测六项时请使用新的 `--output_file` 路径。复核历史报告时按该次运行原有的题集和计分协议比较。新环境下的耗时应以本次实测为准。
 
 ## 数据分析与绘图
 
