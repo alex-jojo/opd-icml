@@ -1,0 +1,85 @@
+"""Generate four samples per task, then run official code judges for pass@4."""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from code_benchmarks import BENCHMARKS, PROTOCOL, ROOT, digest, read_jsonl, read_manifest, save_json, validate_generations
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--model-path', type=Path, help='Local merged student or prepared Base/IT checkpoint')
+    parser.add_argument('--benchmark', choices=['all', *BENCHMARKS], default='all')
+    parser.add_argument('--data-dir', type=Path, default=ROOT / 'data/code_benchmarks')
+    parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--samples', type=int, default=4, help='>=4; default four independent samples per task')
+    parser.add_argument('--temperature', type=float, default=1.)
+    parser.add_argument('--top-p', type=float, default=1.)
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--max-prompt-tokens', type=int, default=4096)
+    parser.add_argument('--max-tokens', type=int, default=8192)
+    parser.add_argument('--max-num-seqs', type=int, default=64)
+    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--timeout', type=int, default=6, help='Official LCB per-test timeout in seconds')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--grade-only', action='store_true', help='Use saved generations, no GPU/model loading')
+    modes.add_argument('--generate-only', action='store_true')
+    parser.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args()
+    if args.samples < 4 or args.temperature <= 0 or not 0 < args.top_p <= 1:
+        parser.error('pass@4 requires >=4 sampled responses and positive temperature/top-p')
+    if min(args.workers, args.batch_size, args.max_num_seqs, args.max_tokens, args.max_prompt_tokens, args.timeout) < 1:
+        parser.error('Worker, batch, length and timeout settings must be positive')
+    if not args.grade_only and args.model_path is None:
+        parser.error('--model-path is required except for --grade-only')
+    selected = BENCHMARKS if args.benchmark == 'all' else [args.benchmark]
+    sampling = {key: getattr(args, key) for key in ('samples', 'temperature', 'top_p', 'seed', 'max_prompt_tokens', 'max_tokens')}
+    if args.dry_run:
+        print(json.dumps(dict(benchmarks=list(selected), metric='pass@4', sampling=sampling,
+                              data_dir=str(args.data_dir), output_dir=str(args.output_dir),
+                              generate=not args.grade_only, grade=not args.generate_only), indent=2))
+        return
+    manifests = {b: read_manifest(args.data_dir, b) for b in selected}
+    marker = args.output_dir / 'run.json'
+    identity = dict(protocol=PROTOCOL, benchmarks=list(selected), sampling=sampling,
+                    data=manifests, metric='pass@4')
+    if args.grade_only:
+        previous = json.loads(marker.read_text(encoding='utf-8'))
+        identity['model'] = previous['model']
+    else:
+        model = args.model_path.resolve()
+        if not (model / 'config.json').is_file():
+            parser.error('Expected a local model directory containing config.json')
+        identity['model'] = dict(path=str(model), sha256={p.name: digest(p) for p in sorted(model.iterdir()) if p.is_file()})
+    if marker.exists() and json.loads(marker.read_text(encoding='utf-8')) != identity:
+        raise ValueError('Code evaluation model/data/sampling identity changed; use another --output-dir')
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    save_json(marker, identity)
+    worker = ROOT / 'scripts/code_benchmark_worker.py'
+    for benchmark in selected:
+        base = [sys.executable, str(worker), '--benchmark', benchmark, '--data-dir', str(args.data_dir.resolve()),
+                '--output-dir', str(args.output_dir.resolve())]
+        for key in ('samples', 'temperature', 'top_p', 'seed', 'max_prompt_tokens', 'max_tokens', 'max_num_seqs', 'batch_size', 'workers', 'timeout'):
+            base += ['--' + key.replace('_', '-'), str(getattr(args, key))]
+        if not args.grade_only:
+            subprocess.run(base + ['--mode', 'generate', '--model-path', str(args.model_path.resolve())], check=True)
+        questions = list(read_jsonl(args.data_dir / benchmark / 'questions.jsonl'))
+        generations = list(read_jsonl(args.output_dir / benchmark / 'generations.jsonl'))
+        validate_generations(questions, generations, args.samples)
+        if not args.generate_only:
+            env = os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = ''
+            subprocess.run(base + ['--mode', 'grade'], env=env, check=True)
+    if not args.generate_only:
+        summaries = {b: json.loads((args.output_dir / b / 'summary.json').read_text(encoding='utf-8')) for b in selected}
+        save_json(args.output_dir / 'summary.json', dict(metric='pass@4', benchmarks=summaries))
+        for name, summary in summaries.items():
+            print(f'{name}: pass@4={100 * summary["pass@4"]:.2f}% ({summary["problems"]} tasks)', flush=True)
+
+
+if __name__ == '__main__':
+    main()

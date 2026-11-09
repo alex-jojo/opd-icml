@@ -17,3 +17,7 @@ paper/main.pdf
 # Prepared full-size model checkpoints and text-only exports
 models/
 .pytest_cache/
+
+# Downloaded code evaluation datasets and private tests
+data/code_benchmarks/
+data/code_benchmarks_sources/

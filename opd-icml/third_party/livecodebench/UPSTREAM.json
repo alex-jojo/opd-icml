@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/LiveCodeBench/LiveCodeBench",
+  "revision": "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
+  "files": {
+    "lcb_runner/evaluation/compute_code_execution_metrics.py": "e63b6d29f12cc5206fd146b616312f305b8903b6459014d7bc6d51dfd6335980",
+    "lcb_runner/evaluation/compute_code_generation_metrics.py": "073f388cc78bf0eb0ad35eaeb8bb509c0a3664963e5305d2be13d6b6eb6f3d21",
+    "lcb_runner/evaluation/compute_test_output_prediction_metrics.py": "ec415d3207d8fbc04e8280ef091437d3a22e895b362e5557929f003e543a4653",
+    "lcb_runner/evaluation/pass_k_utils.py": "6af3ee55d40f96fa06fa511bd5e43d94b19604750e82454b4b3c1f45c5199010",
+    "lcb_runner/evaluation/testing_util.py": "b7cb6a8a69807bb868150a61742e25d7bb5328bbe01d514471b6ec43c9fa9ed2",
+    "lcb_runner/evaluation/__init__.py": "828043d1f71e4120ac51be23f90001fd850bf6ef186a420979d76828ec909057",
+    "lcb_runner/evaluation/utils_execute.py": "fb86e4c0834ccedd3f057006410909aeb79d9970db54838a9bed79d7039624fa"
+  }
+}
