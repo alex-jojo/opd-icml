@@ -113,6 +113,31 @@ python tests/check_distributed_cpu.py
 
 ## 启动实验
 
+数学训练的专用脚本为 `scripts/train_math.sh`。先激活现有训练环境，可直接编辑脚本顶部的模型、实验、硬件、batch、学习率、生成并发和梯度诊断参数，也可用环境变量覆盖：
+
+```bash
+# 默认 Qwen 1.7B paired-full、单卡 A100；先查看配置，不加载模型。
+bash scripts/train_math.sh --dry-run
+bash scripts/train_math.sh
+
+# 四卡模型配置示例：先检查，正式运行时去掉 --dry-run。
+SCALE=4b HARDWARE=l40x4 bash scripts/train_math.sh --dry-run
+SCALE=8b HARDWARE=l40x4 bash scripts/train_math.sh --dry-run
+SCALE=gemma3-12b HARDWARE=l40x4 bash scripts/train_math.sh --dry-run
+```
+
+`ROLLOUT_BATCH_SIZE` 与 `MINI_BATCH_SIZE` 默认 `auto`，继承所选实验的 batch：paired-full 为 128，original-full 为 160，早停/reuse 按对应 YAML。当前 Top16 OPD 要求一次 actor 调用覆盖整批 rollout，mini-batch 与 rollout batch 相同；带 32 道 probe 的原协议仍保留。`MICRO_BATCH_SIZE=1` 是每张卡一次前向/反向的题数，`ROLLOUT_MAX_NUM_SEQS=16` 是生成并发。可通过 `STUDENT_PATH`、`TEACHER_PATH`、`DATA_PATH` 和 `OUTPUT_DIR` 指定本地路径，路径带空格也支持。
+
+脚本中 paired-full 默认 `PARAMETER_TOKEN_GRADIENTS=sampled`、`PARAMETER_TOKEN_SAMPLES=256`（64 high-KL + 192 remaining）；全量 hidden 统计保留。其他实验默认继承原 YAML 的诊断开关，避免对未开启 gradient-study 的协议强行添加参数诊断。设 `PARAMETER_TOKEN_GRADIENTS=inherit` 可严格继承 YAML，或明确选 `exact-all` / `off`。`HARDWARE=recorded` 继承 YAML GPU 数；未设置 `CUDA_VISIBLE_DEVICES` 时自动匹配所选卡数，用户显式设置时保留。
+
+```bash
+SCALE=4b HARDWARE=a100x1 MICRO_BATCH_SIZE=2 \
+  OUTPUT_DIR=runs/math/4b/paired-full-a100-micro2 \
+  bash scripts/train_math.sh --dry-run
+```
+
+硬件和 micro-batch 的可启动配置不代表各模型都已完成显存验证；增加 batch/并发后需实测。改变全局 batch 会改变总训练题数，须为该实验另选输出目录。脚本不安装依赖，也不准备数据；训练数据仍使用原 DAPO 数学准备流程。旧 Python 命令继续可用：
+
 只查看配置、预算、模型 revision 和目标路径：
 
 ```bash

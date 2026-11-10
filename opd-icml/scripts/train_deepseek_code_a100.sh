@@ -11,9 +11,9 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 # Edit these values or override them with environment variables.
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-128}"   # Questions generated per round.
 MINI_BATCH_SIZE="${MINI_BATCH_SIZE:-$ROLLOUT_BATCH_SIZE}" # One OPD update uses the whole round.
-MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"         # Questions per GPU forward/backward.
+MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-4}"         # Questions per GPU forward/backward.
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
-ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-16}" # Concurrent generation sequences.
+ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-32}" # Concurrent generation sequences.
 ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.30}"
 PARAMETER_TOKEN_SAMPLES="${PARAMETER_TOKEN_SAMPLES:-256}" # 64 high-KL + 192 remaining.
 CODE_WORKERS="${CODE_WORKERS:-8}"                # CPU code judges, not GPU count.
