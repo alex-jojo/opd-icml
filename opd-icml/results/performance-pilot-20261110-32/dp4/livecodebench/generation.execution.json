@@ -1,0 +1,22 @@
+{
+  "mode": "data",
+  "devices": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "tensor_parallel_per_worker": 1,
+  "workers": 4,
+  "reused_questions": 0,
+  "question_partition": "global index modulo workers, excluding saved prefix",
+  "note": "Sampling protocol is unchanged; stochastic responses are not guaranteed bitwise identical across batch/parallel layouts",
+  "status": "complete",
+  "logs": {
+    "0": "/workspace/opd-icml/opd-icml/results/performance-pilot-20261110-32/dp4/livecodebench/generation_shards/workers_4/shard_000/worker.log",
+    "1": "/workspace/opd-icml/opd-icml/results/performance-pilot-20261110-32/dp4/livecodebench/generation_shards/workers_4/shard_001/worker.log",
+    "2": "/workspace/opd-icml/opd-icml/results/performance-pilot-20261110-32/dp4/livecodebench/generation_shards/workers_4/shard_002/worker.log",
+    "3": "/workspace/opd-icml/opd-icml/results/performance-pilot-20261110-32/dp4/livecodebench/generation_shards/workers_4/shard_003/worker.log"
+  },
+  "seconds": 101.84214609698392
+}

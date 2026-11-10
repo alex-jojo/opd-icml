@@ -8,6 +8,8 @@ import multiprocessing as mp
 import os
 from pathlib import Path
 import sys
+import time
+from tqdm import tqdm
 
 from code_benchmarks import (ROOT, digest, evalplus_grades, extract_solution, prompt_for,
     read_jsonl, read_manifest, save_json, save_jsonl, summarize_pass4, validate_generations)
@@ -35,9 +37,15 @@ def generate(args, questions, directory):
     for question, ids in zip(questions, tokenized):
         if len(ids) > args.max_prompt_tokens:
             raise ValueError(f'Prompt too long; refusing to truncate/drop {question["task_id"]}')
+    model_started = time.perf_counter()
     model = LLM(model=args.model_path, tokenizer=args.model_path,
                 tensor_parallel_size=torch.cuda.device_count(), max_num_seqs=args.max_num_seqs,
                 max_model_len=args.max_prompt_tokens + args.max_tokens, gpu_memory_utilization=.9)
+    model_seconds = time.perf_counter()-model_started
+    generation_seconds = 0.
+    generated_tokens = 0
+    new_questions = 0
+    generation_started_unix = None
     sampling = SamplingParams(n=args.samples, temperature=args.temperature, top_p=args.top_p,
                               seed=args.seed, max_tokens=args.max_tokens,
                               **({'stop': ['```']} if style == 'completion' and args.benchmark == 'livecodebench' else {}))
@@ -45,12 +53,20 @@ def generate(args, questions, directory):
     if journal.exists():
         rows = list(read_jsonl(journal))
         validate_generations(questions[:len(rows)], rows, args.samples)
-    with journal.open('a', encoding='utf-8') as stream:
+    with journal.open('a', encoding='utf-8') as stream, tqdm(
+            total=len(questions), initial=len(rows), desc=f'{args.benchmark} | generate',
+            unit='question', dynamic_ncols=True) as progress:
+        progress.set_postfix(samples=args.samples, refresh=False)
         for start in range(len(rows), len(questions), args.batch_size):
             end = min(start + args.batch_size, len(questions))
             # Explicit token IDs preserve the Base tokenizer's BOS exactly once.
             inputs = [{'prompt_token_ids': ids} for ids in tokenized[start:end]] if style == 'completion' else prompts[start:end]
-            generated = model.generate(inputs, sampling_params=sampling)
+            batch_started = time.perf_counter()
+            if generation_started_unix is None:
+                generation_started_unix = time.time()
+            generated = model.generate(inputs, sampling_params=sampling, use_tqdm=False)
+            generation_finished_unix = time.time()
+            generation_seconds += time.perf_counter()-batch_started
             if len(generated) != end - start:
                 raise ValueError('Incomplete vLLM generation batch')
             for index, (question, answer) in enumerate(zip(questions[start:end], generated)):
@@ -64,10 +80,20 @@ def generate(args, questions, directory):
                 if style != 'chat':
                     row.update(prompt_style=style, prompt_tokens=len(tokenized[start + index]))
                 rows.append(row)
+                generated_tokens += sum(row['response_lengths'])
+                new_questions += 1
                 stream.write(json.dumps(row, ensure_ascii=False) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
-            print(f'[GENERATE] {args.benchmark}: {end}/{len(questions)} tasks x {args.samples}', flush=True)
+            progress.update(end-start)
+            save_json(directory / 'generation.performance.json', dict(
+                scope='this worker invocation; completed batches only; model warmup excluded from generation throughput',
+                model_initialization_seconds=model_seconds, generation_seconds=generation_seconds,
+                generation_started_unix=generation_started_unix, generation_finished_unix=generation_finished_unix,
+                new_questions=new_questions, output_tokens=generated_tokens,
+                output_tokens_per_second=generated_tokens/generation_seconds if generation_seconds else None,
+                tensor_parallel_size=torch.cuda.device_count(), visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
+                batch_size=args.batch_size, max_num_seqs=args.max_num_seqs))
     validate_generations(questions, rows, args.samples)
     journal.replace(output)
 
@@ -90,6 +116,8 @@ def grade_evalplus(args, questions, generations, directory, data_directory):
         raw = json.loads(official_result.read_text(encoding='utf-8'))
         evalplus_grades(raw, [q['task_id'] for q in questions], args.samples)
     else:
+        print(f'[JUDGE] {args.benchmark}: {len(questions)} questions x {args.samples} responses; '
+              'official EvalPlus progress below counts responses', flush=True)
         evaluate(dataset=dataset, samples=str(sample_path), parallel=args.workers, i_just_wanna_run=True)
     result_path = directory / 'evalplus.results.json'
     official_result.replace(result_path)
@@ -121,7 +149,9 @@ def grade_lcb(args, questions, generations, directory, data_directory):
     if not set(completed).issubset(question_map):
         raise ValueError('LCB grading journal task mismatch')
     pending, seen = {}, set()
-    with journal.open('a', encoding='utf-8') as stream, ProcessPoolExecutor(
+    with journal.open('a', encoding='utf-8') as stream, tqdm(
+            total=len(questions), initial=len(completed), desc=f'{args.benchmark} | judge',
+            unit='question', dynamic_ncols=True) as progress, ProcessPoolExecutor(
             max_workers=args.workers, mp_context=mp.get_context('spawn')) as pool:
         def commit(future):
             result = future.result()
@@ -130,6 +160,7 @@ def grade_lcb(args, questions, generations, directory, data_directory):
             completed[result['task_id']] = result
             stream.write(json.dumps(result, ensure_ascii=False) + '\n')
             stream.flush()
+            progress.update(1)
         # Bound the number of in-flight test sets; LCB test payloads can be large.
         for task in read_jsonl(data_directory / 'tests.jsonl.gz'):
             task_id = task['task_id']
@@ -205,6 +236,8 @@ def main():
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--timeout', type=int, default=6)
+    parser.add_argument('--shard-count', type=int, default=0)
+    parser.add_argument('--shard-index', type=int, default=0)
     args = parser.parse_args()
     if args.samples < 4 or min(args.workers, args.batch_size, args.max_num_seqs, args.timeout) < 1:
         parser.error('Invalid pass@4 sample/worker/batch/timeout settings')
@@ -212,6 +245,13 @@ def main():
     directory = args.output_dir / args.benchmark
     directory.mkdir(parents=True, exist_ok=True)
     if args.mode == 'generate':
+        if args.shard_count > 0:
+            from parallel_code_generation import shard_questions, shard_directory
+            questions = shard_questions(directory, questions, args.samples, args.shard_count, args.shard_index)
+            directory = shard_directory(directory, args.shard_count, args.shard_index)
+            directory.mkdir(parents=True, exist_ok=True)
+        elif (directory / 'generation.plan.json').exists() and not (directory / 'generations.jsonl').exists():
+            raise ValueError('Data-parallel shards are in progress; resume with --parallel-mode data')
         generate(args, questions, directory)
     else:
         grade(args, questions, directory)

@@ -132,6 +132,8 @@ python train.py --scale 1.7b --experiment reuse
 
 ## Code 实验：Eurus-2-RL-Data Code
 
+DeepSeek-Coder 1.3B Base → Instruct 的四卡 OPD 已接入为 `--scale deepseek-coder-1.3b --task code`，安装训练依赖、准备模型/Eurus、全量梯度记录及启动命令见 [DEEPSEEK_CODER_OPD.md](DEEPSEEK_CODER_OPD.md)。学生运行目录复用原 Base 权重，共用 Instruct 模板与 EOT，保留原始 Base 测评目录。
+
 直接评测 DeepSeek-Coder 1.3B Base 的独立环境、模型下载、三个 benchmark 准备及完整命令见 [DEEPSEEK_CODER_EVAL.md](DEEPSEEK_CODER_EVAL.md)。Base 模型使用 `scripts/evaluate_code.py --prompt-style completion`；默认 chat 评测保持原协议。
 
 通过 `--task code` 切换到 [PRIME-RL/Eurus-2-RL-Data](https://huggingface.co/datasets/PRIME-RL/Eurus-2-RL-Data) 的 code 子集。固定 revision 为 `9776b13264b5aaa0b16495fcf086a0a8d86fd655`，仅提取 `ability == "code"` 的题：训练 25,276 题、官方 validation 1,024 题，来源为 APPS、CodeContests、TACO、Codeforces。原始两个 parquet 混合了 math/code；准备脚本按 parquet row-group 统计跳过纯 math 分块，再精确按 ability 过滤，不将 math 题混入 code 训练。

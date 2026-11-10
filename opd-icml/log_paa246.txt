@@ -1,0 +1,1 @@
+GoodCases, bad case, total number cases, CLS, diff, same case 

@@ -1,0 +1,14 @@
+{
+  "scope": "this worker invocation; completed batches only; model warmup excluded from generation throughput",
+  "model_initialization_seconds": 32.982650961959735,
+  "generation_seconds": 4.174185466952622,
+  "generation_started_unix": 1794288890.1253424,
+  "generation_finished_unix": 1794288894.2995245,
+  "new_questions": 8,
+  "output_tokens": 5014,
+  "output_tokens_per_second": 1201.1924337565401,
+  "tensor_parallel_size": 1,
+  "visible_devices": "3",
+  "batch_size": 8,
+  "max_num_seqs": 16
+}

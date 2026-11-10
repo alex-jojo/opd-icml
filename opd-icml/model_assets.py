@@ -130,13 +130,18 @@ def prepare_models(scale, student=None, teacher=None, cache_dir=None, model_dir=
             from huggingface_hub.errors import GatedRepoError
             spec = models[role]
             try:
-                path = Path(snapshot_download(spec['repo'], revision=spec['revision'], cache_dir=cache_dir))
+                options = {'allow_patterns':spec['allow_patterns']} if 'allow_patterns' in spec else {}
+                path = Path(snapshot_download(spec['repo'], revision=spec['revision'], cache_dir=cache_dir, **options))
             except GatedRepoError as error:
                 raise ValueError(f"Access required for {spec['repo']}: accept its Hugging Face access terms and run huggingface-cli login, or pass a local --{role} directory") from error
         if models.get('text_only_export', False):
             target = Path(model_dir or ROOT / 'models') / scale / role
             path = export_gemma_text(path, target)
         paths[role] = str(path)
+    if models.get('preparation') == 'deepseek-coder-shared-instruct-eot-v1':
+        from deepseek_assets import prepare_deepseek_student
+        target = Path(model_dir or ROOT / 'models') / scale / 'student-opd'
+        paths['student'] = str(prepare_deepseek_student(paths['student'],paths['teacher'],target))
     if models.get('validate_tokenizers', False):
         from transformers import AutoTokenizer
         student_tokenizer, teacher_tokenizer = [AutoTokenizer.from_pretrained(paths[r], local_files_only=True) for r in ('student', 'teacher')]

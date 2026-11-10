@@ -1,0 +1,68 @@
+{
+  "identity": {
+    "generations_sha256": "85cb6320ddb472d979f904ff2d71b8d7d1fdf63f7bcc16ed691e21b6ab869814",
+    "benchmark_manifest": {
+      "benchmark": "livecodebench",
+      "protocol": "official-code-pass4-v1",
+      "source": {
+        "repo": "livecodebench/code_generation_lite",
+        "revision": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
+        "default_release": "release_v6",
+        "files": [
+          {
+            "file": "test.jsonl",
+            "bytes": 1252609773,
+            "sha256": "2bd02b38beb48e8c46b5b9987095d999ff38cd8efc255ea5d58974317c48f63f"
+          },
+          {
+            "file": "test2.jsonl",
+            "bytes": 713377060,
+            "sha256": "095df7c5daf15f882c51a9deb84085cff1e073495a5dbcf95015a564d485f3a3"
+          },
+          {
+            "file": "test3.jsonl",
+            "bytes": 623360766,
+            "sha256": "28ed26cc83363ce3f1fe2d5fad9f8393077beb1907b167a31bd3b32f80801b79"
+          },
+          {
+            "file": "test4.jsonl",
+            "bytes": 1204644685,
+            "sha256": "d711138ddaebfcf5f8ec6a4283ee677298c0f5c5d374a235af92aaf0584510da"
+          },
+          {
+            "file": "test5.jsonl",
+            "bytes": 557699297,
+            "sha256": "7f77571c2a6df0c2a72a3277650309f67e01e0008e18117e624633df53f81214"
+          },
+          {
+            "file": "test6.jsonl",
+            "bytes": 134303240,
+            "sha256": "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
+          }
+        ]
+      },
+      "release": "release_v6",
+      "start_date": null,
+      "end_date": null,
+      "rows": 1055,
+      "files": {
+        "questions.jsonl": "4a2ed48113c5cfa3b030e571b92e33d034dbce68b9a9a8e6aef9a1927bc9a8b3",
+        "tests.jsonl.gz": "4981c807402a168ef62610d36ee1f491147d94a630587d1287f3209b65643dfe"
+      },
+      "test_protocol": "official public+private tests",
+      "default_samples": 4,
+      "metric": "pass@4",
+      "first_contest_date": "2023-05-07T00:00:00",
+      "last_contest_date": "2025-04-06T00:00:00"
+    },
+    "samples": 4,
+    "lcb_timeout": 6,
+    "evalplus_version": "0.3.1",
+    "lcb_commit": "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24"
+  },
+  "files": {
+    "livecodebench.results.jsonl": "f26e2986ad226827971e23104b768244251f3bc9986d59109cc875e86fe8a627",
+    "summary.json": "c32ca6cff96f97586c8ce10f327c513dbc250a269d13504f8610c8669ddcb593",
+    "grades.jsonl": "9365674eafaf64e7d76b763299af084d2ff6eac87641b713c46faf5f6c26be70"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "scope": "32-task throughput pilot; not benchmark scores or full-run speedup",
+  "questions": 32,
+  "samples_per_question": 4,
+  "model": "/workspace/opd-icml/opd-icml/models/deepseek-coder-1.3b-base",
+  "tp4": {
+    "output_tokens": 20507,
+    "generation_seconds": 19.585315845906734,
+    "output_tokens_per_second": 1047.059958662137,
+    "wall_seconds": 81.45343375299126
+  },
+  "dp4": {
+    "output_tokens": 28984,
+    "generation_makespan_seconds": 62.09338998794556,
+    "output_tokens_per_second": 466.78076371135126,
+    "wall_seconds": 101.84214609698392
+  },
+  "note": "Sampling can produce different output lengths after changing parallel layout; no scoring protocol or normal run was changed",
+  "generation_throughput_ratio_dp_over_tp": 0.4458013696825657,
+  "original_tp4": {
+    "scope": "this worker invocation; completed batches only; model warmup excluded from generation throughput",
+    "model_initialization_seconds": 63.375983368139714,
+    "generation_seconds": 67.58124798373319,
+    "generation_started_unix": 1794288698.9162076,
+    "generation_finished_unix": 1794288766.5409713,
+    "new_questions": 32,
+    "output_tokens": 25342,
+    "output_tokens_per_second": 374.9856765903438,
+    "tensor_parallel_size": 4,
+    "visible_devices": "0,1,2,3",
+    "batch_size": 2,
+    "max_num_seqs": 8,
+    "wall_seconds": 141.8504869020544
+  },
+  "larger_batch_throughput_ratio": 2.792266542505852,
+  "dp4_over_original_throughput_ratio": 1.2447962491679108
+}

@@ -1,0 +1,36 @@
+{
+  "benchmark": "mbppplus",
+  "metric": "pass@4",
+  "pass@4": 0.37037037037037035,
+  "problems": 378,
+  "samples": 1512,
+  "samples_per_problem": [
+    4
+  ],
+  "data": {
+    "benchmark": "mbppplus",
+    "protocol": "official-code-pass4-v1",
+    "source": {
+      "repo": "evalplus/mbppplus",
+      "revision": "b2d74c91837c3f2a20c1299ae98133cbe7cfa077",
+      "file": "data/test-00000-of-00001-d5781c9c51e02795.parquet",
+      "file_sha256": "dc20030b3788fccf617444edcb34138ef13d7e4fafd17bfcb8c1279dbb12399b",
+      "rows": 378,
+      "official_release": "v0.2.0",
+      "official_url": "https://github.com/evalplus/mbppplus_release/releases/download/v0.2.0/MbppPlus.jsonl.gz",
+      "official_sha256": "af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63"
+    },
+    "release": "v0.2.0",
+    "start_date": null,
+    "end_date": null,
+    "rows": 378,
+    "files": {
+      "questions.jsonl": "9b77775fe8f7f1f9c8cc38caf937bf23c80f4abdf795eaf19e89f624c775ea97",
+      "official.jsonl": "b54e762755248ca411b523c917fa9f93c07b5ff2966bf60b3917b853926a3dad"
+    },
+    "test_protocol": "official EvalPlus base+plus tests",
+    "default_samples": 4,
+    "metric": "pass@4"
+  },
+  "grading": "official EvalPlus base AND plus"
+}

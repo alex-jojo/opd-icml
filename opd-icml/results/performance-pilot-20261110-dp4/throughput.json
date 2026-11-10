@@ -1,0 +1,20 @@
+{
+  "scope": "8-task throughput pilot; not benchmark scores or full-run speedup",
+  "questions": 8,
+  "samples_per_question": 4,
+  "model": "/workspace/opd-icml/opd-icml/models/deepseek-coder-1.3b-base",
+  "tp4": {
+    "output_tokens": 7670,
+    "generation_seconds": 6.22737374692224,
+    "output_tokens_per_second": 1231.658851982467,
+    "wall_seconds": 82.11870831483975
+  },
+  "dp4": {
+    "output_tokens": 6482,
+    "generation_makespan_seconds": 8.24726939201355,
+    "output_tokens_per_second": 785.9571079704281,
+    "wall_seconds": 64.7239552740939
+  },
+  "note": "Sampling can produce different output lengths after changing parallel layout; no scoring protocol or normal run was changed",
+  "generation_throughput_ratio_dp_over_tp": 0.6381288996586665
+}

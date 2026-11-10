@@ -1,0 +1,40 @@
+{
+  "identity": {
+    "generations_sha256": "4ba2bc86b59b3dfaa7df68e4f126bfb99bbb886f13e94dba2e23d66176fdf3d2",
+    "benchmark_manifest": {
+      "benchmark": "humanevalplus",
+      "protocol": "official-code-pass4-v1",
+      "source": {
+        "repo": "evalplus/humanevalplus",
+        "revision": "d32357cf319e50e9c8d8dab5ea876c72b0fd321b",
+        "file": "data/test-00000-of-00001-5973903632b82d40.parquet",
+        "file_sha256": "4436f5c03d77c17e0cbc57543b90665b5c1266f55a43992a5ed7922cd34a7558",
+        "rows": 164,
+        "official_release": "v0.1.10",
+        "official_url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus.jsonl.gz",
+        "official_sha256": "272720b90ac375502c8ed23cd791c2a93dfb22a911641a494da74a426c09f101"
+      },
+      "release": "v0.1.10",
+      "start_date": null,
+      "end_date": null,
+      "rows": 164,
+      "files": {
+        "questions.jsonl": "bf5625836a59033f61a03fb8f9ad8f59de5599e27308000fbeca5da14f76c4ea",
+        "official.jsonl": "42526ec0e7d5f3ee0b06d6ced98f8c8bae3d76519151bfb3d36f79010645bd7f"
+      },
+      "test_protocol": "official EvalPlus base+plus tests",
+      "default_samples": 4,
+      "metric": "pass@4"
+    },
+    "samples": 4,
+    "lcb_timeout": 6,
+    "evalplus_version": "0.3.1",
+    "lcb_commit": "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24"
+  },
+  "files": {
+    "evalplus.results.json": "b4396471aaf39522afea6f74e7a85f945d4304f0161f49bc7d513007ded56c2f",
+    "evalplus.samples.jsonl": "a57b5e29f77539d4b9d7650c538dbdabf0d8a6c9ae535911ccc2c0133e566e32",
+    "summary.json": "c3b38125a41d71fcf6c9a02b7c05b5035a01abfda8ddbf4a59845895f674a95e",
+    "grades.jsonl": "40ece080a22da8cd5def6b0d2dbc32983bc635a279ad741ca650f8a01a86a83c"
+  }
+}

@@ -67,7 +67,8 @@ def test_base_generation_never_calls_chat_and_preserves_bos(tmp_path, monkeypatc
     class Model:
         def __init__(self, **kwargs):
             assert kwargs['tensor_parallel_size'] == 1
-        def generate(self, prompts, sampling_params):
+        def generate(self, prompts, sampling_params, use_tqdm=True):
+            assert use_tqdm is False
             calls.append(prompts)
             assert prompts == [{'prompt_token_ids': [32013, 1, 2, 3]}]
             return [types.SimpleNamespace(outputs=[types.SimpleNamespace(text='    return a+b\n',

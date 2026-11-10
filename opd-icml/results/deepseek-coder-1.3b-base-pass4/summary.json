@@ -1,0 +1,142 @@
+{
+  "metric": "pass@4",
+  "benchmarks": {
+    "livecodebench": {
+      "benchmark": "livecodebench",
+      "metric": "pass@4",
+      "pass@4": 0.03601895734597156,
+      "problems": 1055,
+      "samples": 4220,
+      "samples_per_problem": [
+        4
+      ],
+      "data": {
+        "benchmark": "livecodebench",
+        "protocol": "official-code-pass4-v1",
+        "source": {
+          "repo": "livecodebench/code_generation_lite",
+          "revision": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
+          "default_release": "release_v6",
+          "files": [
+            {
+              "file": "test.jsonl",
+              "bytes": 1252609773,
+              "sha256": "2bd02b38beb48e8c46b5b9987095d999ff38cd8efc255ea5d58974317c48f63f"
+            },
+            {
+              "file": "test2.jsonl",
+              "bytes": 713377060,
+              "sha256": "095df7c5daf15f882c51a9deb84085cff1e073495a5dbcf95015a564d485f3a3"
+            },
+            {
+              "file": "test3.jsonl",
+              "bytes": 623360766,
+              "sha256": "28ed26cc83363ce3f1fe2d5fad9f8393077beb1907b167a31bd3b32f80801b79"
+            },
+            {
+              "file": "test4.jsonl",
+              "bytes": 1204644685,
+              "sha256": "d711138ddaebfcf5f8ec6a4283ee677298c0f5c5d374a235af92aaf0584510da"
+            },
+            {
+              "file": "test5.jsonl",
+              "bytes": 557699297,
+              "sha256": "7f77571c2a6df0c2a72a3277650309f67e01e0008e18117e624633df53f81214"
+            },
+            {
+              "file": "test6.jsonl",
+              "bytes": 134303240,
+              "sha256": "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
+            }
+          ]
+        },
+        "release": "release_v6",
+        "start_date": null,
+        "end_date": null,
+        "rows": 1055,
+        "files": {
+          "questions.jsonl": "4a2ed48113c5cfa3b030e571b92e33d034dbce68b9a9a8e6aef9a1927bc9a8b3",
+          "tests.jsonl.gz": "4981c807402a168ef62610d36ee1f491147d94a630587d1287f3209b65643dfe"
+        },
+        "test_protocol": "official public+private tests",
+        "default_samples": 4,
+        "metric": "pass@4",
+        "first_contest_date": "2023-05-07T00:00:00",
+        "last_contest_date": "2025-04-06T00:00:00"
+      },
+      "grading": "official LCB public+private"
+    },
+    "mbppplus": {
+      "benchmark": "mbppplus",
+      "metric": "pass@4",
+      "pass@4": 0.37037037037037035,
+      "problems": 378,
+      "samples": 1512,
+      "samples_per_problem": [
+        4
+      ],
+      "data": {
+        "benchmark": "mbppplus",
+        "protocol": "official-code-pass4-v1",
+        "source": {
+          "repo": "evalplus/mbppplus",
+          "revision": "b2d74c91837c3f2a20c1299ae98133cbe7cfa077",
+          "file": "data/test-00000-of-00001-d5781c9c51e02795.parquet",
+          "file_sha256": "dc20030b3788fccf617444edcb34138ef13d7e4fafd17bfcb8c1279dbb12399b",
+          "rows": 378,
+          "official_release": "v0.2.0",
+          "official_url": "https://github.com/evalplus/mbppplus_release/releases/download/v0.2.0/MbppPlus.jsonl.gz",
+          "official_sha256": "af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63"
+        },
+        "release": "v0.2.0",
+        "start_date": null,
+        "end_date": null,
+        "rows": 378,
+        "files": {
+          "questions.jsonl": "9b77775fe8f7f1f9c8cc38caf937bf23c80f4abdf795eaf19e89f624c775ea97",
+          "official.jsonl": "b54e762755248ca411b523c917fa9f93c07b5ff2966bf60b3917b853926a3dad"
+        },
+        "test_protocol": "official EvalPlus base+plus tests",
+        "default_samples": 4,
+        "metric": "pass@4"
+      },
+      "grading": "official EvalPlus base AND plus"
+    },
+    "humanevalplus": {
+      "benchmark": "humanevalplus",
+      "metric": "pass@4",
+      "pass@4": 0.14634146341463414,
+      "problems": 164,
+      "samples": 656,
+      "samples_per_problem": [
+        4
+      ],
+      "data": {
+        "benchmark": "humanevalplus",
+        "protocol": "official-code-pass4-v1",
+        "source": {
+          "repo": "evalplus/humanevalplus",
+          "revision": "d32357cf319e50e9c8d8dab5ea876c72b0fd321b",
+          "file": "data/test-00000-of-00001-5973903632b82d40.parquet",
+          "file_sha256": "4436f5c03d77c17e0cbc57543b90665b5c1266f55a43992a5ed7922cd34a7558",
+          "rows": 164,
+          "official_release": "v0.1.10",
+          "official_url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus.jsonl.gz",
+          "official_sha256": "272720b90ac375502c8ed23cd791c2a93dfb22a911641a494da74a426c09f101"
+        },
+        "release": "v0.1.10",
+        "start_date": null,
+        "end_date": null,
+        "rows": 164,
+        "files": {
+          "questions.jsonl": "bf5625836a59033f61a03fb8f9ad8f59de5599e27308000fbeca5da14f76c4ea",
+          "official.jsonl": "42526ec0e7d5f3ee0b06d6ced98f8c8bae3d76519151bfb3d36f79010645bd7f"
+        },
+        "test_protocol": "official EvalPlus base+plus tests",
+        "default_samples": 4,
+        "metric": "pass@4"
+      },
+      "grading": "official EvalPlus base AND plus"
+    }
+  }
+}

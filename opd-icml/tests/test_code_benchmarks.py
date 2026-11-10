@@ -205,7 +205,8 @@ def test_generation_worker_outputs_four_responses_and_checks_prompt_limit(tmp_pa
     class LLM:
         def __init__(self, **kwargs):
             pass
-        def generate(self, prompts, sampling_params):
+        def generate(self, prompts, sampling_params, use_tqdm=True):
+            assert use_tqdm is False
             return [types.SimpleNamespace(outputs=[types.SimpleNamespace(text='def add(a,b): return a+b',
                                 token_ids=[1, 2], finish_reason='stop') for _ in range(sampling_params.n)]) for _ in prompts]
     fake_vllm.LLM = LLM

@@ -1,0 +1,40 @@
+{
+  "identity": {
+    "generations_sha256": "0a9b084cd04b4e36602917725f334b48e26f6ca2a407b6654fd8d9c14506a629",
+    "benchmark_manifest": {
+      "benchmark": "mbppplus",
+      "protocol": "official-code-pass4-v1",
+      "source": {
+        "repo": "evalplus/mbppplus",
+        "revision": "b2d74c91837c3f2a20c1299ae98133cbe7cfa077",
+        "file": "data/test-00000-of-00001-d5781c9c51e02795.parquet",
+        "file_sha256": "dc20030b3788fccf617444edcb34138ef13d7e4fafd17bfcb8c1279dbb12399b",
+        "rows": 378,
+        "official_release": "v0.2.0",
+        "official_url": "https://github.com/evalplus/mbppplus_release/releases/download/v0.2.0/MbppPlus.jsonl.gz",
+        "official_sha256": "af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63"
+      },
+      "release": "v0.2.0",
+      "start_date": null,
+      "end_date": null,
+      "rows": 378,
+      "files": {
+        "questions.jsonl": "9b77775fe8f7f1f9c8cc38caf937bf23c80f4abdf795eaf19e89f624c775ea97",
+        "official.jsonl": "b54e762755248ca411b523c917fa9f93c07b5ff2966bf60b3917b853926a3dad"
+      },
+      "test_protocol": "official EvalPlus base+plus tests",
+      "default_samples": 4,
+      "metric": "pass@4"
+    },
+    "samples": 4,
+    "lcb_timeout": 6,
+    "evalplus_version": "0.3.1",
+    "lcb_commit": "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24"
+  },
+  "files": {
+    "evalplus.results.json": "0a71ce4d5bff232693150d0b6ea7ef9b117f41d7502ac7b77244db0cf4be48e9",
+    "evalplus.samples.jsonl": "a8f9f1483dd07e2b3a8cd09a794f740c98f79e72d36223cf50cd3d3db0a32be9",
+    "summary.json": "fe528529fe98ecf1cd30e1de96c47becde722d429f0d1dbcfe66cc5e54de163e",
+    "grades.jsonl": "2e05443ec3246b007c9754590c75ed3312346dc64d877f69f6d5c353cacbfc32"
+  }
+}
