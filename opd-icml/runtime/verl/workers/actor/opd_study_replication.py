@@ -182,7 +182,8 @@ class StudyReplication:
                                  entropy_median=float(np.median(merged['entropy'])))
             atomic_json(self.threshold_file,self.thresholds)
         z=merged.pop('g_u')
-        eos=getattr(getattr(_unwrap_actor_module(self.actor.actor_module),'config',None),'eos_token_id',None)
+        model_config=getattr(_unwrap_actor_module(self.actor.actor_module),'config',None)
+        eos=getattr(model_config,'opd_response_eos_token_ids',getattr(model_config,'eos_token_id',None))
         merged['first']=merged['boundary'].astype(bool)
         merged['eos']=np.isin(merged['token'],[] if eos is None else [eos] if isinstance(eos,int) else eos)
         merged['boundary']=merged['first']|merged['eos']
@@ -195,11 +196,20 @@ class StudyReplication:
             merged['other']=~(merged['boundary']|merged['numeric']|merged['operator']|merged['latex'])
         merged=enriched(merged)
         parameter_metadata=None
-        if self.parameter_measurement is not None:
+        sampled_measurement=self.parameter_measurement if self.parameter_measurement is not None and 'sampling' in self.parameter_measurement else None
+        if self.parameter_measurement is not None and sampled_measurement is None:
             from .opd_parameter_tokens import attach_parameter_energy
             parameter_metadata=attach_parameter_energy(merged,self.parameter_measurement)
             self.parameter_measurement=None
         token_report,token_arrays=dp.primary_call(lambda:training_summary(merged,z,self.thresholds))
+        if sampled_measurement is not None:
+            from .opd_parameter_sampling import add_sampled_report
+            def add_sample():
+                metadata,arrays=add_sampled_report(token_report,merged,sampled_measurement,self.thresholds)
+                return token_report,metadata,arrays
+            token_report,parameter_metadata,paired_arrays=dp.primary_call(add_sample)
+            atomic_npz(self.output/'token_audit'/f'parameter_sample_{self.step:03d}_inner_{inner+1}.npz',paired_arrays)
+            self.parameter_measurement=None
         if parameter_metadata is not None:
             token_report['parameter_gradient_measurement']=parameter_metadata
             self.metrics['timing/parameter_token_gradient_seconds']=parameter_metadata['seconds']
@@ -207,6 +217,8 @@ class StudyReplication:
             self.metrics['token_audit/parameter_gradient_frobenius']=token_report['parameter_gradient_frobenius']
             self.metrics['token_audit/kl_top10_parameter_energy_share']=token_report['groups']['kl_top10']['quantities']['parameter_gradient_energy']['share'] or 0.
             self.metrics['token_audit/parameter_token_extra_backwards']=parameter_metadata['extra_backwards']
+            self.metrics['token_audit/parameter_token_sample_count']=parameter_metadata['token_count']
+            self.metrics['token_audit/parameter_token_coverage_fraction']=parameter_metadata['coverage_fraction']
         token_report.update(basis_reference=self.reference,old_validation_banks_removed=True)
         token_report['full_u_outside_kl_groups']=group_report
         self.metrics.update({'token_audit/high_kl_fraction':token_report['groups']['kl_above_step1_p90']['fraction'],

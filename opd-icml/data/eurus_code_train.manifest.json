@@ -1,0 +1,17 @@
+{
+  "source_dataset": "PRIME-RL/Eurus-2-RL-Data",
+  "source_revision": "9776b13264b5aaa0b16495fcf086a0a8d86fd655",
+  "source_split": "train",
+  "prompt_protocol": "eurus-code-fold-system-v1",
+  "rows": 25276,
+  "data_sources": {
+    "taco": 9579,
+    "codecontests": 9639,
+    "codeforces": 2596,
+    "apps": 3462
+  },
+  "call_based_problems": 2658,
+  "stdin_problems": 22618,
+  "sha256": "dc61b88be7c05b36377858801f571f1f9a90ee539708e67050f44f800d55533a",
+  "ground_truth_preserved": true
+}

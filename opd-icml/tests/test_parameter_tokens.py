@@ -143,7 +143,7 @@ def test_parameter_energy_is_not_head_only():
 
 def test_rejects_dropout_and_does_not_silently_estimate():
     actor = make_actor()
-    with pytest.raises(ValueError, match='no sampling'):
+    with pytest.raises(ValueError, match='Unsupported'):
         audit_module.FullParameterTokenAudit(actor, {'mode': 'sample'})
     actor.actor_module.model.layers.append(torch.nn.Dropout(.1))
     with pytest.raises(ValueError, match='zero dropout'):

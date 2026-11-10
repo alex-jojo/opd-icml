@@ -11,7 +11,7 @@ def digest(path):
 
 
 def prepare_deepseek_student(source, teacher, destination):
-    """Share Instruct chat/EOT semantics; link, never rewrite/copy Base weights."""
+    """Share the Instruct template and retain BOTH native and instruction EOS."""
     from transformers import AutoTokenizer
     source, teacher, destination = [Path(p).resolve() for p in (source, teacher, destination)]
     if destination in (source, teacher):
@@ -39,10 +39,13 @@ def prepare_deepseek_student(source, teacher, destination):
         indices = sorted(source.glob('pytorch_model*.bin.index.json'))
     if not weights:
         raise ValueError('No Base checkpoint weights found')
-    identity = dict(protocol='deepseek-coder-shared-instruct-eot-v1', source=str(source), teacher=str(teacher),
+    stop_ids = list(dict.fromkeys([shared.eos_token_id, original.eos_token_id]))
+    stop_ids = [int(token) for token in stop_ids if token is not None]
+    identity = dict(protocol='deepseek-coder-dual-eos-v2', source=str(source), teacher=str(teacher),
         source_config_sha256=digest(source/'config.json'), teacher_config_sha256=digest(teacher/'config.json'),
         weights=[dict(name=p.name, bytes=p.stat().st_size, mtime_ns=p.stat().st_mtime_ns) for p in weights],
-        teacher_template_sha256=hashlib.sha256(shared.chat_template.encode()).hexdigest(), eos_token_id=shared.eos_token_id)
+        teacher_template_sha256=hashlib.sha256(shared.chat_template.encode()).hexdigest(),
+        eos_token_id=shared.eos_token_id, generation_eos_token_ids=stop_ids)
     marker = destination/'opd_pair_runtime.json'
     if marker.exists():
         previous = json.loads(marker.read_text(encoding='utf8'))
@@ -75,14 +78,16 @@ def prepare_deepseek_student(source, teacher, destination):
     shared.save_pretrained(destination)
     cfg = dict(base_cfg)
     cfg.update(eos_token_id=shared.eos_token_id, bos_token_id=shared.bos_token_id, pad_token_id=shared.pad_token_id)
+    cfg['opd_response_eos_token_ids'] = stop_ids
     (destination/'config.json').write_text(json.dumps(cfg,indent=2)+'\n',encoding='utf8')
     generation_file = source/'generation_config.json'
     generation = json.loads(generation_file.read_text(encoding='utf8')) if generation_file.exists() else {}
-    generation.update(eos_token_id=shared.eos_token_id,bos_token_id=shared.bos_token_id,pad_token_id=shared.pad_token_id)
+    generation.update(eos_token_id=stop_ids,bos_token_id=shared.bos_token_id,pad_token_id=shared.pad_token_id)
     (destination/'generation_config.json').write_text(json.dumps(generation,indent=2)+'\n',encoding='utf8')
     metadata = {p.name:digest(p) for p in destination.iterdir() if p.is_file() and p.name != marker.name and p not in [destination/w.name for w in weights]}
     marker.write_text(json.dumps(dict(identity=identity,complete=True,metadata_sha256=metadata,
         weights_linked=True,weights_modified=False,original_base_unchanged=True,
         prompt_protocol='official teacher Instruct template for BOTH student and teacher',
-        source_eos_token_id=original.eos_token_id, runtime_eos_token_id=shared.eos_token_id),indent=2)+'\n',encoding='utf8')
+        source_eos_token_id=original.eos_token_id, runtime_eos_token_id=shared.eos_token_id,
+        generation_eos_token_ids=stop_ids),indent=2)+'\n',encoding='utf8')
     return destination

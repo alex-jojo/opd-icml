@@ -219,7 +219,8 @@ class TokenAudit(Observer):
 
     def decorate(self,f):
         f=dict(f);f['first']=f['pos']==0
-        eos=getattr(getattr(_unwrap_actor_module(self.actor.actor_module),'config',None),'eos_token_id',None)
+        model_config=getattr(_unwrap_actor_module(self.actor.actor_module),'config',None)
+        eos=getattr(model_config,'opd_response_eos_token_ids',getattr(model_config,'eos_token_id',None))
         f['eos']=np.isin(f['token'],[] if eos is None else [eos] if isinstance(eos,int) else eos)
         f['boundary']=f['first']|f['eos']
         for token in np.unique(f['token']):

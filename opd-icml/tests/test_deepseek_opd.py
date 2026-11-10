@@ -51,6 +51,8 @@ def test_runtime_shares_teacher_template_eos_and_preserves_all_base_tensors(tmp_
     a=AutoTokenizer.from_pretrained(prepared);b=AutoTokenizer.from_pretrained(teacher)
     assert a.get_vocab()==b.get_vocab() and a.eos_token_id==b.eos_token_id==3
     assert a.chat_template==b.chat_template
+    assert runtime.config.opd_response_eos_token_ids == [3, 2]
+    assert runtime.generation_config.eos_token_id == [3, 2]
     assert a.apply_chat_template([{'role':'user','content':'code'}],tokenize=False,add_generation_prompt=True).endswith('### Response:')
     for name,tensor in source.state_dict().items():
         assert torch.equal(tensor,runtime.state_dict()[name])
@@ -61,6 +63,7 @@ def test_runtime_shares_teacher_template_eos_and_preserves_all_base_tensors(tmp_
     assert prepare_deepseek_student(student,teacher,prepared)==prepared
     marker=json.loads((prepared/'opd_pair_runtime.json').read_text())
     assert marker['weights_modified'] is False and marker['weights_linked'] is True
+    assert marker['generation_eos_token_ids'] == [3, 2]
     (prepared/'config.json').write_text('{}')
     with pytest.raises(ValueError,match='runtime files changed'):
         prepare_deepseek_student(student,teacher,prepared)
@@ -68,10 +71,15 @@ def test_runtime_shares_teacher_template_eos_and_preserves_all_base_tensors(tmp_
 
 def test_preparation_integrates_with_existing_model_api(tmp_path):
     student,teacher=pair(tmp_path)
+    legacy=tmp_path/'prepared/deepseek-coder-1.3b/student-opd'
+    legacy.mkdir(parents=True)
+    (legacy/'keep.txt').write_text('existing v1 run')
     result=model_assets.prepare_models('deepseek-coder-1.3b',student,teacher,model_dir=tmp_path/'prepared')
     assert Path(result['teacher'])==teacher
     assert Path(result['student'])!=student
     assert AutoTokenizer.from_pretrained(result['student']).eos_token=='<|EOT|>'
+    assert Path(result['student']).name=='student-opd-eos-v2'
+    assert (legacy/'keep.txt').read_text()=='existing v1 run'
 
 
 def test_mismatched_vocab_and_existing_directory_are_rejected(tmp_path):
@@ -95,7 +103,7 @@ def test_deepseek_code_profile_and_launcher(experiment):
     assert plan['gpu_count']==4 and plan['task']=='code'
     assert plan['rounds_cap']==(53 if experiment=='reuse' else 106)
     if experiment=='paired-full':
-        assert plan['parameter_token_gradients']=={'enabled':True,'mode':'exact_all'}
+        assert plan['parameter_token_gradients']=={'enabled':True,'mode':'kl_stratified','sample_size':256,'seed':42}
     assert plan['models']['teacher']['allow_patterns']==['*.json','*.safetensors','tokenizer.model']
 
 

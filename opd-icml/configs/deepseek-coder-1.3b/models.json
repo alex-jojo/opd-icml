@@ -19,5 +19,5 @@
   },
   "validate_tokenizers": true,
   "text_only_export": false,
-  "preparation": "deepseek-coder-shared-instruct-eot-v1"
+  "preparation": "deepseek-coder-dual-eos-v2"
 }

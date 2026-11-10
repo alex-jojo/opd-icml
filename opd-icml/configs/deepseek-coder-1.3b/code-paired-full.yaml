@@ -5,6 +5,7 @@
   ],
   "data": {
     "opd_task": "code",
+    "expected_filtered_train_rows": null,
     "max_prompt_length": 2048,
     "max_response_length": 3072,
     "val_files": [
@@ -19,7 +20,17 @@
       "max_num_seqs": 64
     },
     "actor": {
-      "ppo_micro_batch_size_per_gpu": 1
+      "ppo_micro_batch_size_per_gpu": 1,
+      "policy_loss": {
+        "gradient_study": {
+          "parameter_tokens": {
+            "enabled": true,
+            "mode": "kl_stratified",
+            "sample_size": 256,
+            "seed": 42
+          }
+        }
+      }
     },
     "ref": {
       "log_prob_micro_batch_size_per_gpu": 1

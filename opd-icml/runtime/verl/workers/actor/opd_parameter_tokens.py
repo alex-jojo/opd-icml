@@ -57,8 +57,13 @@ class FullParameterTokenAudit:
     def __init__(self, actor, cfg):
         self.actor = actor
         self.cfg = dict(cfg)
-        if self.cfg.get('mode', 'exact_all') != 'exact_all':
-            raise ValueError('Parameter token audit requires mode=exact_all; no sampling or estimator')
+        self.mode = self.cfg.get('mode', 'exact_all')
+        if self.mode not in {'exact_all', 'kl_stratified'}:
+            raise ValueError('Unsupported parameter token audit mode: ' + str(self.mode))
+        if self.mode == 'kl_stratified':
+            size, seed = self.cfg.get('sample_size', 256), self.cfg.get('seed', 42)
+            if int(size) != size or int(seed) != seed or size < 2 or seed < 0:
+                raise ValueError('sample_size must be an integer >= 2 and seed a nonnegative integer')
         from .opd_top16 import _unwrap_actor_module
         model = _unwrap_actor_module(actor.actor_module)
         config = getattr(model, 'config', None)
@@ -73,6 +78,7 @@ class FullParameterTokenAudit:
     def measure(self, data, step, inner):
         from .opd_gradient_study import gradient_observation
         from .opd_top16 import forward, reverse_kl
+        started = time.perf_counter()
         # No training gradients need copying/restoring. No optimizer step.
         if any(p.grad is not None for p in self.actor.actor_module.parameters()):
             raise RuntimeError('Parameter token audit must start with cleared gradients')
@@ -82,20 +88,36 @@ class FullParameterTokenAudit:
         device = next(self.actor.actor_module.parameters()).device
         mask = data.batch['response_mask'].bool().cpu().numpy()
         rows, positions = np.nonzero(mask)
+        population = len(rows)
+        sampling = None
+        if self.mode == 'kl_stratified':
+            if 'opd_student_top16_logits' not in data.batch:
+                raise ValueError('Stratified sampling requires cached pre-update student Top16 logits')
+            from .opd_parameter_sampling import stratified_plan
+            def choose():
+                # Match output_scores' double-precision KL and stable ranking.
+                lp = data.batch['opd_student_top16_logits'].detach().cpu().double().log_softmax(-1)
+                lq = data.batch['opd_teacher_top16_logits'].detach().cpu().double().log_softmax(-1)
+                kl = (lp.exp() * (lp-lq)).sum(-1).clamp_min(0).numpy()[mask]
+                return stratified_plan(kl, int(self.cfg.get('sample_size', 256)),
+                                       int(self.cfg.get('seed', 42)), step, inner)
+            # Every FSDP rank differentiates the exact same sampled token loss.
+            sampling = dp.primary_call(choose)
+            rows, positions = rows[sampling['index']], positions[sampling['index']]
         energy = np.empty(len(rows), dtype=np.float64)
         losses = np.empty(len(rows), dtype=np.float64)
         if not len(rows):
             raise ValueError('Cannot audit an empty token population')
-        started = time.perf_counter()
         if dp.primary():
-            print(f'[parameter tokens] step={step} inner={inner+1}: EXACT full-model '
-                  f'gradients for ALL {len(rows)} tokens; {len(rows)} extra backwards', flush=True)
+            label = f'ALL {len(rows)}' if sampling is None else f'SAMPLED {len(rows)}/{population}'
+            print(f'[parameter tokens] step={step} inner={inner+1}: exact full-model '
+                  f'gradients for {label} tokens; {len(rows)} extra backwards', flush=True)
         cursor = 0
         with gradient_observation(self.actor):
-            for row in range(len(data)):
+            for row in np.unique(rows):
                 selected = data.select_idxs([row])
                 inputs = {k: v.to(device) for k, v in selected.batch.items()}
-                for pos in np.flatnonzero(mask[row]):
+                for pos in positions[rows == row]:
                     self.actor.actor_optimizer.zero_grad(set_to_none=True)
                     _, logits, _, _ = forward(self.actor, inputs, float(data.meta_info['temperature']),
                                               inputs['opd_top16_ids'], diagnostics=False)
@@ -105,11 +127,14 @@ class FullParameterTokenAudit:
                     losses[cursor] = float(token_loss.detach())
                     del logits, token_loss
                     cursor += 1
-                    if dp.primary() and (cursor % 256 == 0 or cursor == len(rows)):
+                    if dp.primary() and (cursor % (16 if sampling is not None else 256) == 0 or cursor == len(rows)):
                         print(f'[parameter tokens] {cursor}/{len(rows)}; '
                               f'{time.perf_counter()-started:.1f}s', flush=True)
-        return dict(row=rows, pos=positions, energy=energy, diagnostic_kl=losses,
-                    seconds=time.perf_counter()-started, backwards=len(rows))
+        result = dict(row=rows, pos=positions, energy=energy, diagnostic_kl=losses,
+                      seconds=time.perf_counter()-started, backwards=len(rows))
+        if sampling is not None:
+            result['sampling'] = sampling
+        return result
 
 
 def attach_parameter_energy(fields, measurement):

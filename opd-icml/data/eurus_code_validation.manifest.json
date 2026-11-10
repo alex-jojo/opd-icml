@@ -1,0 +1,17 @@
+{
+  "source_dataset": "PRIME-RL/Eurus-2-RL-Data",
+  "source_revision": "9776b13264b5aaa0b16495fcf086a0a8d86fd655",
+  "source_split": "validation",
+  "prompt_protocol": "eurus-code-fold-system-v1",
+  "rows": 1024,
+  "data_sources": {
+    "codecontests": 377,
+    "codeforces": 123,
+    "apps": 142,
+    "taco": 382
+  },
+  "call_based_problems": 96,
+  "stdin_problems": 928,
+  "sha256": "40ce63a0648829e36d0ee9c72d5b6c784e448fdf077ab7901072353446ff9ec2",
+  "ground_truth_preserved": true
+}

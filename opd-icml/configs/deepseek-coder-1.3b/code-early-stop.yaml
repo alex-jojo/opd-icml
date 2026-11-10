@@ -9,7 +9,8 @@
     "max_response_length": 3072,
     "val_files": [
       "${oc.env:OPD_VALIDATION_DATA}"
-    ]
+    ],
+    "expected_filtered_train_rows": null
   },
   "actor_rollout_ref": {
     "rollout": {

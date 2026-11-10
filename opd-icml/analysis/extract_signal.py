@@ -9,7 +9,9 @@ FIELDS = ["step", "model", "train_kl", "above_initial_kl_threshold_pct", "top_kl
           "top_kl_decile_parameter_energy_pct", "parameter_grad_norm", "hidden_gradient_rms",
           "parameter_gradient_rms", "hidden_gradient_frobenius", "parameter_gradient_frobenius",
           "above_initial_kl_parameter_energy_pct", "parameter_token_extra_backwards",
-          "parameter_token_gradient_seconds"]
+          "parameter_token_gradient_seconds", "parameter_token_mode", "parameter_token_sampled",
+          "parameter_token_sample_count", "parameter_token_population_count",
+          "top_kl_decile_parameter_energy_ci95_low_pct", "top_kl_decile_parameter_energy_ci95_high_pct"]
 
 
 def read_run(path, model):
@@ -34,11 +36,17 @@ def read_run(path, model):
             value = groups["kl_above_step1_p90"]["quantities"].get("parameter_gradient_energy", {}).get("share")
             fixed_share = 100 * value if value is not None else ""
         meta = report.get("parameter_gradient_measurement", {})
+        interval = report.get('groups', {}).get('kl_top10', {}).get('quantities', {}).get(
+            'parameter_gradient_energy', {}).get('share_ci95')
         yield [step, model, batch["metrics"]["actor/opd_top16_kl"], frequency, share,
                parameter_share, batch["metrics"].get("actor/grad_norm", ""),
                report.get("gradient_rms_full", ""), report.get("parameter_gradient_rms", ""),
                report.get("gradient_frobenius_full", ""), report.get("parameter_gradient_frobenius", ""),
-               fixed_share, meta.get("extra_backwards", ""), meta.get("seconds", "")]
+               fixed_share, meta.get("extra_backwards", ""), meta.get("seconds", ""),
+               meta.get('mode', ''), meta.get('sampled', ''), meta.get('token_count', ''),
+               meta.get('population_token_count', meta.get('token_count', '')),
+               100 * interval[0] if interval is not None else '',
+               100 * interval[1] if interval is not None else '']
 
 
 if __name__ == "__main__":

@@ -44,19 +44,21 @@ def apply_hardware_profile(cfg, hardware):
     """Keep recorded experiment files intact; return explicit Hydra overrides."""
     if hardware is None:
         return {}
-    if hardware != 'l40x4':
+    gpu_counts = {'l40x4': 4, 'a100x1': 1}
+    if hardware not in gpu_counts:
         raise ValueError(f'Unknown hardware profile: {hardware}')
+    gpu_count = gpu_counts[hardware]
     policy = cfg['actor_rollout_ref']['actor']['policy_loss']
     replication = policy.get('replication17', {})
     if not replication.get('enabled'):
-        raise ValueError('l40x4 requires the distributed replication protocol')
-    if replication.get('heavy_steps'):
+        raise ValueError(f'{hardware} requires the distributed replication protocol')
+    if gpu_count > 1 and replication.get('heavy_steps'):
         raise ValueError('This profile has single-GPU disposable shadow probes; l40x4 cannot run them. '
                          'Use paired-full for the four-GPU RQ1 run; probes were not silently disabled.')
     overrides = {
-        'trainer.n_gpus_per_node': 4,
-        'actor_rollout_ref.actor.policy_loss.replication17.distributed_world_size': 4,
-        'actor_rollout_ref.rollout.tensor_model_parallel_size': 4,
+        'trainer.n_gpus_per_node': gpu_count,
+        'actor_rollout_ref.actor.policy_loss.replication17.distributed_world_size': gpu_count,
+        'actor_rollout_ref.rollout.tensor_model_parallel_size': gpu_count,
         'actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu': 1,
         'actor_rollout_ref.model.enable_gradient_checkpointing': True,
         'actor_rollout_ref.actor.fsdp_config.optimizer_offload': True,
@@ -92,12 +94,18 @@ def main():
     parser.add_argument("--cache-dir", type=Path, help="Hugging Face download cache")
     parser.add_argument("--model-dir", type=Path, help="Root for Gemma text-only exports; defaults to models/")
     parser.add_argument("--dry-run", action="store_true", help="Show the configuration without downloading models or starting training")
-    parser.add_argument("--parameter-token-gradients", choices=["exact-all", "off"],
+    parser.add_argument("--parameter-token-gradients", choices=["exact-all", "sampled", "off"],
                         help="Override full per-token parameter-gradient recording (gradient-study profiles only)")
-    parser.add_argument("--hardware", choices=["l40x4"], help="Four-L40 memory-conscious runtime overrides")
+    parser.add_argument("--parameter-token-samples", type=int,
+                        help="Sampled diagnostic token count (default 256); one quarter from the top-KL decile")
+    parser.add_argument("--hardware", choices=["l40x4", "a100x1"],
+                        help="Memory-conscious runtime overrides: four L40 GPUs or one A100 80GB")
     args = parser.parse_args()
     if args.code_workers < 1:
         parser.error("--code-workers must be positive")
+    if args.parameter_token_samples is not None and (
+            args.parameter_token_gradients != 'sampled' or args.parameter_token_samples < 2):
+        parser.error('--parameter-token-samples requires --parameter-token-gradients sampled and a count >= 2')
     if args.task != 'code' and (args.val_data or args.sandbox_url):
         parser.error("--val-data and --sandbox-url apply to --task code")
     profile = ROOT / "configs" / args.scale
@@ -123,7 +131,10 @@ def main():
     if args.parameter_token_gradients:
         if not study.get('enabled', False):
             parser.error('--parameter-token-gradients requires a gradient-study profile, such as paired-full')
-        study['parameter_tokens'] = dict(enabled=args.parameter_token_gradients == 'exact-all', mode='exact_all')
+        study['parameter_tokens'] = dict(enabled=args.parameter_token_gradients != 'off',
+            mode='kl_stratified' if args.parameter_token_gradients == 'sampled' else 'exact_all')
+        if args.parameter_token_gradients == 'sampled':
+            study['parameter_tokens'].update(sample_size=args.parameter_token_samples or 256, seed=42)
     default_run = ROOT / 'runs' / args.scale / args.experiment if args.task == 'math' else ROOT / 'runs/code' / args.scale / args.experiment
     output = (args.output or default_run).resolve()
     data = (args.data or ROOT / ('data/eurus_code_train.parquet' if args.task == 'code' else 'data/dapo14k_train.parquet')).resolve()
@@ -133,7 +144,7 @@ def main():
     command += ['++' + key + '=' + json.dumps(value) for key, value in hardware_overrides.items()]
     if args.parameter_token_gradients:
         prefix = '++actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens.'
-        command += [prefix + 'enabled=' + str(study['parameter_tokens']['enabled']).lower(), prefix + 'mode=exact_all']
+        command += [prefix + key + '=' + json.dumps(value) for key,value in study['parameter_tokens'].items()]
     print(json.dumps(dict(experiment=args.experiment, scale=args.scale, task=args.task, gpu_count=cfg["trainer"]["n_gpus_per_node"],
                           hardware_profile=args.hardware,
                           micro_batch_size_per_gpu=cfg['actor_rollout_ref']['actor']['ppo_micro_batch_size_per_gpu'],

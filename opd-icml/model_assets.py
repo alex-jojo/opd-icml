@@ -138,9 +138,9 @@ def prepare_models(scale, student=None, teacher=None, cache_dir=None, model_dir=
             target = Path(model_dir or ROOT / 'models') / scale / role
             path = export_gemma_text(path, target)
         paths[role] = str(path)
-    if models.get('preparation') == 'deepseek-coder-shared-instruct-eot-v1':
+    if models.get('preparation') in {'deepseek-coder-shared-instruct-eot-v1', 'deepseek-coder-dual-eos-v2'}:
         from deepseek_assets import prepare_deepseek_student
-        target = Path(model_dir or ROOT / 'models') / scale / 'student-opd'
+        target = Path(model_dir or ROOT / 'models') / scale / 'student-opd-eos-v2'
         paths['student'] = str(prepare_deepseek_student(paths['student'],paths['teacher'],target))
     if models.get('validate_tokenizers', False):
         from transformers import AutoTokenizer
