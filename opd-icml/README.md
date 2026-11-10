@@ -130,6 +130,24 @@ SCALE=gemma3-12b HARDWARE=l40x4 bash scripts/train_math.sh --dry-run
 
 脚本中 paired-full 默认 `PARAMETER_TOKEN_GRADIENTS=sampled`、`PARAMETER_TOKEN_SAMPLES=256`（64 high-KL + 192 remaining）；全量 hidden 统计保留。其他实验默认继承原 YAML 的诊断开关，避免对未开启 gradient-study 的协议强行添加参数诊断。设 `PARAMETER_TOKEN_GRADIENTS=inherit` 可严格继承 YAML，或明确选 `exact-all` / `off`。`HARDWARE=recorded` 继承 YAML GPU 数；未设置 `CUDA_VISIBLE_DEVICES` 时自动匹配所选卡数，用户显式设置时保留。
 
+可以显式传入 GPU 数。数学脚本的 `NUM_GPUS=auto` 默认继承硬件预设/原 YAML，Code 脚本默认 1；显式 `NUM_GPUS` 同时覆盖 FSDP 进程数、诊断 world size 和默认 rollout TP，不按卡数放大全局 batch。`ROLLOUT_TP_SIZE` 可指定卡数的更小约数，例如 4 卡、TP=2 会有两组生成 worker；该选项不是保证更快，需实测。
+
+```bash
+# 数学，两卡；全局 batch 仍为 128
+NUM_GPUS=2 bash scripts/train_math.sh --dry-run
+
+# 数学，四卡；每卡训练 micro-batch=2，生成 TP=2
+NUM_GPUS=4 ROLLOUT_TP_SIZE=2 MICRO_BATCH_SIZE=2 \
+  bash scripts/train_math.sh --dry-run
+
+# Code，四卡；无需改脚本里的 a100x1 内存预设名称
+NUM_GPUS=4 bash scripts/train_deepseek_code_a100.sh --dry-run
+```
+
+Python 入口对应 `--num-gpus N --rollout-tp-size T`。启动前检查全局 batch、micro-batch、固定验证/探针面板和 GPU 数的整除关系；准备模型后检查 attention/KV heads 与 TP 的兼容性，实跑还检查可见 GPU 数。显式卡数不自动改 batch、长度、学习率、更新预算或诊断频率。已有 `CUDA_VISIBLE_DEVICES` 时沿其顺序选前 N 张；不足会报错，不自动更换卡号。
+
+参数梯度诊断的 FP64 范数分块规约改为设备内累加，每张设备仅同步一个标量；支持的 Llama/Qwen/Gemma 因果模型只重算目标 token 的前缀，省去未来后缀的计算，`causal_prefix=false` 可用于回归对照。抽样 ID、权重、实际反传次数和定义保持原协议，日志新增诊断的实际/原后缀前向 token 量。checkpoint 发布检查支持任意正整数 world size，并继续要求每一 rank 的文件齐全。CPU 等价性测试不等于真实多卡吞吐实测；更换卡数、micro-batch 或生成调度会改变浮点规约和随机数分配，不承诺逐位相同或完全相同的生成答案。
+
 ```bash
 SCALE=4b HARDWARE=a100x1 MICRO_BATCH_SIZE=2 \
   OUTPUT_DIR=runs/math/4b/paired-full-a100-micro2 \

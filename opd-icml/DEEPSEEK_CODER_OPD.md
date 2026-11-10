@@ -63,6 +63,10 @@ bash scripts/train_deepseek_code_a100.sh
 
 脚本同时提供 `LEARNING_RATE=1e-5`、`ROLLOUT_MAX_NUM_SEQS=16`（生成并发）、`ROLLOUT_GPU_MEMORY_UTILIZATION=0.30`、`PARAMETER_TOKEN_SAMPLES=256`、`CODE_WORKERS=8` 及模型/输出路径。默认保持现有实验设置；脚本参数在硬件预设之后生效。模型的双 EOS 仍由准备入口生成，训练轮数和其他诊断仍继承 YAML。
 
+脚本还支持 `NUM_GPUS=1`（默认）与 `ROLLOUT_TP_SIZE`（默认等于卡数）。例如 `NUM_GPUS=4 bash scripts/train_deepseek_code_a100.sh --dry-run` 会设置四卡 FSDP、rollout TP=4 和诊断 world size=4；`NUM_GPUS=4 ROLLOUT_TP_SIZE=2` 可拆成两组生成 worker。全局 batch、学习率、回答上限、256-token 抽样和 106 轮预算保持不变。每张卡必须能容纳所选 micro-batch；单卡机器只能用 `--dry-run` 检查多卡配置，不能运行多卡任务。
+
+逐 token 参数诊断会在 GPU 内完成范数累加，减少小标量同步；对因果模型只重算目标 token 的前缀，实际及未裁剪前向 token 数写入诊断 JSON。原训练前向/反向及采样种子不变。数值等价性由微型模型检查，实际 A100/多卡提速需实测，改变卡数或批处理不保证逐位相同。原运行进程继续使用已加载代码，更新后由用户另选输出目录启动。
+
 也可用环境变量临时覆盖，先查看生效配置：
 
 ```bash

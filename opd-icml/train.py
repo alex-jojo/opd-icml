@@ -40,25 +40,32 @@ def validate_code_dataset(path):
         raise ValueError(f'Expected code-only Eurus data in {path}; run scripts/prepare_eurus_code.py')
 
 
-def apply_hardware_profile(cfg, hardware):
+def apply_hardware_profile(cfg, hardware, num_gpus=None, rollout_tp=None):
     """Keep recorded experiment files intact; return explicit Hydra overrides."""
-    if hardware is None:
+    if hardware is None and num_gpus is None and rollout_tp is None:
         return {}
     gpu_counts = {'l40x4': 4, 'a100x1': 1}
-    if hardware not in gpu_counts:
+    if hardware is not None and hardware not in gpu_counts:
         raise ValueError(f'Unknown hardware profile: {hardware}')
-    gpu_count = gpu_counts[hardware]
+    gpu_count = num_gpus if num_gpus is not None else gpu_counts.get(hardware,cfg['trainer']['n_gpus_per_node'])
+    tp = rollout_tp if rollout_tp is not None else (gpu_count if num_gpus is not None or hardware is not None
+                                                   else cfg['actor_rollout_ref']['rollout']['tensor_model_parallel_size'])
+    if gpu_count < 1 or tp < 1 or gpu_count % tp:
+        raise ValueError('GPU count and rollout TP must be positive, and GPU count must be divisible by TP')
     policy = cfg['actor_rollout_ref']['actor']['policy_loss']
     replication = policy.get('replication17', {})
     if not replication.get('enabled'):
-        raise ValueError(f'{hardware} requires the distributed replication protocol')
+        raise ValueError('GPU topology overrides require the distributed replication protocol')
     if gpu_count > 1 and replication.get('heavy_steps'):
         raise ValueError('This profile has single-GPU disposable shadow probes; l40x4 cannot run them. '
                          'Use paired-full for the four-GPU RQ1 run; probes were not silently disabled.')
     overrides = {
         'trainer.n_gpus_per_node': gpu_count,
         'actor_rollout_ref.actor.policy_loss.replication17.distributed_world_size': gpu_count,
-        'actor_rollout_ref.rollout.tensor_model_parallel_size': gpu_count,
+        'actor_rollout_ref.rollout.tensor_model_parallel_size': tp,
+    }
+    if hardware is not None:
+        overrides.update({
         'actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu': 1,
         'actor_rollout_ref.model.enable_gradient_checkpointing': True,
         'actor_rollout_ref.actor.fsdp_config.optimizer_offload': True,
@@ -68,7 +75,7 @@ def apply_hardware_profile(cfg, hardware):
         'actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu': 1,
         'actor_rollout_ref.rollout.gpu_memory_utilization': .3,
         'actor_rollout_ref.rollout.max_num_seqs': 16,
-    }
+        })
     for path, value in overrides.items():
         target = cfg
         parts = path.split('.')
@@ -121,6 +128,40 @@ def apply_batch_overrides(cfg, args):
     return updates
 
 
+def validate_gpu_topology(cfg):
+    actor = cfg['actor_rollout_ref']['actor']
+    gpus = cfg['trainer']['n_gpus_per_node']
+    tp = cfg['actor_rollout_ref']['rollout']['tensor_model_parallel_size']
+    if gpus < 1 or tp < 1 or gpus % tp:
+        raise ValueError('GPU count must be positive and divisible by rollout TP')
+    if actor['policy_loss'].get('loss_mode') != 'opd_top16':
+        return
+    batch, mini = cfg['data']['train_batch_size'], actor['ppo_mini_batch_size']
+    micro = actor['ppo_micro_batch_size_per_gpu']
+    if batch != mini or mini % (gpus * micro):
+        raise ValueError('Global rollout/mini-batch must match and divide evenly across GPU count times micro-batch')
+    heldout = int(actor['policy_loss'].get('fixed_heldout_probe_size', 0))
+    if heldout and (heldout % gpus or (batch-heldout) % gpus):
+        raise ValueError('Both fixed probe and remaining training trajectory counts must divide GPU count')
+    study = actor['policy_loss'].get('gradient_study', {})
+    if study.get('enabled', False) and (128 % gpus or batch % (int(study.get('batches', 4))*gpus)):
+        raise ValueError('Fixed128 validation and cross-batch diagnostic partitions must divide GPU count')
+    if study.get('enabled', False) and study.get('path_steps') and (
+            int(study.get('path_prompts', 4))*int(study.get('path_repeats', 4))) % gpus:
+        raise ValueError('Diagnostic rollout path panel must divide GPU count')
+
+
+def validate_model_tp(student_path, tp):
+    config = json.loads((Path(student_path)/'config.json').read_text(encoding='utf-8'))
+    config = config.get('text_config', config)
+    heads = config.get('num_attention_heads')
+    kv = config.get('num_key_value_heads', heads)
+    if heads and heads % tp:
+        raise ValueError(f'rollout TP={tp} must divide student attention heads={heads}')
+    if kv and (kv % tp if kv >= tp else tp % kv):
+        raise ValueError(f'rollout TP={tp} is incompatible with student KV heads={kv}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", choices=model_profiles(), required=True)
@@ -143,6 +184,8 @@ def main():
                         help="Sampled diagnostic token count (default 256); one quarter from the top-KL decile")
     parser.add_argument("--hardware", choices=["l40x4", "a100x1"],
                         help="Memory-conscious runtime overrides: four L40 GPUs or one A100 80GB")
+    parser.add_argument('--num-gpus', type=int, help='GPUs to use; overrides preset count, keeps global batch fixed')
+    parser.add_argument('--rollout-tp-size', type=int, help='Rollout tensor parallel degree; defaults to explicit GPU count')
     parser.add_argument('--rollout-batch-size', type=int, help='Global prompts generated per rollout round')
     parser.add_argument('--mini-batch-size', type=int, help='Global prompts in one OPD update; must equal rollout batch')
     parser.add_argument('--micro-batch-size', type=int, help='Training sequences per forward/backward on each GPU')
@@ -173,8 +216,9 @@ def main():
         parser.error("--experiment is required unless --prepare-only is used")
     config_name, cfg = training_config(profile, args.experiment, args.task)
     try:
-        hardware_overrides = apply_hardware_profile(cfg, args.hardware)
+        hardware_overrides = apply_hardware_profile(cfg, args.hardware, args.num_gpus, args.rollout_tp_size)
         hardware_overrides.update(apply_batch_overrides(cfg, args))
+        validate_gpu_topology(cfg)
     except ValueError as error:
         parser.error(str(error))
     study = cfg['actor_rollout_ref']['actor']['policy_loss'].get('gradient_study', {})
@@ -197,6 +241,7 @@ def main():
         command += [prefix + key + '=' + json.dumps(value) for key,value in study['parameter_tokens'].items()]
     print(json.dumps(dict(experiment=args.experiment, scale=args.scale, task=args.task, gpu_count=cfg["trainer"]["n_gpus_per_node"],
                           hardware_profile=args.hardware,
+                          explicit_gpu_count=args.num_gpus,
                           micro_batch_size_per_gpu=cfg['actor_rollout_ref']['actor']['ppo_micro_batch_size_per_gpu'],
                           mini_batch_size=cfg['actor_rollout_ref']['actor']['ppo_mini_batch_size'],
                           learning_rate=cfg['actor_rollout_ref']['actor']['optim']['lr'],
@@ -229,8 +274,20 @@ def main():
     if output.exists() and any(output.iterdir()):
         parser.error(f"Choose an empty output directory: {output}")
     env = os.environ.copy()
+    if args.num_gpus is not None:
+        # Ray must see the same GPU subset requested by the launcher. Preserve
+        # user ordering/UUIDs, selecting a prefix rather than inventing IDs.
+        visible = [v.strip() for v in env.get('CUDA_VISIBLE_DEVICES', '').split(',') if v.strip()]
+        if visible and (visible == ['-1'] or len(visible) < args.num_gpus):
+            parser.error('--num-gpus exceeds CUDA_VISIBLE_DEVICES; update the visible GPU list')
+        env['CUDA_VISIBLE_DEVICES'] = ','.join(visible[:args.num_gpus]) if visible else ','.join(map(str,range(args.num_gpus)))
+        import torch
+        if torch.cuda.device_count() < args.num_gpus:
+            parser.error(f'Requested {args.num_gpus} GPUs, but this process can access only {torch.cuda.device_count()}')
     try:
         paths = prepare_models(args.scale, args.student, args.teacher, args.cache_dir, args.model_dir)
+        if args.num_gpus is not None or args.rollout_tp_size is not None:
+            validate_model_tp(paths['student'], cfg['actor_rollout_ref']['rollout']['tensor_model_parallel_size'])
     except ValueError as error:
         parser.error(str(error))
     for role, path in paths.items():

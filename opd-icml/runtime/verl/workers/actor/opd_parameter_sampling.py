@@ -134,6 +134,9 @@ def add_sampled_report(report, fields, measurement, thresholds):
                     paired_hidden_population='identical sampled (response row, token position) with identical weights',
                     full_hidden_statistics_preserved=True,
                     extra_backwards=measurement['backwards'], seconds=measurement['seconds'],
+                    causal_prefix=measurement.get('causal_prefix',False),
+                    forward_input_tokens=measurement.get('forward_input_tokens'),
+                    full_suffix_forward_input_tokens=measurement.get('full_suffix_forward_input_tokens'),
                     diagnostic_optimizer_steps=0, extra_teacher_calls=0, parameter_vectors_saved=False,
                     definition='E_i = squared L2 norm of individual token loss gradient over all trainable parameters',
                     diagnostic_vs_training_kl_max_abs=float(np.max(np.abs(

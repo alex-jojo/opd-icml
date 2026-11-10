@@ -5,7 +5,15 @@ cd "$ROOT"
 
 # Activate code-eval310 before running this script. No packages are installed here.
 PYTHON_BIN="${PYTHON_BIN:-python}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+HARDWARE="${HARDWARE:-a100x1}"    # Memory preset; explicit NUM_GPUS overrides its GPU count.
+NUM_GPUS="${NUM_GPUS:-1}"
+ROLLOUT_TP_SIZE="${ROLLOUT_TP_SIZE:-$NUM_GPUS}"
+if [[ ! "$NUM_GPUS" =~ ^[1-9][0-9]*$ ]]; then printf 'NUM_GPUS must be positive\n' >&2; exit 2; fi
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  CUDA_VISIBLE_DEVICES=0
+  for ((GPU_INDEX=1; GPU_INDEX<NUM_GPUS; GPU_INDEX++)); do CUDA_VISIBLE_DEVICES+=",$GPU_INDEX"; done
+fi
+export CUDA_VISIBLE_DEVICES
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 # Edit these values or override them with environment variables.
@@ -18,7 +26,7 @@ ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.30}"
 PARAMETER_TOKEN_SAMPLES="${PARAMETER_TOKEN_SAMPLES:-256}" # 64 high-KL + 192 remaining.
 CODE_WORKERS="${CODE_WORKERS:-8}"                # CPU code judges, not GPU count.
 STUDENT_PATH="${STUDENT_PATH:-models/deepseek-coder-1.3b-base}"
-OUTPUT_DIR="${OUTPUT_DIR:-runs/code/deepseek-coder-1.3b/paired-full-a100x1-sample256-eosv2-sh}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/code/deepseek-coder-1.3b/paired-full-$HARDWARE-gpus$NUM_GPUS-tp$ROLLOUT_TP_SIZE-sample$PARAMETER_TOKEN_SAMPLES-eosv2-perf}"
 
 # Current OPD protocol requires MINI_BATCH_SIZE == ROLLOUT_BATCH_SIZE.
 # With 128 / 128 / 1 on one GPU, gradients accumulate over 128 micro-batches.
@@ -26,7 +34,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-runs/code/deepseek-coder-1.3b/paired-full-a100x1-sampl
 # --dry-run prints the resolved settings without loading models or training.
 exec "$PYTHON_BIN" train.py \
   --scale deepseek-coder-1.3b --task code \
-  --experiment paired-full --hardware a100x1 \
+  --experiment paired-full --hardware "$HARDWARE" \
+  --num-gpus "$NUM_GPUS" --rollout-tp-size "$ROLLOUT_TP_SIZE" \
   --student "$STUDENT_PATH" \
   --rollout-batch-size "$ROLLOUT_BATCH_SIZE" \
   --mini-batch-size "$MINI_BATCH_SIZE" \

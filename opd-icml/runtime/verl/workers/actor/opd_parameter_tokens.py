@@ -10,6 +10,26 @@ import torch
 from . import opd_distributed as dp
 
 
+def causal_token_prefix(inputs, position):
+    """Future suffix cannot affect a selected causal token's loss or gradient.
+
+    Retain the one final input slot expected by forward()'s logits alignment,
+    all prompt padding/position IDs, and the selected response token itself.
+    """
+    old_length = inputs['responses'].shape[1]
+    length = int(position)+1
+    if not 0 < length <= old_length:
+        raise ValueError('Token position is outside the response')
+    prefix = inputs['input_ids'].shape[1]-old_length
+    trimmed = dict(inputs)
+    for key in ('input_ids','attention_mask','position_ids'):
+        trimmed[key] = inputs[key][..., :prefix+length]
+    for key in ('responses','response_mask','opd_top16_ids','opd_teacher_top16_logits','opd_student_top16_logits'):
+        if key in inputs:
+            trimmed[key] = inputs[key][:, :length]
+    return trimmed
+
+
 class GradientEnergy:
     """Norm across unique trainable parameters, excluding flat padding."""
     def __init__(self, model):
@@ -36,7 +56,9 @@ class GradientEnergy:
 
     @torch.no_grad()
     def squared_norm(self):
-        value = 0.
+        # Keep reductions on their device; scalar conversion per tiny block
+        # otherwise forces thousands of CUDA/host synchronizations per token.
+        subtotals = {}
         for index, start, count, _ in self.layout.slices:
             grad = self.layout.params[index].grad
             if grad is None:
@@ -44,9 +66,12 @@ class GradientEnergy:
             if grad.is_sparse:
                 raise ValueError('Exact token audit requires dense parameter gradients')
             flat = grad.detach().reshape(-1)
+            if flat.device not in subtotals:
+                subtotals[flat.device] = torch.zeros((),device=flat.device,dtype=torch.float64)
             for offset in range(start, start + count, 262144):
                 block = flat[offset:min(offset + 262144, start + count)].double()
-                value += float(block.square().sum())
+                subtotals[flat.device].add_(block.square().sum())
+        value = sum(float(subtotal) for subtotal in subtotals.values())
         result = dp.total(value / self.divisor)
         if not np.isfinite(result):
             raise FloatingPointError('Nonfinite per-token parameter gradient energy')
@@ -67,6 +92,8 @@ class FullParameterTokenAudit:
         from .opd_top16 import _unwrap_actor_module
         model = _unwrap_actor_module(actor.actor_module)
         config = getattr(model, 'config', None)
+        self.prefix = bool(self.cfg.get('causal_prefix', True)) and getattr(config,'model_type',None) in {
+            'llama','qwen3','qwen2','gemma3_text'}
         dropout = any(isinstance(m, torch.nn.modules.dropout._DropoutNd) and m.p > 0
                       for m in model.modules())
         dropout |= any(float(getattr(config, key, 0.) or 0.) > 0 for key in
@@ -113,15 +140,19 @@ class FullParameterTokenAudit:
             print(f'[parameter tokens] step={step} inner={inner+1}: exact full-model '
                   f'gradients for {label} tokens; {len(rows)} extra backwards', flush=True)
         cursor = 0
+        full_forward_tokens = actual_forward_tokens = 0
         with gradient_observation(self.actor):
             for row in np.unique(rows):
                 selected = data.select_idxs([row])
                 inputs = {k: v.to(device) for k, v in selected.batch.items()}
                 for pos in positions[rows == row]:
                     self.actor.actor_optimizer.zero_grad(set_to_none=True)
-                    _, logits, _, _ = forward(self.actor, inputs, float(data.meta_info['temperature']),
-                                              inputs['opd_top16_ids'], diagnostics=False)
-                    token_loss = reverse_kl(logits, inputs['opd_teacher_top16_logits'])[0, int(pos)]
+                    token_inputs = causal_token_prefix(inputs,pos) if self.prefix else inputs
+                    full_forward_tokens += inputs['input_ids'].numel()
+                    actual_forward_tokens += token_inputs['input_ids'].numel()
+                    _, logits, _, _ = forward(self.actor, token_inputs, float(data.meta_info['temperature']),
+                                              token_inputs['opd_top16_ids'], diagnostics=False)
+                    token_loss = reverse_kl(logits, token_inputs['opd_teacher_top16_logits'])[0, int(pos)]
                     token_loss.backward()
                     energy[cursor] = layout.squared_norm()
                     losses[cursor] = float(token_loss.detach())
@@ -131,7 +162,9 @@ class FullParameterTokenAudit:
                         print(f'[parameter tokens] {cursor}/{len(rows)}; '
                               f'{time.perf_counter()-started:.1f}s', flush=True)
         result = dict(row=rows, pos=positions, energy=energy, diagnostic_kl=losses,
-                      seconds=time.perf_counter()-started, backwards=len(rows))
+                      seconds=time.perf_counter()-started, backwards=len(rows),
+                      causal_prefix=self.prefix, forward_input_tokens=actual_forward_tokens,
+                      full_suffix_forward_input_tokens=full_forward_tokens)
         if sampling is not None:
             result['sampling'] = sampling
         return result
@@ -150,6 +183,9 @@ def attach_parameter_energy(fields, measurement):
                 token_count=len(target), extra_backwards=measurement['backwards'],
                 diagnostic_optimizer_steps=0, extra_teacher_calls=0,
                 parameter_vectors_saved=False, seconds=measurement['seconds'],
+                causal_prefix=measurement.get('causal_prefix',False),
+                forward_input_tokens=measurement.get('forward_input_tokens'),
+                full_suffix_forward_input_tokens=measurement.get('full_suffix_forward_input_tokens'),
                 definition='E_i = sum over unique trainable parameters theta of (d ell_i / d theta)^2',
                 objective='unmodified conditional cached Top16 KL; individual token loss BEFORE batch mean and clipping',
                 diagnostic_mode='dropout-free, checkpoint recomputation enabled; original module modes and RNG restored',

@@ -19,8 +19,9 @@ def publish_and_rotate(directory, step, reuse, keep=1, final_model_only=False):
     if current.is_symlink() or not current.is_dir() or current.resolve().parent != base:
         raise ValueError('Unsafe current checkpoint')
     config=current/'actor/fsdp_config.json'
-    world=int(json.loads(config.read_text())['world_size']) if config.exists() else 1
-    if world not in (1,2):raise ValueError('Unsupported replication checkpoint world size')
+    world=json.loads(config.read_text())['world_size'] if config.exists() else 1
+    if not isinstance(world,int) or isinstance(world,bool) or world<1:
+        raise ValueError('Invalid replication checkpoint world size')
     required = ('opd_optimizer_updates.json',)+tuple(f'actor/model_world_size_{world}_rank_{r}.pt' for r in range(world))
     if not final_model_only:
         required += ('data.pt',)+tuple(f'actor/{kind}_world_size_{world}_rank_{r}.pt'

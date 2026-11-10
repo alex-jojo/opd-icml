@@ -16,7 +16,7 @@ def run_script(**settings):
     for name in ['SCALE','EXPERIMENT','HARDWARE','ROLLOUT_BATCH_SIZE','MINI_BATCH_SIZE','MICRO_BATCH_SIZE',
                  'LEARNING_RATE','ROLLOUT_MAX_NUM_SEQS','ROLLOUT_GPU_MEMORY_UTILIZATION',
                  'PARAMETER_TOKEN_GRADIENTS','PARAMETER_TOKEN_SAMPLES','STUDENT_PATH','TEACHER_PATH',
-                 'DATA_PATH','OUTPUT_DIR','CUDA_VISIBLE_DEVICES']:
+                 'DATA_PATH','OUTPUT_DIR','CUDA_VISIBLE_DEVICES','NUM_GPUS','ROLLOUT_TP_SIZE']:
         env.pop(name,None)
     env.update(PYTHON_BIN=sys.executable,**settings)
     return subprocess.run(['bash',str(ROOT/'scripts/train_math.sh'),'--dry-run'],
@@ -80,3 +80,13 @@ def test_inherit_exact_and_off_diagnostic_modes():
         options=json.loads(result.stdout)['parameter_token_gradients']
         assert options['enabled']==(mode!='off')
         assert options['mode']=='exact_all'
+
+
+@pytest.mark.parametrize('gpus,tp',[(1,1),(2,2),(4,4),(8,2)])
+def test_explicit_gpu_count_overrides_hardware_preset(gpus,tp):
+    result=run_script(NUM_GPUS=str(gpus),ROLLOUT_TP_SIZE=str(tp))
+    assert result.returncode==0,result.stderr
+    plan=json.loads(result.stdout)
+    assert plan['gpu_count']==gpus and plan['rollout_tensor_parallel_size']==tp
+    assert plan['rollout_batch']==plan['mini_batch_size']==128
+    assert plan['parameter_token_gradients']['sample_size']==256

@@ -8,6 +8,8 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 SCALE="${SCALE:-1.7b}"                    # 1.7b | 4b | 8b | gemma3-12b
 EXPERIMENT="${EXPERIMENT:-paired-full}"  # paired-full | original-full | early-stop | reuse
 HARDWARE="${HARDWARE:-a100x1}"            # a100x1 | l40x4 | recorded (keep YAML hardware)
+NUM_GPUS="${NUM_GPUS:-auto}"              # auto: preset/YAML count; or 1, 2, 4, 8...
+ROLLOUT_TP_SIZE="${ROLLOUT_TP_SIZE:-auto}" # auto: GPU count; optional smaller divisor.
 
 # auto inherits the selected experiment's YAML. Change to a number to override.
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-auto}" # paired-full: 128; original-full: 160.
@@ -52,6 +54,10 @@ case "$HARDWARE" in
   recorded) GPU_COUNT="${PROFILE_VALUES[1]}" ;;
   *) printf 'Unsupported HARDWARE: %s\n' "$HARDWARE" >&2; exit 2 ;;
 esac
+if [[ "$NUM_GPUS" != auto ]]; then GPU_COUNT="$NUM_GPUS"; fi
+if [[ ! "$GPU_COUNT" =~ ^[1-9][0-9]*$ ]]; then printf 'NUM_GPUS must be positive\n' >&2; exit 2; fi
+if [[ "$ROLLOUT_TP_SIZE" == auto ]]; then ROLLOUT_TP_SIZE="$GPU_COUNT"; fi
+hardware_args+=(--num-gpus "$GPU_COUNT" --rollout-tp-size "$ROLLOUT_TP_SIZE")
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   CUDA_VISIBLE_DEVICES=0
   for ((GPU_INDEX=1; GPU_INDEX<GPU_COUNT; GPU_INDEX++)); do CUDA_VISIBLE_DEVICES+=",$GPU_INDEX"; done
@@ -70,7 +76,7 @@ asset_args=()
 if [[ -n "$STUDENT_PATH" ]]; then asset_args+=(--student "$STUDENT_PATH"); fi
 if [[ -n "$TEACHER_PATH" ]]; then asset_args+=(--teacher "$TEACHER_PATH"); fi
 if [[ -n "$DATA_PATH" ]]; then asset_args+=(--data "$DATA_PATH"); fi
-if [[ -z "$OUTPUT_DIR" ]]; then OUTPUT_DIR="runs/math/$SCALE/$EXPERIMENT-$HARDWARE-$PARAMETER_TOKEN_GRADIENTS-sh"; fi
+if [[ -z "$OUTPUT_DIR" ]]; then OUTPUT_DIR="runs/math/$SCALE/$EXPERIMENT-$HARDWARE-gpus$GPU_COUNT-tp$ROLLOUT_TP_SIZE-$PARAMETER_TOKEN_GRADIENTS-sh"; fi
 
 # Budgets, model revisions, lengths, validation, and checkpoints follow YAML.
 # 128/128/1 on one GPU: accumulate 128 micro-batches before one optimizer update.
