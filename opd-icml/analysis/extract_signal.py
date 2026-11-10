@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+FIELDS = ["step", "model", "train_kl", "above_initial_kl_threshold_pct", "top_kl_decile_hidden_energy_pct",
+          "top_kl_decile_parameter_energy_pct", "parameter_grad_norm", "hidden_gradient_rms",
+          "parameter_gradient_rms", "hidden_gradient_frobenius", "parameter_gradient_frobenius",
+          "above_initial_kl_parameter_energy_pct", "parameter_token_extra_backwards",
+          "parameter_token_gradient_seconds"]
 
 
 def read_run(path, model):
@@ -16,11 +21,24 @@ def read_run(path, model):
         step = batch["step"]
         audit = path / f"replication/token_audit/step_{step:03}_inner_1.json"
         frequency = share = ""
+        parameter_share = fixed_share = ""
+        report = {}
         if audit.is_file():
-            groups = json.loads(audit.read_text(encoding="utf8"))["groups"]
+            report = json.loads(audit.read_text(encoding="utf8"))
+            groups = report["groups"]
             frequency = 100 * groups["kl_above_step1_p90"]["fraction"]
-            share = 100 * groups["kl_top10"]["quantities"]["raw_gradient_energy"]["share"]
-        yield [step, model, batch["metrics"]["actor/opd_top16_kl"], frequency, share]
+            value = groups["kl_top10"]["quantities"]["raw_gradient_energy"]["share"]
+            share = 100 * value if value is not None else ""
+            value = groups["kl_top10"]["quantities"].get("parameter_gradient_energy", {}).get("share")
+            parameter_share = 100 * value if value is not None else ""
+            value = groups["kl_above_step1_p90"]["quantities"].get("parameter_gradient_energy", {}).get("share")
+            fixed_share = 100 * value if value is not None else ""
+        meta = report.get("parameter_gradient_measurement", {})
+        yield [step, model, batch["metrics"]["actor/opd_top16_kl"], frequency, share,
+               parameter_share, batch["metrics"].get("actor/grad_norm", ""),
+               report.get("gradient_rms_full", ""), report.get("parameter_gradient_rms", ""),
+               report.get("gradient_frobenius_full", ""), report.get("parameter_gradient_frobenius", ""),
+               fixed_share, meta.get("extra_backwards", ""), meta.get("seconds", "")]
 
 
 if __name__ == "__main__":
@@ -33,5 +51,5 @@ if __name__ == "__main__":
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf8", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["step","model","train_kl","above_initial_kl_threshold_pct","top_kl_decile_hidden_energy_pct"])
+        writer.writerow(FIELDS)
         writer.writerows(rows)

@@ -91,12 +91,17 @@ def summarize(f, masks, quantities):
 
 def training_summary(f, z, thresholds):
     masks = groups(f, thresholds)
+    quantities=['kl','tv','raw_gradient_energy','projected_gradient_energy','logratio_variance']
+    concentration_fields=['kl','tv','entropy','tip','logratio_variance','ier',
+                          'alignment','priority','raw_gradient_energy','projected_gradient_energy']
+    if 'parameter_gradient_energy' in f:
+        quantities.append('parameter_gradient_energy')
+        concentration_fields.append('parameter_gradient_energy')
     matrix = z.T.astype(np.float64)@z/len(z)
     e, q, stats = spectrum(matrix)
     mean = z.mean(0, dtype=np.float64)
     report = dict(scope='conditional Top16; token loss gradients BEFORE batch mean/clipping',
-        thresholds=thresholds, groups=summarize(f, masks, {k:f[k] for k in
-            ('kl','tv','raw_gradient_energy','projected_gradient_energy','logratio_variance')}),
+        thresholds=thresholds, groups=summarize(f, masks, {k:f[k] for k in quantities}),
         spectrum=stats, nuclear_norm_token_normalized=float(np.sqrt(e).sum()),
         gradient_rms_full=float(np.sqrt(f['raw_gradient_energy'].mean())),
         gradient_rms_u=float(np.sqrt(f['projected_gradient_energy'].mean())),
@@ -105,11 +110,15 @@ def training_summary(f, z, thresholds):
         gradient_l2_mean_full=float(np.sqrt(f['raw_gradient_energy']).mean()),
         gradient_l2_mean_u=float(np.sqrt(f['projected_gradient_energy']).mean()),
         signed_mean_energy=float(mean@mean), signed_mean_fraction=float(mean@mean/max(e.sum(),1e-30)),
-        concentration={k:concentration(f[k]) for k in ('kl','tv','entropy','tip','logratio_variance','ier',
-            'alignment','priority','raw_gradient_energy','projected_gradient_energy')},
+        concentration={k:concentration(f[k]) for k in concentration_fields},
         ier_valid_fraction=float(f['ier_valid'].mean()), teachability_available=False,
         teachability_reason='Full-vocabulary teacher normalization / student support mass not recorded',
         notes='Hidden mean cancellation is NOT parameter-gradient cancellation; scores never select training tokens.')
+    if 'parameter_gradient_energy' in f:
+        energy=np.asarray(f['parameter_gradient_energy'],dtype=np.float64)
+        report.update(parameter_gradient_rms=float(np.sqrt(energy.mean())),
+                      parameter_gradient_frobenius=float(np.sqrt(energy.sum())),
+                      parameter_gradient_l2_mean=float(np.sqrt(energy).mean()))
     # A direct high/middle/low comparison, alongside equal-count subsampling.
     # Do not confuse more positions with more independent correction directions.
     order=np.argsort(f['kl'],kind='stable');k=max(1,int(np.ceil(len(order)*.1)))
@@ -129,6 +138,13 @@ def training_summary(f, z, thresholds):
             nuclear_norm_token_normalized=float(np.sqrt(e0).sum()),
             matched_count=len(take),matched_spectrum=s1,
             matched_nuclear_norm=float(np.sqrt(e1).sum()))
+        if 'parameter_gradient_energy' in f:
+            energy=np.asarray(f['parameter_gradient_energy'][ix],dtype=np.float64)
+            report['kl_high_middle_low'][label].update(
+                parameter_gradient_energy=float(energy.sum()),
+                parameter_gradient_rms=float(np.sqrt(energy.mean())),
+                parameter_gradient_energy_share=float(energy.sum()/f['parameter_gradient_energy'].sum())
+                    if f['parameter_gradient_energy'].sum()>1e-30 else None)
     # Requested Need x U-retention and its weighted 128D geometry: READ ONLY.
     weights=f['priority'].astype(np.float64)
     available=float(weights.sum())>1e-30

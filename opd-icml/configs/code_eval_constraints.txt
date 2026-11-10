@@ -1,0 +1,16 @@
+# Standalone evaluation environment; Python 3.10, Linux x86_64, CUDA 12.4.
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+torchaudio==2.6.0+cu124
+vllm==0.8.5.post1
+transformers==4.52.4
+tokenizers==0.21.2
+huggingface-hub==0.33.1
+numpy==1.26.4
+scipy==1.15.3
+datasets==4.5.0
+pyarrow==23.0.0
+evalplus==0.3.1
+tree-sitter==0.22.3
+tree-sitter-python==0.21.0
+stop-sequencer==1.2.3

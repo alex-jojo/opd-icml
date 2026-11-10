@@ -35,6 +35,30 @@ axes[0].legend()
 fig.savefig(FIGURES / "rq1_signal.pdf")
 plt.close(fig)
 
+if any(r.get('top_kl_decile_parameter_energy_pct') for r in signal):
+    fig, axes = plt.subplots(1, 2, figsize=(7, 3), constrained_layout=True)
+    for ax, (model, color, marker) in zip(axes, models):
+        for key, label, style in [('top_kl_decile_hidden_energy_pct', 'Hidden state', '--'),
+                                  ('top_kl_decile_parameter_energy_pct', 'Full parameters', '-')]:
+            selected = [r for r in signal if r['model'] == model and r.get(key)]
+            ax.plot([int(r['step']) for r in selected], [float(r[key]) for r in selected],
+                    color=color, linestyle=style, label=label, marker=marker, ms=2)
+        ax.set(xlabel='Training step', ylabel='Top-KL decile energy (%)', title=model, ylim=(0, 100))
+        ax.legend(); ax.grid(alpha=.25)
+    fig.savefig(FIGURES / 'rq1_parameter_energy.pdf')
+    plt.close(fig)
+
+if any(r.get('parameter_grad_norm') for r in signal):
+    fig, ax = plt.subplots(figsize=(4, 3), constrained_layout=True)
+    for model, color, marker in models:
+        selected = [r for r in signal if r['model'] == model and r.get('parameter_grad_norm')]
+        ax.plot([int(r['step']) for r in selected], [float(r['parameter_grad_norm']) for r in selected],
+                color=color, label=model)
+    ax.set(xlabel='Training step', ylabel='Parameter gradient norm (before clipping)')
+    ax.legend(); ax.grid(alpha=.25)
+    fig.savefig(FIGURES / 'rq1_gradient_norm.pdf')
+    plt.close(fig)
+
 costs = rows(args.rq4)
 fig, axes = plt.subplots(1, 2, figsize=(7, 3), constrained_layout=True)
 for ax, (model, color, marker) in zip(axes, models):

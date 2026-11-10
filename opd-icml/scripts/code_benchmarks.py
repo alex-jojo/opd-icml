@@ -102,7 +102,12 @@ def date_selected(value, start=None, end=None):
     return (start is None or current >= date.fromisoformat(start)) and (end is None or current <= date.fromisoformat(end))
 
 
-def prompt_for(question):
+def prompt_for(question, prompt_style='chat'):
+    if prompt_style not in ('chat', 'completion'):
+        raise ValueError('Unknown code prompt style')
+    if prompt_style == 'completion' and question['benchmark'] != 'livecodebench':
+        # Native EvalPlus prefix: HumanEval function stub or MBPP docstring.
+        return question['prompt']
     if question['benchmark'] == 'livecodebench':
         prefix = 'Solve the following programming problem in Python. '
         if question.get('starter_code'):
@@ -112,12 +117,18 @@ def prompt_for(question):
         text = prefix + 'Return the complete solution in a final ```python code block.\n\n' + question['prompt']
         if question.get('starter_code'):
             text += '\n\nStarter code:\n```python\n' + question['starter_code'] + '\n```'
-        return text
+        return text + '\n\n```python\n' if prompt_style == 'completion' else text
     return ('Implement the following Python programming task. Return the complete Python solution, including '
             'the required function and imports, in a final ```python code block.\n\n' + question['prompt'])
 
 
-def extract_solution(response, question):
+def extract_solution(response, question, prompt_style='chat'):
+    if prompt_style == 'completion':
+        if question['benchmark'] == 'livecodebench':
+            # The opening code fence was already in the model input.
+            return response.split('```', 1)[0].strip()
+        # Preserve body indentation and the exact code prefix that the model saw.
+        return question['prompt'] + response
     blocks = re.findall(r'```(?:python|py)?\s*\n(.*?)```', response, re.DOTALL | re.IGNORECASE)
     code = blocks[-1].strip() if blocks else response.strip()
     if question['benchmark'] == 'humanevalplus':
@@ -136,7 +147,7 @@ def validate_generations(questions, generations, samples):
     if samples < 4 or len(generations) != len(questions):
         raise ValueError('pass@4 requires >=4 samples for every question; task count mismatch')
     for question, generation in zip(questions, generations):
-        expected = hashlib.sha256(prompt_for(question).encode()).hexdigest()
+        expected = hashlib.sha256(prompt_for(question, generation.get('prompt_style', 'chat')).encode()).hexdigest()
         if generation['task_id'] != question['task_id'] or generation['prompt_sha256'] != expected:
             raise ValueError('Generation task order/prompt identity mismatch')
         if len(generation['responses']) != samples or not all(isinstance(x, str) for x in generation['responses']):

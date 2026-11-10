@@ -23,16 +23,24 @@ def generate(args, questions, directory):
     if len(rows) == len(questions):
         return
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    prompts = [tokenizer.apply_chat_template([dict(role='user', content=prompt_for(q))],
+    style = getattr(args, 'prompt_style', 'chat')
+    if style == 'completion':
+        prompts = [prompt_for(q, style) for q in questions]
+    else:
+        if getattr(tokenizer, 'chat_template', True) is None:
+            raise ValueError('Model has no chat template; use --prompt-style completion for a Base model')
+        prompts = [tokenizer.apply_chat_template([dict(role='user', content=prompt_for(q))],
                     tokenize=False, add_generation_prompt=True, enable_thinking=False) for q in questions]
-    for question, prompt in zip(questions, prompts):
-        if len(tokenizer.encode(prompt, add_special_tokens=False)) > args.max_prompt_tokens:
+    tokenized = [tokenizer.encode(prompt, add_special_tokens=style == 'completion') for prompt in prompts]
+    for question, ids in zip(questions, tokenized):
+        if len(ids) > args.max_prompt_tokens:
             raise ValueError(f'Prompt too long; refusing to truncate/drop {question["task_id"]}')
     model = LLM(model=args.model_path, tokenizer=args.model_path,
                 tensor_parallel_size=torch.cuda.device_count(), max_num_seqs=args.max_num_seqs,
                 max_model_len=args.max_prompt_tokens + args.max_tokens, gpu_memory_utilization=.9)
     sampling = SamplingParams(n=args.samples, temperature=args.temperature, top_p=args.top_p,
-                              seed=args.seed, max_tokens=args.max_tokens)
+                              seed=args.seed, max_tokens=args.max_tokens,
+                              **({'stop': ['```']} if style == 'completion' and args.benchmark == 'livecodebench' else {}))
     journal = directory / 'generation.partial.jsonl'
     if journal.exists():
         rows = list(read_jsonl(journal))
@@ -40,17 +48,21 @@ def generate(args, questions, directory):
     with journal.open('a', encoding='utf-8') as stream:
         for start in range(len(rows), len(questions), args.batch_size):
             end = min(start + args.batch_size, len(questions))
-            generated = model.generate(prompts[start:end], sampling_params=sampling)
+            # Explicit token IDs preserve the Base tokenizer's BOS exactly once.
+            inputs = [{'prompt_token_ids': ids} for ids in tokenized[start:end]] if style == 'completion' else prompts[start:end]
+            generated = model.generate(inputs, sampling_params=sampling)
             if len(generated) != end - start:
                 raise ValueError('Incomplete vLLM generation batch')
             for index, (question, answer) in enumerate(zip(questions[start:end], generated)):
                 if len(answer.outputs) != args.samples:
                     raise ValueError('Incomplete samples for a code task')
-                row = dict(task_id=question['task_id'], prompt_sha256=hashlib.sha256(prompt_for(question).encode()).hexdigest(),
+                row = dict(task_id=question['task_id'], prompt_sha256=hashlib.sha256(prompt_for(question, style).encode()).hexdigest(),
                            rendered_prompt=prompts[start + index],
                            responses=[result.text for result in answer.outputs],
                            response_lengths=[len(result.token_ids) for result in answer.outputs],
                            finish_reasons=[result.finish_reason for result in answer.outputs])
+                if style != 'chat':
+                    row.update(prompt_style=style, prompt_tokens=len(tokenized[start + index]))
                 rows.append(row)
                 stream.write(json.dumps(row, ensure_ascii=False) + '\n')
             stream.flush()
@@ -66,7 +78,7 @@ def grade_evalplus(args, questions, generations, directory, data_directory):
     dataset = 'humaneval' if args.benchmark == 'humanevalplus' else 'mbpp'
     variable = 'HUMANEVAL_OVERRIDE_PATH' if dataset == 'humaneval' else 'MBPP_OVERRIDE_PATH'
     os.environ[variable] = str((data_directory / 'official.jsonl').resolve())
-    samples = [dict(task_id=q['task_id'], solution=extract_solution(response, q))
+    samples = [dict(task_id=q['task_id'], solution=extract_solution(response, q, row.get('prompt_style', 'chat')))
                for q, row in zip(questions, generations) for response in row['responses']]
     sample_path = directory / 'evalplus.samples.jsonl'
     save_jsonl(sample_path, samples)
@@ -126,7 +138,8 @@ def grade_lcb(args, questions, generations, directory, data_directory):
             seen.add(task_id)
             if task_id in completed:
                 continue
-            codes = [extract_solution(text, question_map[task_id]) for text in generation_map[task_id]['responses']]
+            row = generation_map[task_id]
+            codes = [extract_solution(text, question_map[task_id], row.get('prompt_style', 'chat')) for text in row['responses']]
             pending[pool.submit(lcb_one, task, codes, args.timeout)] = task_id
             if len(pending) >= args.workers * 2:
                 commit(next(as_completed(pending)))
@@ -185,6 +198,7 @@ def main():
     parser.add_argument('--temperature', type=float, default=1.)
     parser.add_argument('--top-p', type=float, default=1.)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--prompt-style', choices=['chat', 'completion'], default='chat')
     parser.add_argument('--max-prompt-tokens', type=int, default=4096)
     parser.add_argument('--max-tokens', type=int, default=8192)
     parser.add_argument('--max-num-seqs', type=int, default=64)

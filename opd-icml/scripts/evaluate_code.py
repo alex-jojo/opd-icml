@@ -19,6 +19,8 @@ def main():
     parser.add_argument('--temperature', type=float, default=1.)
     parser.add_argument('--top-p', type=float, default=1.)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--prompt-style', choices=['chat', 'completion'], default='chat',
+                        help='Use completion for Base code models without a chat template')
     parser.add_argument('--max-prompt-tokens', type=int, default=4096)
     parser.add_argument('--max-tokens', type=int, default=8192)
     parser.add_argument('--max-num-seqs', type=int, default=64)
@@ -38,6 +40,8 @@ def main():
         parser.error('--model-path is required except for --grade-only')
     selected = BENCHMARKS if args.benchmark == 'all' else [args.benchmark]
     sampling = {key: getattr(args, key) for key in ('samples', 'temperature', 'top_p', 'seed', 'max_prompt_tokens', 'max_tokens')}
+    if args.prompt_style != 'chat':
+        sampling['prompt_style'] = args.prompt_style
     if args.dry_run:
         print(json.dumps(dict(benchmarks=list(selected), metric='pass@4', sampling=sampling,
                               data_dir=str(args.data_dir), output_dir=str(args.output_dir),
@@ -62,7 +66,7 @@ def main():
     worker = ROOT / 'scripts/code_benchmark_worker.py'
     for benchmark in selected:
         base = [sys.executable, str(worker), '--benchmark', benchmark, '--data-dir', str(args.data_dir.resolve()),
-                '--output-dir', str(args.output_dir.resolve())]
+                '--output-dir', str(args.output_dir.resolve()), '--prompt-style', args.prompt_style]
         for key in ('samples', 'temperature', 'top_p', 'seed', 'max_prompt_tokens', 'max_tokens', 'max_num_seqs', 'batch_size', 'workers', 'timeout'):
             base += ['--' + key.replace('_', '-'), str(getattr(args, key))]
         if not args.grade_only:

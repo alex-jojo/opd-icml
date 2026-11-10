@@ -24,6 +24,12 @@ class StudyReplication:
         self.dimension=int(_final_norm_module(actor.actor_module).weight.numel());self.rank=int(self.cfg.get('rank',128))
         self.full=self.cfg['mode']=='full';self.freeze=int(self.cfg.get('freeze_step',10));self.interval=int(self.cfg.get('interval',5))
         self.study=GradientStudy(actor,self.study_cfg,self.output);self.stability=None
+        self.parameter_tokens=None;self.parameter_measurement=None
+        parameter_cfg=self.study_cfg.get('parameter_tokens',{})
+        if parameter_cfg.get('enabled',False):
+            if not self.full:raise ValueError('Full parameter token audit requires ordinary FULL mode')
+            from .opd_parameter_tokens import FullParameterTokenAudit
+            self.parameter_tokens=FullParameterTokenAudit(actor,parameter_cfg)
         self.tokenizer=None;self.labels={}
         if self.cfg.get('tokenizer_path'):
             from transformers import AutoTokenizer
@@ -66,6 +72,11 @@ class StudyReplication:
     def start_study(self,payload):
         payload['basis_reference']=self.reference
         self.study.start(self.train,self.u,payload,self.completed)
+
+    def before_inner(self,inner):
+        self.parameter_measurement=None
+        if self.measure and self.parameter_tokens is not None:
+            self.parameter_measurement=self.parameter_tokens.measure(self.train,self.step,inner)
 
     @contextmanager
     def watch_training(self,inputs,inner,cursor):
@@ -183,7 +194,19 @@ class StudyReplication:
             for j,key in enumerate(('numeric','operator','latex')):merged[key]=np.array([self.labels[int(t)][j] for t in merged['token']])
             merged['other']=~(merged['boundary']|merged['numeric']|merged['operator']|merged['latex'])
         merged=enriched(merged)
+        parameter_metadata=None
+        if self.parameter_measurement is not None:
+            from .opd_parameter_tokens import attach_parameter_energy
+            parameter_metadata=attach_parameter_energy(merged,self.parameter_measurement)
+            self.parameter_measurement=None
         token_report,token_arrays=dp.primary_call(lambda:training_summary(merged,z,self.thresholds))
+        if parameter_metadata is not None:
+            token_report['parameter_gradient_measurement']=parameter_metadata
+            self.metrics['timing/parameter_token_gradient_seconds']=parameter_metadata['seconds']
+            self.metrics['token_audit/parameter_gradient_rms']=token_report['parameter_gradient_rms']
+            self.metrics['token_audit/parameter_gradient_frobenius']=token_report['parameter_gradient_frobenius']
+            self.metrics['token_audit/kl_top10_parameter_energy_share']=token_report['groups']['kl_top10']['quantities']['parameter_gradient_energy']['share'] or 0.
+            self.metrics['token_audit/parameter_token_extra_backwards']=parameter_metadata['extra_backwards']
         token_report.update(basis_reference=self.reference,old_validation_banks_removed=True)
         token_report['full_u_outside_kl_groups']=group_report
         self.metrics.update({'token_audit/high_kl_fraction':token_report['groups']['kl_above_step1_p90']['fraction'],

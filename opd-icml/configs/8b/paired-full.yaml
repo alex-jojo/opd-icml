@@ -93,6 +93,10 @@
         },
         "fixed_heldout_probe_size": 0,
         "gradient_study": {
+          "parameter_tokens": {
+            "enabled": true,
+            "mode": "exact_all"
+          },
           "adapter_statistics": false,
           "batches": 4,
           "enabled": true,

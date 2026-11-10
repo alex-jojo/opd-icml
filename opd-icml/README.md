@@ -22,7 +22,49 @@ Qwen3-1.7B / 4B、Qwen3-8B Base → 32B 教师，以及 Gemma-3-12B PT → IT �
 
 原有 1.7B / 4B 配置来自成功运行的训练日志中实际解析的参数。paired FULL 的 rollout batch 是 128；原始研究的 batch 是 160，使用其原有的 128/32 协议。两套协议分别有自己的 FULL 参考结果。模型和数据路径在运行时注入，日志默认输出到控制台。启动入口用于新实验，每个配置使用独立输出目录。
 
+## RQ1 全量逐 token 参数梯度
+
+针对 4×L40、主存 512 GB 或以上，可在下面的训练命令中增加 `--hardware l40x4`，使用后文的四卡启动预设。
+
+四组模型的 `paired-full`（math 和 code）默认开启 `gradient_study.parameter_tokens.enabled=true`，模式为 `exact_all`。测量时机与 hidden 统计一致：第 1 步、每 5 次更新、最后一步。每次覆盖 hidden 统计中的全部有效 response token，不抽样、不做随机投影估计。其他实验配置保持原设置；有 `gradient_study` 的配置也可通过下面的命令显式开启。
+
+对每个 token 单独反传其未平均、未裁剪的条件 Top16 KL，计算 `parameter_gradient_energy = sum_theta (d loss_i / d theta)^2`。范围是所有参与训练的 backbone、embedding、归一化和输出头参数；共享参数只计一次。FSDP 下所有 rank 同步计算同一个 token，再累加不重叠梯度分片的平方范数。梯度平方和用 FP64 累加；“精确”指直接逐 token 自动微分，不使用范数估计器，仍采用训练环境本身的数值精度。
+
+参数统计与 hidden 统计写在同一个 `replication/token_audit/step_XXX_inner_N.json` 和 `.npz` 中。每个现有 token 分组（包括 KL top 1/5/10/20%、固定 step-1 阈值、位置等）增加 `quantities.parameter_gradient_energy`，含总和、均值和能量占比；还保存参数梯度 RMS、Frobenius 范数、平均 L2 范数、能量集中度，以及逐 token 标量和 row/pos。高/中/低 KL 分组也增加参数能量和 RMS。`parameter_gradient_measurement` 记录全量覆盖、额外反传次数、耗时和定义；不保存整个参数梯度向量，不额外调用 teacher，不执行诊断 optimizer step。
+
+**代价很大：若一个测量步有 N 个有效 token，该步额外执行 N 次完整学生 forward/backward。** 所有诊断在正式训练 backward 前运行，并恢复 RNG、模块模式和清空诊断梯度；正式训练仍使用原损失。控制台会显示进度。原有 `actor/grad_norm` 是 batch 参数梯度范数；逐 token 平方范数之和不等于 batch 梯度平方范数，也不代表 AdamW 更新能量。
+
+```bash
+python train.py --scale 1.7b --experiment paired-full --parameter-token-gradients exact-all
+python train.py --scale 4b --task code --experiment paired-full --parameter-token-gradients exact-all
+# 快速调试时显式关闭；RQ1 正式全量记录使用 exact-all
+python train.py --scale 1.7b --experiment paired-full --parameter-token-gradients off
+python analysis/extract_signal.py --run-17 runs/1.7b/paired-full --run-4 runs/4b/paired-full --output outputs/rq1.csv
+python analysis/plot_rq1_rq4.py --rq1 outputs/rq1.csv
+```
+
+新 CSV 增加 `top_kl_decile_parameter_energy_pct`、参数梯度范数、hidden/参数 RMS 与 Frobenius 范数和诊断开销；有新数据时额外生成 `rq1_parameter_energy.pdf` 和 `rq1_gradient_norm.pdf`。旧日志缺失的新字段留空，不回填或编造历史参数梯度数据。此统计不包含全程移除高 KL 监督的消融训练。
+
+当前模型配对使用零 dropout，记录器会检查这一点，保证确定性诊断与训练的目标一致。当前支持项目的 FSDP1 分片方案（`use_orig_params=false`），尚不支持 FSDP2/DTensor 或混合分片。服务器可先在两张 GPU 上运行 `python tests/check_parameter_tokens_distributed.py --fsdp` 验证分片范数；无 GPU 时去掉 `--fsdp` 可验证两进程 CPU DDP。
+
 ## 安装和准备数据
+
+### 4×L40 启动预设
+
+`--hardware l40x4` 在启动时显式覆盖四卡 FSDP、rollout TP=4、actor/ref/log-prob micro-batch=1、梯度检查点、AdamW optimizer CPU offload、teacher 参数 CPU offload，并关闭 teacher 编译、将 rollout 并发限制为 16。保持全局 rollout batch、训练目标、长度预算及诊断开关；不改写记录的原配置文件。四组模型的 math/code `paired-full` 均可用，全量精确参数梯度统计仍默认开启。
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+# 先查看四卡与全量梯度开关，不加载模型
+python train.py --scale 4b --experiment paired-full --hardware l40x4 --dry-run
+# 正式 math / code：按顺序分别运行，每个实验使用整个四卡节点
+python train.py --scale 4b --experiment paired-full --hardware l40x4 --output runs/l40x4/4b/math
+python train.py --scale 4b --task code --experiment paired-full --hardware l40x4 --output runs/l40x4/4b/code
+```
+
+可把 `4b` 换成 `1.7b`、`8b` 或 `gemma3-12b`。512 GB 或以上主存有利于卸载及梯度诊断缓冲，但这仍是待服务器验证的启动配置，不保证 8B/12B 的实际显存峰值或吞吐。L40 每卡 48 GB、无 NVLink，不能将四卡直接当成单卡 192 GB 使用；完整逐 token FSDP 反传的通信和计算成本都很高。先观察首次测量的 token 数、进度和耗时，再估算完整实验时间。仅为快速检查普通训练时，可显式加 `--parameter-token-gradients off`；正式全量记录保留默认开启。
+
+保留现有 CUDA 12.4 / PyTorch 2.6 / vLLM 0.8.5.post1 环境。运行前可执行 `nvidia-smi` 和 `nvidia-smi topo -m` 查看驱动、四张卡和 PCIe 拓扑；不要仅因没有 NVLink 就固定设置 `NCCL_P2P_DISABLE=1`。包含单卡 disposable shadow probes 的 `1.7b/original-full` 不支持该四卡预设，入口会明确报错，不会自动删除探针。
 
 在 Linux CUDA 训练环境中，从本目录执行。安装脚本使用 Python 3.10、PyTorch 2.6.0 / cu124、vLLM 0.8.5.post1 和原有项目的依赖版本。
 
@@ -89,6 +131,8 @@ python train.py --scale 1.7b --experiment reuse
 默认输出为 `runs/<scale>/<experiment>/`；也可以传入 `--output /path/to/new-run`。其中 `checkpoints/` 保存权重，`training_records/` 保存训练记录，`replication/` 保存该协议开启的诊断。早停步数由当前运行的规则判定。
 
 ## Code 实验：Eurus-2-RL-Data Code
+
+直接评测 DeepSeek-Coder 1.3B Base 的独立环境、模型下载、三个 benchmark 准备及完整命令见 [DEEPSEEK_CODER_EVAL.md](DEEPSEEK_CODER_EVAL.md)。Base 模型使用 `scripts/evaluate_code.py --prompt-style completion`；默认 chat 评测保持原协议。
 
 通过 `--task code` 切换到 [PRIME-RL/Eurus-2-RL-Data](https://huggingface.co/datasets/PRIME-RL/Eurus-2-RL-Data) 的 code 子集。固定 revision 为 `9776b13264b5aaa0b16495fcf086a0a8d86fd655`，仅提取 `ability == "code"` 的题：训练 25,276 题、官方 validation 1,024 题，来源为 APPS、CodeContests、TACO、Codeforces。原始两个 parquet 混合了 math/code；准备脚本按 parquet row-group 统计跳过纯 math 分块，再精确按 ability 过滤，不将 math 题混入 code 训练。
 

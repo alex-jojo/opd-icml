@@ -518,6 +518,8 @@ def update(actor,data):
     local_train,train_offset=dp.shard(train_data)
     for inner in range(max_inner):
         actor.actor_optimizer.zero_grad(set_to_none=True)
+        if replication is not None and hasattr(replication,'before_inner'):
+            replication.before_inner(inner)
         diagnostic_step=int(data.meta_info.get('global_steps',0))
         observer=diagnostic.before(diagnostic_step,total) if diagnostic is not None else None
         if observer is not None:
