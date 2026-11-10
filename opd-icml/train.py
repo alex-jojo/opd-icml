@@ -78,6 +78,49 @@ def apply_hardware_profile(cfg, hardware):
     return overrides
 
 
+def apply_batch_overrides(cfg, args):
+    """Explicit CLI settings take precedence over the hardware preset."""
+    paths = {
+        'rollout_batch_size': 'data.train_batch_size',
+        'mini_batch_size': 'actor_rollout_ref.actor.ppo_mini_batch_size',
+        'micro_batch_size': 'actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu',
+        'rollout_max_num_seqs': 'actor_rollout_ref.rollout.max_num_seqs',
+        'rollout_gpu_memory_utilization': 'actor_rollout_ref.rollout.gpu_memory_utilization',
+        'learning_rate': 'actor_rollout_ref.actor.optim.lr',
+    }
+    updates = {path: getattr(args, name) for name, path in paths.items()
+               if getattr(args, name) is not None}
+    if not updates:
+        return {}
+    for path, value in updates.items():
+        if not 0 < value < float('inf'):
+            raise ValueError(f'{path} must be finite and positive')
+    fraction = args.rollout_gpu_memory_utilization
+    if fraction is not None and not fraction < 1:
+        raise ValueError('rollout GPU memory utilization must be between 0 and 1')
+    def read(path):
+        target = cfg
+        for part in path.split('.'):
+            target = target[part]
+        return updates.get(path, target)
+    if cfg['actor_rollout_ref']['actor']['policy_loss'].get('loss_mode') == 'opd_top16':
+        batch = read('data.train_batch_size')
+        mini = read('actor_rollout_ref.actor.ppo_mini_batch_size')
+        micro = read('actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu')
+        gpus = cfg['trainer']['n_gpus_per_node']
+        if mini != batch:
+            raise ValueError('OPD uses one update per rollout: --mini-batch-size must equal --rollout-batch-size')
+        if mini % (gpus * micro):
+            raise ValueError('OPD mini-batch must be divisible by GPU count times per-GPU micro-batch')
+    for path, value in updates.items():
+        target = cfg
+        parts = path.split('.')
+        for part in parts[:-1]:
+            target = target[part]
+        target[parts[-1]] = value
+    return updates
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", choices=model_profiles(), required=True)
@@ -100,6 +143,12 @@ def main():
                         help="Sampled diagnostic token count (default 256); one quarter from the top-KL decile")
     parser.add_argument("--hardware", choices=["l40x4", "a100x1"],
                         help="Memory-conscious runtime overrides: four L40 GPUs or one A100 80GB")
+    parser.add_argument('--rollout-batch-size', type=int, help='Global prompts generated per rollout round')
+    parser.add_argument('--mini-batch-size', type=int, help='Global prompts in one OPD update; must equal rollout batch')
+    parser.add_argument('--micro-batch-size', type=int, help='Training sequences per forward/backward on each GPU')
+    parser.add_argument('--rollout-max-num-seqs', type=int, help='Maximum concurrent generation sequences')
+    parser.add_argument('--rollout-gpu-memory-utilization', type=float, help='vLLM GPU memory fraction, between 0 and 1')
+    parser.add_argument('--learning-rate', type=float, help='Student optimizer learning rate')
     args = parser.parse_args()
     if args.code_workers < 1:
         parser.error("--code-workers must be positive")
@@ -125,6 +174,7 @@ def main():
     config_name, cfg = training_config(profile, args.experiment, args.task)
     try:
         hardware_overrides = apply_hardware_profile(cfg, args.hardware)
+        hardware_overrides.update(apply_batch_overrides(cfg, args))
     except ValueError as error:
         parser.error(str(error))
     study = cfg['actor_rollout_ref']['actor']['policy_loss'].get('gradient_study', {})
@@ -148,6 +198,10 @@ def main():
     print(json.dumps(dict(experiment=args.experiment, scale=args.scale, task=args.task, gpu_count=cfg["trainer"]["n_gpus_per_node"],
                           hardware_profile=args.hardware,
                           micro_batch_size_per_gpu=cfg['actor_rollout_ref']['actor']['ppo_micro_batch_size_per_gpu'],
+                          mini_batch_size=cfg['actor_rollout_ref']['actor']['ppo_mini_batch_size'],
+                          learning_rate=cfg['actor_rollout_ref']['actor']['optim']['lr'],
+                          rollout_max_num_seqs=cfg['actor_rollout_ref']['rollout']['max_num_seqs'],
+                          rollout_gpu_memory_utilization=cfg['actor_rollout_ref']['rollout']['gpu_memory_utilization'],
                           rollout_tensor_parallel_size=cfg['actor_rollout_ref']['rollout']['tensor_model_parallel_size'],
                           rollout_batch=cfg["data"]["train_batch_size"], rounds_cap=cfg["trainer"]["opd_pause_after_rollout_rounds"],
                           updates_per_round=cfg["actor_rollout_ref"]["actor"]["policy_loss"]["jump_reuse_updates"],

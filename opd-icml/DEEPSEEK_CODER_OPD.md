@@ -52,6 +52,29 @@ Base 和 Instruct 的词表/token ID 完全一致，但 Base EOS=32014、Instruc
 
 ## 4. 查看配置并启动单卡 A100 80GB OPD
 
+专用入口为 `scripts/train_deepseek_code_a100.sh`。已激活 `code-eval310` 后，可直接编辑该文件顶部的变量，并执行：
+
+```bash
+bash scripts/train_deepseek_code_a100.sh --dry-run
+bash scripts/train_deepseek_code_a100.sh
+```
+
+`ROLLOUT_BATCH_SIZE=128` 是每轮采样题数；`MINI_BATCH_SIZE=128` 是一次参数更新覆盖的全局题数，当前 OPD 协议要求两者相同；`MICRO_BATCH_SIZE=1` 是每张 GPU 一次前向/反向的题数。单卡 128/128/1 通过 128 个 micro-batch 累积后更新一次。调大 micro-batch 影响显存和计算效率；改变 rollout/mini-batch 则改变每次更新的数据量，106 轮对应的总训练题数也会改变。
+
+脚本同时提供 `LEARNING_RATE=1e-5`、`ROLLOUT_MAX_NUM_SEQS=16`（生成并发）、`ROLLOUT_GPU_MEMORY_UTILIZATION=0.30`、`PARAMETER_TOKEN_SAMPLES=256`、`CODE_WORKERS=8` 及模型/输出路径。默认保持现有实验设置；脚本参数在硬件预设之后生效。模型的双 EOS 仍由准备入口生成，训练轮数和其他诊断仍继承 YAML。
+
+也可用环境变量临时覆盖，先查看生效配置：
+
+```bash
+MICRO_BATCH_SIZE=2 ROLLOUT_MAX_NUM_SEQS=32 \
+  OUTPUT_DIR=runs/code/deepseek-coder-1.3b/a100-micro2-seqs32 \
+  bash scripts/train_deepseek_code_a100.sh --dry-run
+```
+
+此命令只检查配置；更大 micro-batch 或生成并发的显存峰值和速度需要另行实测。正式运行时去掉 `--dry-run`，使用新的输出目录。当前进程不会因编辑脚本而改变。
+
+对应的 Python 入口仍可直接使用：
+
 ```bash
 export CUDA_VISIBLE_DEVICES=0
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
