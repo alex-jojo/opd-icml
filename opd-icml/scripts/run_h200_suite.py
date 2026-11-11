@@ -15,6 +15,7 @@ import time
 import uuid
 
 from run_h200_experiment import ROOT, EXPERIMENTS, select_devices
+from wandb_config import load_wandb_environment
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
 LARGE = ['8b', 'gemma3-12b', 'deepseek-coder-33b']
@@ -190,7 +191,7 @@ class Processes:
         self.termination_grace_seconds = termination_grace_seconds
 
     def run(self, command, log, cpu_only=False):
-        env = os.environ.copy()
+        env = load_wandb_environment(os.environ)
         if cpu_only:
             env['CUDA_VISIBLE_DEVICES'] = ''
         log.parent.mkdir(parents=True, exist_ok=True)

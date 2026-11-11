@@ -21,3 +21,7 @@ models/
 # Downloaded code evaluation datasets and private tests
 data/code_benchmarks/
 data/code_benchmarks_sources/
+
+# Local W&B credentials and generated tracking files
+.wandb.local.json
+wandb/

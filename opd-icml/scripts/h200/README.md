@@ -2,6 +2,8 @@
 
 环境、模型权限和数据准备见项目主 [README](../../README.md#h200-操作指南)。从项目根目录运行，使用已激活的 Python 3.10 训练环境。
 
+所有入口自动读取项目根目录的私有 `.wandb.local.json`，有凭据时启用 W&B 训练日志。该文件已被 Git 忽略，部署服务器时需另行复制；配置与覆盖方式见主 README 的“W&B 训练日志”。
+
 ## 整套实验
 
 ```bash
@@ -33,10 +35,10 @@ bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/con
 
 | 学生 | 卡数 | 任务 | 学生micro-batch | 教师micro-batch | rollout并发 | optimizer/teacher卸载 |
 |---|---:|---|---:|---:|---:|---|
-| DeepSeek1.3B | 1 | Code | 4 | 4 | 64 | 关/关 |
-| Qwen1.7B | 1 | Math | 4 | 4 | 64 | 关/关 |
-| Qwen4B | 1 | Math | 4 | 4 | 64 | 关/关 |
-| DeepSeek6.7B | 1 | Code | 2 | 2 | 32 | 开/开 |
+| DeepSeek1.3B | 1 | Code | 2 | 2 | 64 | 关/关 |
+| Qwen1.7B | 1 | Math | 2 | 2 | 64 | 关/关 |
+| Qwen4B | 1 | Math | 2 | 2 | 64 | 关/关 |
+| DeepSeek6.7B | 1 | Code | 1 | 1 | 32 | 开/开 |
 | Qwen8B→32B | 4 | Math | 2 | 2 | 32 | 开/开 |
 | Gemma12B | 4 | Math | 2 | 2 | 32 | 开/开 |
 | DeepSeek33B | 4 | Code | 1 | 1 | 16 | 开/开 |
@@ -61,7 +63,7 @@ bash scripts/h200/train_eval_gemma3_12b.sh
 
 ```bash
 bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
-  --micro-batch-size 4 --teacher-micro-batch-size 4 \
+  --micro-batch-size 2 --teacher-micro-batch-size 2 \
   --rollout-max-num-seqs 64 --output runs/h200/qwen4-custom
 
 # Code训练、合并、全部生成；完成后GPU阶段结束。

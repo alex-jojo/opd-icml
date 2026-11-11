@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 from model_assets import model_profiles, prepare_models
+from wandb_config import load_wandb_environment, apply_wandb_tracking
 
 ROOT = Path(__file__).resolve().parent
 
@@ -227,8 +228,10 @@ def main():
         parser.error("--experiment is required unless --prepare-only is used")
     config_name, cfg = training_config(profile, args.experiment, args.task)
     try:
+        tracking_env = load_wandb_environment(os.environ)
         hardware_overrides = apply_hardware_profile(cfg, args.hardware, args.num_gpus, args.rollout_tp_size)
         hardware_overrides.update(apply_batch_overrides(cfg, args))
+        hardware_overrides.update(apply_wandb_tracking(cfg, tracking_env))
         for name, key in [('optimizer_offload', 'actor'), ('teacher_offload', 'ref')]:
             value = getattr(args, name)
             if value is not None:
@@ -294,6 +297,9 @@ def main():
                           max_prompt_tokens=cfg['data']['max_prompt_length'], max_response_tokens=cfg['data']['max_response_length'],
                           code_judge=('sandbox' if args.sandbox_url else 'local') if args.task == 'code' else None,
                           parameter_token_gradients=study.get('parameter_tokens', {'enabled': False}),
+                          wandb=dict(enabled=tracking_env['WANDB_MODE'] != 'disabled' and
+                                     any(name in cfg['trainer']['logger'] for name in ('wandb', 'tracking')),
+                                     mode=tracking_env['WANDB_MODE'], project=cfg['trainer']['project_name']),
                           models=models, command=shlex.join(command)), indent=2), flush=True)
     if args.dry_run:
         return
@@ -313,7 +319,7 @@ def main():
             parser.error('The local code judge requires a Linux/Unix training server, or pass --sandbox-url')
     if output.exists() and any(output.iterdir()):
         parser.error(f"Choose an empty output directory: {output}")
-    env = os.environ.copy()
+    env = tracking_env.copy()
     if args.num_gpus is not None:
         # Ray must see the same GPU subset requested by the launcher. Preserve
         # user ordering/UUIDs, selecting a prefix rather than inventing IDs.
@@ -340,7 +346,6 @@ def main():
                OPD_CODE_SANDBOX_URL=args.sandbox_url or '', TOKENIZERS_PARALLELISM=env.get('TOKENIZERS_PARALLELISM', 'true'),
                VLLM_WORKER_MULTIPROC_METHOD="spawn",
                PYTHONPATH=os.pathsep.join(filter(None, [str(ROOT / "runtime"), env.get("PYTHONPATH")])))
-    env.setdefault("WANDB_MODE", "offline")
     subprocess.run(command, cwd=output, env=env, check=True)
 
 

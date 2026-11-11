@@ -93,6 +93,26 @@ PY
 
 如果安装或导入失败，先检查当前 `python` 是否来自刚创建的环境，以及 GPU/驱动是否对该环境可见。不要单独升级 Torch、vLLM 或注意力内核；安装脚本中的 wheel、CUDA runtime 和 ABI 是配套的。H200 启动脚本本身不会安装依赖。
 
+### W&B 训练日志
+
+所有 H200 独立入口、整套调度、`train.py` 和原 math/code 训练脚本，共用项目根目录的私有配置 `.wandb.local.json`。当前本机已配置提供的 key，默认在线记录到 `opd-icml` 项目；训练同时输出到控制台和 W&B。key 仅通过子进程环境传递，不写入打印的命令、Hydra 配置或 README。
+
+该文件已被 Git 忽略。通过 Git 将代码部署到 H200 服务器时，需另外复制 `.wandb.local.json` 到包含 `train.py` 的项目目录，再设置权限：
+
+```bash
+chmod 600 .wandb.local.json
+```
+
+无需在每个脚本重复粘贴 key。其他机器可参照 `.wandb.local.json.example` 创建私有配置；可选的 `WANDB_ENTITY` 指定账号/团队，`WANDB_PROJECT` 指定项目。也支持用 `OPD_WANDB_CONFIG` 指向其他位置的私有 JSON。显式设置的 `WANDB_API_KEY`、`WANDB_MODE`、`WANDB_PROJECT`、`WANDB_ENTITY` 环境变量优先于文件。
+
+dry-run 只显示日志是否启用、模式和项目名，不连接 W&B。临时仅保存离线 W&B 日志可执行：
+
+```bash
+WANDB_MODE=offline bash scripts/h200/train_eval_qwen3_4b.sh
+```
+
+`WANDB_MODE=disabled` 可关闭 W&B 记录。代码评测的 CPU-only `--stage grade` 沿用原判题流程，不创建 W&B 训练 run。
+
 ### 3. 准备模型权限、缓存和数据
 
 模型按 `configs/<scale>/models.json` 的固定 revision 下载并复用 Hugging Face 缓存。可选：如果模型缓存需要放到大容量持久化磁盘，在登录和下载前设置 `HF_HOME`，并在后续终端保持相同设置。下面路径需替换成服务器实际挂载点：
@@ -181,7 +201,7 @@ bash scripts/h200/train_eval_qwen3_8b.sh --devices 0,1,2,3
 
 ### 5. 常用参数和本地资源
 
-七组脚本默认都是 `paired-full`：全局 batch/mini-batch=128、106 轮、每轮一次更新、学习率 1e-5。默认 `throughput` 下，1.3B/1.7B/4B 的学生与教师 micro-batch=4、rollout 并发64，并关闭 optimizer/teacher 阶段卸载；6.7B/8B/12B 为2和32，保留卸载；33B为1和16，保留卸载。梯度检查点和 rollout 显存比例0.30保留。逐 token 参数梯度默认每次抽样256个token（64 high-KL + 192 remaining），保留 hidden 统计。
+七组脚本默认都是 `paired-full`：全局 batch/mini-batch=128、106 轮、每轮一次更新、学习率 1e-5。默认 `throughput` 下，DeepSeek 1.3B 和 Qwen 1.7B/4B 的学生与教师 micro-batch 均为2；这三组 rollout 并发64，并关闭 optimizer/teacher 阶段卸载。DeepSeek 6.7B 的学生与教师 micro-batch=1、rollout 并发32；Qwen 8B/Gemma 12B 的学生与教师 micro-batch=2、rollout 并发32；DeepSeek 33B为1和16，这四组均保留卸载。梯度检查点和 rollout 显存比例0.30保留。逐 token 参数梯度默认每次抽样256个token（64 high-KL + 192 remaining），保留 hidden 统计。
 
 下面示例使用独立输出目录，并显式切换为全量逐 token 参数梯度：
 

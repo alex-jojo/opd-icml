@@ -13,6 +13,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from model_assets import read_models
+from wandb_config import load_wandb_environment
 
 
 @dataclass(frozen=True)
@@ -35,10 +36,10 @@ EXPERIMENTS = {
 # Throughput starting points; no change to sample counts, precision or diagnostics.
 # Larger pairs retain offload because optimizer state is FP32.
 PRESETS = {
-    'deepseek-coder-1.3b': (4, 4, 64, 'off'),
-    '1.7b': (4, 4, 64, 'off'),
-    '4b': (4, 4, 64, 'off'),
-    'deepseek-coder-6.7b': (2, 2, 32, 'on'),
+    'deepseek-coder-1.3b': (2, 2, 64, 'off'),
+    '1.7b': (2, 2, 64, 'off'),
+    '4b': (2, 2, 64, 'off'),
+    'deepseek-coder-6.7b': (1, 1, 32, 'on'),
     '8b': (2, 2, 32, 'on'),
     'gemma3-12b': (2, 2, 32, 'on'),
     'deepseek-coder-33b': (1, 1, 16, 'on'),
@@ -178,7 +179,7 @@ def build_plan(args, environment):
 
 
 def child_environment(plan, environment):
-    env = environment.copy()
+    env = load_wandb_environment(environment)
     env['CUDA_VISIBLE_DEVICES'] = plan['cuda_visible_devices']
     env['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
     env['PYTHONUNBUFFERED'] = '1'
@@ -189,7 +190,6 @@ def child_environment(plan, environment):
         env[key] = '1'
     env['TOKENIZERS_PARALLELISM'] = 'false'
     env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(ROOT / 'runtime'), env.get('PYTHONPATH')]))
-    env.setdefault('WANDB_MODE', 'offline')
     return env
 
 
