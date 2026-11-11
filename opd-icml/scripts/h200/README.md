@@ -1,5 +1,7 @@
 # H200 七组训练与评测
 
+从零配置环境、准备模型和数据，以及七组完整启动命令，统一见项目主 [README 的 H200 操作指南](../../README.md#h200-操作指南)。本页保留脚本索引和使用概要。
+
 在 Linux H200 服务器的项目根目录运行。先激活已安装项目依赖的 Python 3.10 环境；依赖安装沿用 `scripts/setup_code_eval.sh`、`scripts/setup_opd_training.sh`，代码评测还需 `scripts/setup_code_benchmarks.sh`。这些入口不安装软件。
 
 按**学生模型规模**固定卡数，训练、rollout 和评测生成使用同一组卡。四卡评测采用 TP=4，单卡采用 TP=1。代码测试用例判题仍由 CPU 执行。

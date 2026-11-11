@@ -1,15 +1,249 @@
 # opd-icml
 
-Qwen3-1.7B / 4B、Qwen3-8B Base → 32B 教师，以及 Gemma-3-12B PT → IT 的 on-policy distillation 实验代码。所有命令以此目录为项目根目录。训练采用本目录随附的修改版 verl。绘图输入与论文源码可以单独使用。
+DeepSeek-Coder 1.3B / 6.7B / 33B Base → Instruct、Qwen3-1.7B / 4B、Qwen3-8B Base → 32B 教师，以及 Gemma-3-12B PT → IT 的 on-policy distillation 实验代码。所有命令以此目录为项目根目录。训练采用本目录随附的修改版 verl。绘图输入与论文源码可以单独使用。
+
+四张 H200 服务器上的环境安装和七组训练加评测，直接按下面的 [H200 操作指南](#h200-操作指南) 执行。后文的 A100/L40 示例及论文历史 GPU 数用于对应原实验配置。
 
 | 目录或入口 | 内容 |
 |---|---|
-| `train.py`、`configs/{1.7b,4b,8b,gemma3-12b}/` | 训练入口、各实验的 Hydra 配置、学生和教师模型的固定 revision |
+| `train.py`、`configs/<scale>/` | 七组模型的训练入口、Hydra 配置，以及学生和教师模型的固定 revision |
 | `runtime/verl/workers/actor/` | Top-16 OPD、token 诊断、表征谱、梯度一致性和表征稳定性停止判据 |
 | `runtime/verl/trainer/ppo/` | rollout、优化更新、复用、验证集与 checkpoint 管理 |
-| `scripts/` | 安装 GPU 环境、准备 DAPO14k、Mean@8 数学评测 |
+| `scripts/` | 安装 GPU 环境、准备数据、H200 训练加评测入口、数学 Mean@8 和代码 pass@4 |
 | `analysis/`、`data/` | 结果提取、作图、参数层附录，以及绘图输入和六项 benchmark 题目 |
 | `paper/main.tex` | 论文入口及当前正文和附录引用的文件 |
+
+## H200 操作指南
+
+本节对应**单机四张 H200**，按学生模型大小固定卡数：**≥8B 用四卡，其余用单卡，训练和评测生成保持相同卡数及 GPU 列表**。四卡 rollout/评测为 TP=4，单卡为 TP=1；代码测试用例判题在 CPU 上执行。
+
+### 1. 进入项目并创建环境
+
+以下命令在 Linux x86_64 服务器执行。先进入包含 `train.py`、`configs/`、`runtime/`、`scripts/` 的目录；若上传时保留了双层目录，它通常是 `opd-icml/opd-icml/`。每次重连服务器后，都先回到这个目录并激活环境。
+
+先确认能看到四张卡，以及主存和磁盘空间：
+
+```bash
+nvidia-smi
+nvidia-smi topo -m
+free -h
+df -h .
+```
+
+创建环境时，下面两种方式任选一种。服务器已有 Conda 时：
+
+```bash
+conda create -n opd-h200 python=3.10 -y
+conda activate opd-h200
+```
+
+如果不用 Conda，但已有 `python3.10` 和 venv 支持：
+
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+```
+
+后续安装、训练、合并和评测都使用这个环境的 `python`。本流程固定 Python 3.10、PyTorch 2.6.0+cu124、vLLM 0.8.5.post1、Transformers 4.52.4，FlashAttention/FlashInfer 使用与之匹配的预编译 wheel。
+
+### 2. 安装训练和评测依赖
+
+在已激活的环境、项目根目录下，依次执行：
+
+```bash
+bash scripts/setup_code_eval.sh
+bash scripts/setup_opd_training.sh
+bash scripts/setup_code_benchmarks.sh
+```
+
+第一步安装固定版本的 PyTorch/vLLM 和基础评测依赖；第二步在同一环境补齐训练、数学判题、注意力内核，并以 editable 方式安装本项目的 `runtime/`；第三步检查代码 benchmark 使用的 EvalPlus 版本。安装需要访问 PyPI、PyTorch wheel 源和 GitHub。这里无需再运行会另建 `.venv` 的 `scripts/setup.sh`。
+
+检查环境：
+
+```bash
+python -m pip check
+python - <<'PY'
+import sys
+import torch
+import transformers
+import vllm
+import ray
+import flash_attn
+import flashinfer
+
+print("Python:", sys.version.split()[0])
+print("PyTorch:", torch.__version__, "CUDA runtime:", torch.version.cuda)
+print("Transformers:", transformers.__version__, "vLLM:", vllm.__version__)
+print("Visible GPUs:", torch.cuda.device_count())
+assert sys.version_info[:2] == (3, 10)
+assert torch.__version__ == "2.6.0+cu124"
+assert transformers.__version__ == "4.52.4"
+assert vllm.__version__ == "0.8.5.post1"
+assert torch.cuda.is_available()
+for i in range(torch.cuda.device_count()):
+    print(i, torch.cuda.get_device_name(i))
+PY
+```
+
+如果安装或导入失败，先检查当前 `python` 是否来自刚创建的环境，以及 GPU/驱动是否对该环境可见。不要单独升级 Torch、vLLM 或注意力内核；安装脚本中的 wheel、CUDA runtime 和 ABI 是配套的。H200 启动脚本本身不会安装依赖。
+
+### 3. 准备模型权限、缓存和数据
+
+模型按 `configs/<scale>/models.json` 的固定 revision 下载并复用 Hugging Face 缓存。可选：如果模型缓存需要放到大容量持久化磁盘，在登录和下载前设置 `HF_HOME`，并在后续终端保持相同设置。下面路径需替换成服务器实际挂载点：
+
+```bash
+# export HF_HOME=/data/huggingface
+```
+
+Gemma 需要先在对应模型页面取得访问权限，再在服务器交互登录。若设置了 `HF_HOME`，先设置再登录，以保持缓存和登录凭据的位置一致：
+
+```bash
+huggingface-cli login
+```
+
+完整启动脚本会自动准备默认训练数据、下载模型，并准备缺失的代码 benchmark。也可以先单独准备，便于在正式占用训练卡之前完成下载和检查：
+
+```bash
+# 数学训练集；数学评测题 data/benchmarks.jsonl 已随仓库提供。
+python scripts/prepare_dapo14k.py --output data/dapo14k_train.parquet
+
+# DeepSeek 默认使用的代码训练/验证集，以及三项代码评测数据。
+python scripts/prepare_eurus_code.py
+python scripts/prepare_code_benchmarks.py
+
+# 按需提前准备某组学生和教师；这些命令不启动训练。
+python scripts/prepare_models.py --scale deepseek-coder-1.3b
+python scripts/prepare_models.py --scale deepseek-coder-6.7b
+python scripts/prepare_models.py --scale deepseek-coder-33b
+python scripts/prepare_models.py --scale 1.7b
+python scripts/prepare_models.py --scale 4b
+python scripts/prepare_models.py --scale 8b
+python scripts/prepare_models.py --scale gemma3-12b
+```
+
+只准备本次要运行的任务和模型即可。已有数据、模型和 benchmark 会按各准备入口的校验规则复用。DeepSeek 会准备使用教师模板及双 EOS 的学生运行目录；Gemma 会提取文本权重，额外占用一份文本模型的磁盘空间。33B 模型下载、FP32 训练 checkpoint、合并权重及诊断缓存都需要预留主存和磁盘；这些资源不能只按 BF16 推理权重大小估算。
+
+### 4. 检查并运行七组实验
+
+先以 Qwen 8B 为例查看配置，确认输出中的 `training_gpus`、`evaluation_gpus`、`rollout_tp`、`evaluation_tp` 都为 4，再正式运行：
+
+```bash
+bash scripts/h200/train_eval_qwen3_8b.sh --dry-run
+bash scripts/h200/train_eval_qwen3_8b.sh
+```
+
+`--dry-run` 不下载、不创建运行目录、不使用 GPU。正式运行按顺序完成：准备数据 → 准备模型 → 训练 → 检查最终 checkpoint 步数和所有 rank 分片 → 合并 HF 权重 → 评测。训练失败时不会继续合并或评测。
+
+七个脚本如下。按需选择；若执行整个代码块，会依次串行运行七组，每组有独立默认输出目录：
+
+```bash
+# 单卡：DeepSeek-Coder 1.3B Base → 1.3B Instruct；代码 pass@4。
+bash scripts/h200/train_eval_deepseek_coder_1_3b.sh
+
+# 单卡：DeepSeek-Coder 6.7B Base → 6.7B Instruct；代码 pass@4。
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh
+
+# 四卡：DeepSeek-Coder 33B Base → 33B Instruct；代码 pass@4。
+bash scripts/h200/train_eval_deepseek_coder_33b.sh
+
+# 单卡：Qwen3 1.7B Base → 1.7B；数学 Mean@8。
+bash scripts/h200/train_eval_qwen3_1_7b.sh
+
+# 单卡：Qwen3 4B Base → 4B；数学 Mean@8。
+bash scripts/h200/train_eval_qwen3_4b.sh
+
+# 四卡：Qwen3 8B Base → 32B 教师；数学 Mean@8。
+bash scripts/h200/train_eval_qwen3_8b.sh
+
+# 四卡：Gemma-3 12B PT → 12B IT；数学 Mean@8。
+bash scripts/h200/train_eval_gemma3_12b.sh
+```
+
+DeepSeek 默认评测 LiveCodeBench、MBPP+、HumanEval+，每题采样 4 个回答；Qwen/Gemma 默认评测 `data/benchmarks.jsonl`，每题采样 8 个回答。可加 `--task code` 或 `--task math` 切换任务，卡数仍由学生规模固定。Qwen 后训练教师的官方仓库名不带 `Instruct` 后缀，具体配对见各组 `models.json`。
+
+单卡默认选 GPU 0，四卡默认选 0,1,2,3。已有 `CUDA_VISIBLE_DEVICES` 时按其顺序取所需卡数；卡数不足会报错。用 `--devices` 明确指定时，必须正好提供该组所需的 1 张或 4 张卡：
+
+```bash
+# 指定 GPU 2，训练和评测都只使用这一张。
+bash scripts/h200/train_eval_qwen3_4b.sh --devices 2
+
+# 训练和评测都使用四张卡。
+bash scripts/h200/train_eval_qwen3_8b.sh --devices 0,1,2,3
+```
+
+四卡实验应独占四张卡。并行运行单卡实验时，为各实验分配不同的 `--devices` 和输出目录，同时注意共享主存占用。
+
+### 5. 常用参数和本地资源
+
+七组脚本默认都是 `paired-full`：全局 batch/mini-batch=128、106 轮、每轮一次更新、学习率 1e-5、每卡 micro-batch=1。H200 预设开启梯度检查点、optimizer 阶段 offload、teacher 参数 offload，rollout 并发 16、显存比例 0.30。逐 token 参数梯度默认每次抽样 256 个 token（64 high-KL + 192 remaining），保留 hidden 统计。
+
+下面示例使用独立输出目录，并显式切换为全量逐 token 参数梯度：
+
+```bash
+bash scripts/h200/train_eval_qwen3_8b.sh \
+  --devices 0,1,2,3 \
+  --parameter-token-gradients exact-all \
+  --output runs/h200/qwen8-math-exact
+```
+
+使用已有本地权重和训练数据时，例如：
+
+```bash
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
+  --student /data/models/deepseek-coder-6.7b-base \
+  --teacher /data/models/deepseek-coder-6.7b-instruct \
+  --model-dir /data/models/opd-prepared \
+  --data /data/eurus/eurus_code_train.parquet \
+  --val-data /data/eurus/eurus_code_validation.parquet \
+  --code-benchmarks /data/code_benchmarks \
+  --output runs/h200/deepseek6.7-code-local
+```
+
+`/data/...` 示例路径需要替换成已有资源位置。`--model-dir` 存放 DeepSeek 学生运行目录或 Gemma 文本权重；仅缓存下载可用 `--cache-dir`。自定义数学评测题用 `--math-benchmarks`；自定义代码 benchmark 目录用 `--code-benchmarks`，其中应包含原准备流程生成的三项题目和 manifest。
+
+可调参数还包括 `--micro-batch-size`、`--rollout-max-num-seqs`、`--rollout-gpu-memory-utilization`、`--eval-max-num-seqs`、`--eval-batch-size`、`--code-workers` 和 `--score-workers`；`--eval-batch-size` 只用于代码评测。这些选项不会更改固定的单卡/四卡规则。完整选项可执行：
+
+```bash
+python scripts/run_h200_experiment.py --help
+```
+
+### 6. 单独训练、重试评测和查看结果
+
+默认 `--stage all` 会训练后自动评测。也可分两次执行；第二次使用相同输出目录、任务和 GPU 设置：
+
+```bash
+bash scripts/h200/train_eval_qwen3_8b.sh \
+  --stage train --devices 0,1,2,3 --output runs/h200/qwen8-math-run1
+
+bash scripts/h200/train_eval_qwen3_8b.sh \
+  --stage eval --devices 0,1,2,3 --output runs/h200/qwen8-math-run1
+```
+
+`--stage eval` 只读取该组的最终训练 checkpoint，不重新训练；合并完成且标记匹配时复用 `merged/`，评测沿用原入口的回答缓存和判题进度。评测中断后可以重试第二条命令。若合并中断，留下的 `merged/` 没有完成标记，需先将它移到其他位置，再运行 `--stage eval`。训练中断后当前入口不支持续训已有输出目录；重新训练请指定新的 `--output`。
+
+默认输出根目录是 `runs/h200/<scale>/<task>-paired-full/`，传入 `--output` 可替换这个根目录：
+
+```text
+<output>/
+  training/checkpoints/       最终训练 checkpoint 与 latest 步数标记
+  training/training_records/  训练回答和监测记录
+  training/replication/       token、参数梯度及表征诊断
+  merged/                    合并后的 HF 学生模型
+  eval/final_mean8.jsonl      数学回答与评分
+  eval/final_mean8.summary.json
+  eval/code_pass4/summary.json
+  logs/                      数据准备、训练、合并和评测日志
+```
+
+数学和代码输出只会出现本次选择任务对应的评测文件。例如查看默认 Qwen 8B 数学训练日志和最终汇总：
+
+```bash
+tail -F runs/h200/8b/math-paired-full/logs/train.log
+# 在另一终端，或退出日志查看后读取已完成的汇总。
+cat runs/h200/8b/math-paired-full/eval/final_mean8.summary.json
+```
+
+6.7B 单卡和 33B 四卡仍需在真实 H200 上验证完整训练更新及梯度诊断的显存峰值。当前配置是保守起点，本地 CPU/dry-run 检查不代表 H200 已实跑通过；脚本不会在显存不足时自动增加卡数或改变实验预算。
 
 ## 训练配置
 
