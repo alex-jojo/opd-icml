@@ -1,0 +1,23 @@
+{
+  "student": {
+    "repo": "deepseek-ai/deepseek-coder-33b-base",
+    "revision": "45c85cadf3720ef3e85a492e24fd4b8c5d21d8ac",
+    "allow_patterns": [
+      "*.json",
+      "*.safetensors",
+      "tokenizer.model"
+    ]
+  },
+  "teacher": {
+    "repo": "deepseek-ai/deepseek-coder-33b-instruct",
+    "revision": "61dc97b922b13995e7f83b7c8397701dbf9cfd4c",
+    "allow_patterns": [
+      "*.json",
+      "*.safetensors",
+      "tokenizer.model"
+    ]
+  },
+  "validate_tokenizers": true,
+  "text_only_export": false,
+  "preparation": "deepseek-coder-dual-eos-v2"
+}

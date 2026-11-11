@@ -129,6 +129,8 @@ python tests/check_distributed_cpu.py
 
 ## 启动实验
 
+四张 H200 上的七组训练加评测入口见 [scripts/h200/README.md](scripts/h200/README.md)：学生 ≥8B 固定四卡，其余固定单卡；同组训练、rollout 和评测生成使用相同 GPU 列表。每个脚本自动串联训练、最终 checkpoint 检查、HF 权重合并和评测，支持 `--dry-run`。
+
 数学训练的专用脚本为 `scripts/train_math.sh`。先激活现有训练环境，可直接编辑脚本顶部的模型、实验、硬件、batch、学习率、生成并发和梯度诊断参数，也可用环境变量覆盖：
 
 ```bash

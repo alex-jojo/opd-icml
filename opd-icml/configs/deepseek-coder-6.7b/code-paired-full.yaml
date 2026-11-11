@@ -1,0 +1,58 @@
+{
+  "defaults": [
+    "paired-full",
+    "_self_"
+  ],
+  "data": {
+    "opd_task": "code",
+    "expected_filtered_train_rows": null,
+    "max_prompt_length": 2048,
+    "max_response_length": 3072,
+    "val_files": [
+      "${oc.env:OPD_VALIDATION_DATA}"
+    ]
+  },
+  "actor_rollout_ref": {
+    "rollout": {
+      "prompt_length": 2048,
+      "response_length": 3072,
+      "max_model_len": 5120,
+      "max_num_seqs": 64
+    },
+    "actor": {
+      "ppo_micro_batch_size_per_gpu": 1,
+      "policy_loss": {
+        "gradient_study": {
+          "parameter_tokens": {
+            "enabled": true,
+            "mode": "kl_stratified",
+            "sample_size": 256,
+            "seed": 42
+          }
+        }
+      }
+    },
+    "ref": {
+      "log_prob_micro_batch_size_per_gpu": 1
+    }
+  },
+  "custom_reward_function": {
+    "name": "compute_scores",
+    "path": "${oc.env:OPD_PROJECT_ROOT}/runtime/verl/utils/reward_score/eurus_code.py",
+    "reward_kwargs": {
+      "backend": "${oc.env:OPD_CODE_JUDGE_BACKEND,local}",
+      "sandbox_url": "${oc.env:OPD_CODE_SANDBOX_URL,}",
+      "workers": "${oc.env:OPD_CODE_WORKERS,8}",
+      "timeout": 5,
+      "memory_limit_mb": 1024
+    }
+  },
+  "reward_model": {
+    "reward_manager": "batch"
+  },
+  "trainer": {
+    "experiment_name": "deepseek-coder-6.7b-code-paired-full",
+    "test_freq": 20,
+    "validation_data_dir": "${oc.env:OPD_RUN}/validation_records"
+  }
+}

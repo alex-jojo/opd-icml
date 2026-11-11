@@ -44,7 +44,7 @@ def apply_hardware_profile(cfg, hardware, num_gpus=None, rollout_tp=None):
     """Keep recorded experiment files intact; return explicit Hydra overrides."""
     if hardware is None and num_gpus is None and rollout_tp is None:
         return {}
-    gpu_counts = {'l40x4': 4, 'a100x1': 1}
+    gpu_counts = {'l40x4': 4, 'a100x1': 1, 'h200x1': 1, 'h200x4': 4}
     if hardware is not None and hardware not in gpu_counts:
         raise ValueError(f'Unknown hardware profile: {hardware}')
     gpu_count = num_gpus if num_gpus is not None else gpu_counts.get(hardware,cfg['trainer']['n_gpus_per_node'])
@@ -57,7 +57,7 @@ def apply_hardware_profile(cfg, hardware, num_gpus=None, rollout_tp=None):
     if not replication.get('enabled'):
         raise ValueError('GPU topology overrides require the distributed replication protocol')
     if gpu_count > 1 and replication.get('heavy_steps'):
-        raise ValueError('This profile has single-GPU disposable shadow probes; l40x4 cannot run them. '
+        raise ValueError('This profile has single-GPU disposable shadow probes; multi-GPU runs cannot run them. '
                          'Use paired-full for the four-GPU RQ1 run; probes were not silently disabled.')
     overrides = {
         'trainer.n_gpus_per_node': gpu_count,
@@ -184,8 +184,8 @@ def main():
                         help="Sampled diagnostic token count (default 256); one quarter from the top-KL decile")
     parser.add_argument('--parameter-token-group-size', type=int,
                         help='Tokens from one response sharing a diagnostic graph (default 4; 1 disables reuse)')
-    parser.add_argument("--hardware", choices=["l40x4", "a100x1"],
-                        help="Memory-conscious runtime overrides: four L40 GPUs or one A100 80GB")
+    parser.add_argument("--hardware", choices=["l40x4", "a100x1", "h200x1", "h200x4"],
+                        help="Conservative memory presets for L40, A100, or one/four H200 GPUs")
     parser.add_argument('--num-gpus', type=int, help='GPUs to use; overrides preset count, keeps global batch fixed')
     parser.add_argument('--rollout-tp-size', type=int, help='Rollout tensor parallel degree; defaults to explicit GPU count')
     parser.add_argument('--rollout-batch-size', type=int, help='Global prompts generated per rollout round')
