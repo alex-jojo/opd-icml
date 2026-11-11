@@ -278,6 +278,36 @@ tail -F runs/h200/8b/math-paired-full/logs/train.log
 cat runs/h200/8b/math-paired-full/eval/final_mean8.summary.json
 ```
 
+### 7. 自动打包实验数据并下载 ZIP
+
+单组脚本每个阶段成功结束后，自动生成数据 ZIP；整套调度在所有实验及判题完成后生成一个总 ZIP。整套调度的中间任务不重复压缩，打包前会释放 GPU 锁。结束时终端打印 `[DOWNLOAD ZIP]` 和完整文件路径。
+
+压缩包只包含实验数据：评测汇总、生成回答与评分、训练/验证记录、token/参数梯度及表征诊断的 NPZ/NPY、运行配置和日志。checkpoint、合并模型、模型目录、模型权重文件、W&B 私有配置、符号链接及已有 ZIP 均排除。不会删除服务器上的原始结果或模型文件。
+
+文件位置示例：
+
+- 整套 `--output runs/h200-suite/run1` → `runs/h200-suite/run1-results.zip`。
+- Qwen 8B 默认输出 → `runs/h200/8b/8b-math-paired-full-results.zip`。
+- Qwen 8B 自定义 `--output runs/h200/qwen8-math-run1` → `runs/h200/8b-qwen8-math-run1-results.zip`。
+
+使用服务器平台文件浏览器或 JupyterLab 时，找到该 ZIP 后选择 **Download/下载**。通过 SSH 使用服务器时，也可在本地电脑终端下载；替换下面的用户名、服务器地址及项目绝对路径：
+
+```bash
+scp username@server:/path/to/opd-icml/runs/h200-suite/run1-results.zip .
+```
+
+已完成的实验、历史结果或中途保留的数据，也可不启动训练，直接打包：
+
+```bash
+python scripts/package_results.py --run-dir runs/h200-suite/run1
+
+# 可指定 ZIP 输出位置。
+python scripts/package_results.py --run-dir runs/h200-suite/run1 \
+  --output runs/exports/run1-data.zip
+```
+
+ZIP 内保留原目录结构，并有 `EXPORT_MANIFEST.json` 记录阶段、文件清单、大小和 CRC32。仅完成训练/生成阶段的包可能尚无最终评测分数；手动包标记为 `manual`。打包使用 ZIP64，支持大于 4 GB 的实验数据。重复评测成功后会原子更新本实验的 ZIP；打包失败保留此前完整的 ZIP，失败阶段不更新自动包。可加 `--no-package` 关闭自动打包；`--dry-run` 只显示预期 ZIP 路径，不写文件。
+
 6.7B 单卡和 33B 四卡仍需在真实 H200 上验证完整训练更新及梯度诊断的显存峰值。当前配置是保守起点，本地 CPU/dry-run 检查不代表 H200 已实跑通过；脚本不会在显存不足时自动增加卡数或改变实验预算。
 
 ## 训练配置

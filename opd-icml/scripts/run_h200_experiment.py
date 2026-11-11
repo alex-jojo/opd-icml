@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from model_assets import read_models
 from wandb_config import load_wandb_environment
+from package_results import archive_path, package_results
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ def parser():
     p.add_argument('--eval-batch-size', type=int, default=16, help='Code evaluation questions per generation batch')
     p.add_argument('--score-workers', type=int, default=8)
     p.add_argument('--dry-run', action='store_true', help='Print all commands and resolved training settings; no downloads/GPU/writes')
+    p.add_argument('--no-package', action='store_true', help='Skip the automatic experiment-data ZIP (no model files are ever packaged)')
     return p
 
 
@@ -172,6 +174,7 @@ def build_plan(args, environment):
         training_gpus=spec.gpus, evaluation_gpus=0 if args.stage == 'grade' else spec.gpus,
         rollout_tp=spec.gpus, evaluation_tp=None if args.stage == 'grade' else spec.gpus,
         stage=args.stage, stage_gpu_count=0 if args.stage == 'grade' else spec.gpus,
+        results_zip=None if args.no_package else str(archive_path(run, args.scale)),
         cuda_visible_devices=devices, output=str(run), models=read_models(args.scale),
         profile=args.profile, ray_cpus=cpus, gradient_cache_gib=args.gradient_cache_gib,
         prepare_training=prepare, prepare_evaluation=prepare_eval,
@@ -307,6 +310,8 @@ def main():
         print(json.dumps(plan, indent=2), flush=True)
         if not args.dry_run:
             execute(args, plan, env)
+            if plan['results_zip']:
+                package_results(plan['output'], plan['results_zip'], phase=args.stage)
     except subprocess.CalledProcessError as error:
         if error.stderr:
             print(error.stderr, file=sys.stderr)

@@ -16,6 +16,7 @@ import uuid
 
 from run_h200_experiment import ROOT, EXPERIMENTS, select_devices
 from wandb_config import load_wandb_environment
+from package_results import archive_path, package_results
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
 LARGE = ['8b', 'gemma3-12b', 'deepseek-coder-33b']
@@ -49,6 +50,7 @@ def parser():
     p.add_argument('--gradient-cache-total-gib', type=float, default=64)
     p.add_argument('--ray-object-store-total-gib', type=float, default=16)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--no-package', action='store_true', help='Skip the final combined experiment-data ZIP')
     return p
 
 
@@ -82,7 +84,7 @@ def build_suite(args, environment, cpus, free_gib):
                 max(1, len(training_cpus) // 4), max(1, int((free_gib-cache-objects) // 80)))
     run = args.output.resolve()
     common = ['--profile', args.profile, '--parameter-token-gradients', args.parameter_token_gradients,
-              '--parameter-token-samples', str(args.parameter_token_samples)]
+              '--parameter-token-samples', str(args.parameter_token_samples), '--no-package']
     def job(scale, ids, cores, concurrency):
         spec = EXPERIMENTS[scale]
         if len(cores) < spec.gpus + 1:
@@ -119,6 +121,7 @@ def build_suite(args, environment, cpus, free_gib):
                     [sys.executable, str(ROOT/'scripts/prepare_code_benchmarks.py')]]
     prepare += [[sys.executable, str(ROOT/'scripts/prepare_models.py'), '--scale', s] for s in args.scales]
     return dict(output=str(run), devices=devices, free_host_gib=free_gib,
+                results_zip=None if args.no_package else str(archive_path(run)),
                 small_parallelism=slots, grade_cpus=grade_cpus,
                 gradient_cache_total_gib=cache, ray_object_store_total_gib=objects,
                 prepare=prepare, small_queues=queues, large=large)
@@ -331,6 +334,10 @@ def main():
             runner.run(command, root/'logs'/f'prepare-{i}.log', cpu_only=True)
         (root/'plan.json').write_text(json.dumps(plan, indent=2)+'\n', encoding='utf-8')
         schedule(plan, runner)
+        # Compression is CPU-only. Release GPU ownership before creating the ZIP.
+        locks.close()
+        if plan['results_zip']:
+            package_results(root, plan['results_zip'], phase='suite-complete')
     except BaseException:
         runner.cancel()
         raise

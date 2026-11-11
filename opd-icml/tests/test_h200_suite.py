@@ -134,6 +134,7 @@ def test_cpu_grade_accepts_hidden_gpus_and_skips_the_training_launcher(tmp_path,
     monkeypatch.setattr(h200.subprocess, 'run', lambda *args, **kwargs: pytest.fail('CPU grading must not resolve training'))
     calls = []
     monkeypatch.setattr(h200, 'run_command', lambda command, env, log: calls.append((command, env)))
+    monkeypatch.setattr(h200, 'package_results', lambda *args, **kwargs: None)
     h200.main()
     plan = json.loads(capsys.readouterr().out)
     assert plan['stage_gpu_count'] == plan['evaluation_gpus'] == 0

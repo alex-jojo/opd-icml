@@ -79,7 +79,23 @@ CUDA_VISIBLE_DEVICES="" bash scripts/h200/train_eval_deepseek_coder_33b.sh \
 
 可用 `--student`、`--teacher`、`--cache-dir`、`--model-dir`、`--data`、`--val-data`指定资源。单模型还支持 `--optimizer-offload on|off`、`--teacher-offload on|off`、`--ray-num-cpus`、`--cpu-ids`、`--ray-object-store-gib`、`--gradient-cache-gib`；两个内存上限在独立入口中是该实验预算。
 
-总调度保存 `plan.json`、逐模型状态 `status.json`、`logs/`和各模型目录；模型目录包含`training/`、`merged/`、`eval/`。查看全部参数：
+总调度保存 `plan.json`、逐模型状态 `status.json`、`logs/`和各模型目录；模型目录包含`training/`、`merged/`、`eval/`。
+
+## 实验数据 ZIP
+
+默认自动打包，**只收集实验数据，不包含任何模型权重或 checkpoint**。评测汇总、生成回答与评分、训练/验证记录、诊断 NPZ/NPY、运行配置和日志会保留；模型目录、私有凭据、链接和嵌套 ZIP 会排除。原始结果不删除。
+
+整套 `--output runs/h200-suite/run1` 完成后生成 `runs/h200-suite/run1-results.zip`；单组 Qwen 8B 默认生成 `runs/h200/8b/8b-math-paired-full-results.zip`。终端打印 `[DOWNLOAD ZIP]` 路径，在服务器文件浏览器中选下载，或用本地 `scp` 获取。完整下载说明见主 README 的“自动打包实验数据并下载 ZIP”。
+
+总调度只在全部 GPU 阶段和 CPU 判题完成后打一次总包，并先释放 GPU 锁；独立脚本每个成功阶段打包，清单会标记阶段。已有实验或中途结果可手动打包，完全不需要加载模型：
+
+```bash
+python scripts/package_results.py --run-dir runs/h200-suite/run1
+```
+
+`--no-package` 关闭自动打包。ZIP64 支持大文件，包内 `EXPORT_MANIFEST.json` 提供文件清单及 CRC32；重复运行会更新本实验的包，写入失败保留此前完整 ZIP。
+
+查看全部参数：
 
 ```bash
 python scripts/run_h200_suite.py --help
