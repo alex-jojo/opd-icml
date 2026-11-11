@@ -51,7 +51,7 @@ def parser():
     p.add_argument('--task', choices=['math', 'code'], help='Default: DeepSeek code; Qwen/Gemma math')
     p.add_argument('--stage', choices=['all', 'train', 'eval', 'train-generate', 'generate', 'grade'], default='all')
     p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
-    p.add_argument('--devices', help='Exactly one/four comma-separated GPU IDs or UUIDs; otherwise use CUDA_VISIBLE_DEVICES')
+    p.add_argument('--devices', help='Exactly one/four GPU IDs or UUIDs; otherwise use CUDA_VISIBLE_DEVICES. Ignored for CPU-only grade')
     p.add_argument('--output', type=Path, help='Pipeline root; contains training/, merged/, eval/, logs/')
     for name in ('student', 'teacher', 'cache-dir', 'model-dir', 'data', 'val-data'):
         p.add_argument('--' + name, type=Path)
@@ -107,13 +107,16 @@ def build_plan(args, environment):
     cpus = args.ray_num_cpus or max(1, len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count() or 1)
     if args.ray_num_cpus is not None and args.ray_num_cpus < 1:
         raise ValueError('--ray-num-cpus must be positive')
+    if args.stage in ('all', 'train', 'train-generate') and cpus < spec.gpus + 1:
+        raise ValueError(f'Training on {spec.gpus} GPUs requires at least {spec.gpus + 1} Ray CPUs '
+                         '(one per GPU worker plus one TaskRunner)')
     if not 0 < args.ray_object_store_gib < float('inf') or not 0 <= args.gradient_cache_gib < float('inf'):
         raise ValueError('Ray memory must be positive and cache memory nonnegative, both finite')
     if task != 'code' and args.val_data:
         raise ValueError('--val-data applies only to code training')
     if min(args.eval_max_num_seqs, args.eval_batch_size, args.score_workers, args.code_workers) < 1:
         raise ValueError('Evaluation concurrency and worker counts must be positive')
-    devices = select_devices(spec.gpus, args.devices, environment)
+    devices = '' if args.stage == 'grade' else select_devices(spec.gpus, args.devices, environment)
     run = (args.output or ROOT / 'runs/h200' / args.scale / f'{task}-paired-full').resolve()
     training, merged = run / 'training', run / 'merged'
     ray_temp = Path(tempfile.gettempdir()) / ('opd-ray-' + hashlib.sha256(str(run).encode()).hexdigest()[:12])
@@ -165,7 +168,9 @@ def build_plan(args, environment):
     merge = [sys.executable, '-m', 'verl.model_merger', 'merge', '--backend', 'fsdp',
              '--local_dir', str(checkpoint), '--target_dir', str(merged), '--use_cpu_initialization']
     return dict(scale=args.scale, task=task, experiment='paired-full', gpu_count=spec.gpus,
-        training_gpus=spec.gpus, evaluation_gpus=spec.gpus, rollout_tp=spec.gpus, evaluation_tp=spec.gpus,
+        training_gpus=spec.gpus, evaluation_gpus=0 if args.stage == 'grade' else spec.gpus,
+        rollout_tp=spec.gpus, evaluation_tp=None if args.stage == 'grade' else spec.gpus,
+        stage=args.stage, stage_gpu_count=0 if args.stage == 'grade' else spec.gpus,
         cuda_visible_devices=devices, output=str(run), models=read_models(args.scale),
         profile=args.profile, ray_cpus=cpus, gradient_cache_gib=args.gradient_cache_gib,
         prepare_training=prepare, prepare_evaluation=prepare_eval,
@@ -294,10 +299,11 @@ def main():
                 os.sched_setaffinity(0, selected)
         plan = build_plan(args, os.environ)
         env = child_environment(plan, os.environ)
-        # Resolve/validate the actual launcher before downloading anything.
-        resolved = subprocess.run(plan['train'] + ['--dry-run'], cwd=ROOT, env=env,
-                                  check=True, capture_output=True, text=True, encoding='utf-8')
-        plan['resolved_training'] = json.loads(resolved.stdout)
+        # CPU grading needs neither training configuration nor any visible GPUs.
+        if args.stage != 'grade':
+            resolved = subprocess.run(plan['train'] + ['--dry-run'], cwd=ROOT, env=env,
+                                      check=True, capture_output=True, text=True, encoding='utf-8')
+            plan['resolved_training'] = json.loads(resolved.stdout)
         print(json.dumps(plan, indent=2), flush=True)
         if not args.dry_run:
             execute(args, plan, env)

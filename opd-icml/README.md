@@ -17,6 +17,8 @@ DeepSeek-Coder 1.3B / 6.7B / 33B Base → Instruct、Qwen3-1.7B / 4B、Qwen3-8B 
 
 **四卡整套实验推荐入口：** `bash scripts/h200/run_all.sh --devices 0,1,2,3 --output runs/h200-suite/run1`。先加 `--dry-run` 可以查看资源分配，不下载或启动训练。四个单卡实验在 CPU/主存预算允许时并行，随后 Qwen 8B、Gemma 12B、DeepSeek 33B 分别独占四卡；代码生成完成后交给单独 CPU 队列判题，与后续 GPU 实验重叠。只跑部分模型可加 `--scales 1.7b 4b 8b`。完整参数和资源说明见 [H200 调度说明](scripts/h200/README.md)。
 
+正式执行时，GPU 序号和 UUID 会先解析成同一套完整 UUID 后加锁，避免使用不同别名重叠占卡。四卡训练至少保留 5 个 Ray CPU（4 个 worker 加 1 个 TaskRunner）；只有 6 个可用 CPU 线程时，调度器分配 5 个训练、1 个判题。退出清理会检查整个进程组，宽限期后强制终止残留进程。
+
 H200 入口默认采用按模型设置的 `throughput` 起始预设；可用 `--profile conservative` 恢复原来 micro-batch=1、生成并发16及卸载策略。它们保持106轮、batch128、学习率、loss、模型精度、诊断样本数与频率。吞吐预设尚无真实 H200 性能/显存测量，不声称是最优值；改变批处理和生成调度可能改变浮点规约与采样轨迹。
 
 本节对应**单机四张 H200**，按学生模型大小固定卡数：**≥8B 用四卡，其余用单卡，训练和评测生成保持相同卡数及 GPU 列表**。四卡 rollout/评测为 TP=4，单卡为 TP=1；代码测试用例判题在 CPU 上执行。
@@ -216,6 +218,13 @@ python scripts/run_h200_experiment.py --help
 默认 `--stage all` 会训练后自动评测。也可分两次执行；第二次使用相同输出目录、任务和 GPU 设置：
 
 Code 的 `all`/`eval` 先生成完三项 benchmark，再统一判题。`--stage train-generate` 完成训练、合并和全部生成后退出，`--stage generate` 只对已有最终 checkpoint 合并及生成；`--stage grade` 只运行 CPU 判题，不加载模型或检查 GPU。总调度使用这些阶段，在保留 pass@4 题集、采样数、长度和判题标准的同时释放 GPU。Math 继续使用现有 Mean@8 生成与评分流程。
+
+已有代码生成结果时，可以在隐藏全部 GPU 的环境中单独判题；此阶段不需要 `--devices`，也不解析训练配置：
+
+```bash
+CUDA_VISIBLE_DEVICES="" bash scripts/h200/train_eval_deepseek_coder_33b.sh \
+  --stage grade --output runs/h200/deepseek33-run1
+```
 
 ```bash
 bash scripts/h200/train_eval_qwen3_8b.sh \

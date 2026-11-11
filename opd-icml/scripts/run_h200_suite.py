@@ -11,6 +11,8 @@ import sys
 import threading
 import tempfile
 import hashlib
+import time
+import uuid
 
 from run_h200_experiment import ROOT, EXPERIMENTS, select_devices
 
@@ -65,7 +67,12 @@ def build_suite(args, environment, cpus, free_gib):
     objects = min(objects, free_gib / 16)
     if objects < 1:
         raise ValueError('Insufficient available host memory')
-    grade_count = min(8, max(2, len(cpus) // 8))
+    # TaskRunner holds one Ray CPU while waiting for all GPU-worker bundles.
+    minimum_training_cpus = max(EXPERIMENTS[s].gpus for s in args.scales) + 1
+    grade_count = min(8, max(2, len(cpus) // 8), len(cpus) - minimum_training_cpus)
+    if grade_count < 1:
+        raise ValueError(f'Suite needs at least {minimum_training_cpus + 1} CPU threads '
+                         'for training and concurrent grading')
     grade_cpus, training_cpus = cpus[-grade_count:], cpus[:-grade_count]
     selected_small = [s for s in SMALL if s in args.scales]
     # Conservative admission reserve for model states, diagnostic snapshots and
@@ -77,6 +84,8 @@ def build_suite(args, environment, cpus, free_gib):
               '--parameter-token-samples', str(args.parameter_token_samples)]
     def job(scale, ids, cores, concurrency):
         spec = EXPERIMENTS[scale]
+        if len(cores) < spec.gpus + 1:
+            raise ValueError(f'{scale} requires at least {spec.gpus + 1} training CPUs')
         output = run / scale
         cmd = [sys.executable, str(ROOT / 'scripts/run_h200_experiment.py'), '--scale', scale,
                '--devices', ','.join(ids), '--output', str(output), *common,
@@ -114,11 +123,71 @@ def build_suite(args, environment, cpus, free_gib):
                 prepare=prepare, small_queues=queues, large=large)
 
 
+def resolve_gpu_uuids(devices, environment):
+    """Resolve CUDA's selected device order in a short-lived process, never NVML index order."""
+    env = environment.copy()
+    env['CUDA_VISIBLE_DEVICES'] = ','.join(devices)
+    probe = [sys.executable, '-c',
+        'import json, torch; '
+        f'assert torch.cuda.device_count() == {len(devices)}, "Selected GPUs must be available"; '
+        'print(json.dumps([str(torch.cuda.get_device_properties(i).uuid) '
+        'for i in range(torch.cuda.device_count())]))']
+    result = subprocess.run(probe, cwd=ROOT, env=env, check=True, capture_output=True,
+                            text=True, encoding='utf-8', timeout=30)
+    # Torch 2.6 exposes the CUDA UUID as an 8-4-4-4-12 string, without GPU-.
+    identities = [str(uuid.UUID(value.removeprefix('GPU-'))) for value in json.loads(result.stdout)]
+    if len(identities) != len(devices) or len(set(identities)) != len(devices):
+        raise ValueError('Selected GPU aliases must resolve to distinct physical devices')
+    return identities
+
+
+def gpu_lock_name(identity):
+    identity = str(uuid.UUID(identity.removeprefix('GPU-')))
+    return 'opd-h200-' + hashlib.sha256(identity.encode()).hexdigest()[:16] + '.lock'
+
+
+def _signal_group(process, sig):
+    try:
+        os.killpg(process.pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def terminate_groups(processes, grace_seconds):
+    """Wait for process GROUPS, even when their original launchers already exited."""
+    groups = [process for process in processes if _signal_group(process, signal.SIGTERM)]
+    try:
+        deadline = time.monotonic() + grace_seconds
+        while groups:
+            # Reap our direct children so an exited group leader does not keep
+            # the group alive by remaining a zombie.
+            for process in groups:
+                process.poll()
+            groups = [process for process in groups if _signal_group(process, 0)]
+            remaining = deadline - time.monotonic()
+            if not groups or remaining <= 0:
+                break
+            time.sleep(min(.05, remaining))
+    finally:
+        # A live group must be killed even if its leader exited immediately,
+        # or another interruption arrived while we were waiting for cleanup.
+        for process in groups:
+            _signal_group(process, signal.SIGKILL)
+        for process in processes:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                _signal_group(process, signal.SIGKILL)
+                process.wait(timeout=1)
+
+
 class Processes:
-    def __init__(self):
+    def __init__(self, termination_grace_seconds=10):
         self.lock = threading.Lock()
         self.active = set()
         self.cancelled = False
+        self.termination_grace_seconds = termination_grace_seconds
 
     def run(self, command, log, cpu_only=False):
         env = os.environ.copy()
@@ -135,33 +204,25 @@ class Processes:
             try:
                 code = process.wait()
                 if code:
-                    # Stop only this job's descendants, never a global ray stop.
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
                     raise subprocess.CalledProcessError(code, command)
             finally:
-                with self.lock:
-                    self.active.discard(process)
+                try:
+                    # Keep the group tracked until its descendants are gone or
+                    # SIGKILL has been sent, on success as well as failure.
+                    terminate_groups([process], self.termination_grace_seconds)
+                finally:
+                    with self.lock:
+                        self.active.discard(process)
 
     def cancel(self):
         with self.lock:
             self.cancelled = True
             processes = list(self.active)
-        for process in processes:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        for process in processes:
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+        try:
+            terminate_groups(processes, self.termination_grace_seconds)
+        finally:
+            with self.lock:
+                self.active.difference_update(processes)
 
 
 def schedule(plan, runner):
@@ -246,14 +307,14 @@ def main():
         def interrupted(signum, frame):
             raise KeyboardInterrupt(f'Suite interrupted by signal {signum}')
         signal.signal(signal.SIGTERM, interrupted)
-        # Prevent two copies of this scheduler from claiming the same GPU IDs.
-        for device in sorted(plan['devices']):
-            name = 'opd-h200-' + hashlib.sha256(device.encode()).hexdigest()[:16] + '.lock'
-            stream = locks.enter_context((Path(tempfile.gettempdir())/name).open('a'))
+        # CUDA indices, UUIDs and UUID prefixes share the same physical-device lock.
+        plan['device_uuids'] = resolve_gpu_uuids(plan['devices'], os.environ)
+        for identity in sorted(plan['device_uuids']):
+            stream = locks.enter_context((Path(tempfile.gettempdir())/gpu_lock_name(identity)).open('a'))
             try:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise ValueError(f'GPU {device} is already owned by another OPD suite')
+                raise ValueError(f'GPU {identity} is already owned by another OPD suite')
         root = Path(plan['output'])
         if root.exists() and any(root.iterdir()):
             raise ValueError('Choose an empty suite --output; existing experiments will not be overwritten')

@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +45,26 @@ def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     assert plan['small_parallelism'] == 1
     assert len(plan['small_queues'][0]) == 4
     assert all(value(j['command'], '--parameter-token-samples') == '256' for j in plan['small_queues'][0])
+
+
+@pytest.mark.parametrize('cpus', [6, 7, 8, 16, 64])
+def test_cpu_admission_leaves_room_for_worker_bundles_and_task_runner(tmp_path, cpus):
+    plan = plan_for(tmp_path, cpus=cpus)
+    assert plan['grade_cpus']
+    for job in [j for queue in plan['small_queues'] for j in queue] + plan['large']:
+        count = int(value(job['command'], '--ray-num-cpus'))
+        assert count == len(job['cpu_ids'])
+        assert count >= h200.EXPERIMENTS[job['scale']].gpus + 1
+        assert not set(job['cpu_ids']) & set(plan['grade_cpus'])
+    if cpus == 6:
+        assert len(plan['grade_cpus']) == 1
+        assert all(len(job['cpu_ids']) == 5 for job in plan['large'])
+
+
+def test_training_rejects_a_ray_cpu_budget_that_would_deadlock():
+    args = h200.parser().parse_args(['--scale', '8b', '--ray-num-cpus', '4'])
+    with pytest.raises(ValueError, match='at least 5 Ray CPUs'):
+        h200.build_plan(args, {})
 
 
 @pytest.mark.parametrize('scale', list(h200.EXPERIMENTS))
@@ -102,6 +124,162 @@ def test_grade_stage_never_probes_gpu_merges_or_trains(tmp_path, monkeypatch):
     assert calls[0][1]['CUDA_VISIBLE_DEVICES'] == ''
 
 
+@pytest.mark.parametrize('mask', ['', '-1'])
+@pytest.mark.parametrize('scale', ['deepseek-coder-1.3b', 'deepseek-coder-33b'])
+def test_cpu_grade_accepts_hidden_gpus_and_skips_the_training_launcher(tmp_path, monkeypatch, capsys, mask, scale):
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', mask)
+    monkeypatch.setattr(sys, 'argv', ['run_h200_experiment.py', '--scale', scale,
+                                    '--stage', 'grade', '--output', str(tmp_path)])
+    monkeypatch.setattr(h200, 'select_devices', lambda *args: pytest.fail('CPU grading must not validate GPUs'))
+    monkeypatch.setattr(h200.subprocess, 'run', lambda *args, **kwargs: pytest.fail('CPU grading must not resolve training'))
+    calls = []
+    monkeypatch.setattr(h200, 'run_command', lambda command, env, log: calls.append((command, env)))
+    h200.main()
+    plan = json.loads(capsys.readouterr().out)
+    assert plan['stage_gpu_count'] == plan['evaluation_gpus'] == 0
+    assert plan['evaluation_tp'] is None and plan['cuda_visible_devices'] == ''
+    assert len(calls) == 1 and '--grade-only' in calls[0][0]
+    assert calls[0][1]['CUDA_VISIBLE_DEVICES'] == ''
+
+
+def test_gpu_aliases_resolve_in_cuda_order_and_share_lock_names(monkeypatch):
+    identities = [f'{0xa0 + index:08x}-0000-0000-0000-000000000000' for index in range(4)]
+    # CUDA index 0 deliberately differs from the first physical UUID. This
+    # catches implementations that confuse CUDA and nvidia-smi index order.
+    selected = [identities[3], identities[1], identities[2], identities[0]]
+    aliases = [['0', '1', '2', '3'], ['GPU-' + value for value in selected],
+               ['GPU-' + value[:32] for value in selected]]
+    calls = []
+
+    def fake_probe(command, **kwargs):
+        calls.append(kwargs['env']['CUDA_VISIBLE_DEVICES'])
+        assert 'get_device_properties(i).uuid' in command[-1]
+        return SimpleNamespace(stdout=json.dumps(selected))
+
+    monkeypatch.setattr(suite.subprocess, 'run', fake_probe)
+    results = [suite.resolve_gpu_uuids(values, {'CUDA_VISIBLE_DEVICES': 'unrelated'}) for values in aliases]
+    assert results == [selected] * len(aliases)
+    assert calls == [','.join(values) for values in aliases]
+    assert [suite.gpu_lock_name(value) for value in selected] == [
+        suite.gpu_lock_name('GPU-' + value.upper()) for value in selected]
+
+
+def test_resolved_duplicate_physical_devices_are_rejected(monkeypatch):
+    identity = '00000000-0000-0000-0000-000000000001'
+    monkeypatch.setattr(suite.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps([identity] * 4)))
+    with pytest.raises(ValueError, match='distinct physical devices'):
+        suite.resolve_gpu_uuids(['0', '1', '2', '3'], {})
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_cleanup_kills_a_surviving_group_even_when_its_leader_has_exited(tmp_path, monkeypatch, cancel):
+    process = SimpleNamespace(pid=4321, poll=lambda: 7, wait=lambda **kwargs: 7)
+    signals = []
+    alive = True
+    monkeypatch.setattr(suite.signal, 'SIGKILL', 9, raising=False)
+    kill_signal = suite.signal.SIGKILL
+
+    def signal_group(pid, sig):
+        nonlocal alive
+        assert pid == process.pid, 'Cleanup must target only this job group'
+        if not alive:
+            raise ProcessLookupError
+        signals.append(sig)
+        if sig == kill_signal:
+            alive = False
+
+    monkeypatch.setattr(suite.os, 'killpg', signal_group, raising=False)
+    # A hashable process object matching the Popen interface.
+    class Exited:
+        pid = process.pid
+        poll = staticmethod(process.poll)
+        wait = staticmethod(process.wait)
+    owned = Exited()
+    runner = suite.Processes(termination_grace_seconds=0)
+    if cancel:
+        runner.active.add(owned)
+        runner.cancel()
+        assert not runner.active
+        before = list(signals)
+        runner.cancel()
+        assert signals == before
+    else:
+        monkeypatch.setattr(suite.subprocess, 'Popen', lambda *args, **kwargs: owned)
+        real_cleanup = suite.terminate_groups
+        def tracked_cleanup(processes, timeout):
+            assert owned in runner.active, 'Failed jobs must remain tracked until cleanup completes'
+            real_cleanup(processes, timeout)
+        monkeypatch.setattr(suite, 'terminate_groups', tracked_cleanup)
+        with pytest.raises(subprocess.CalledProcessError, match='7'):
+            runner.run(['failed-launcher'], tmp_path / 'failed.log')
+        assert owned not in runner.active
+    assert not alive and suite.signal.SIGTERM in signals and kill_signal in signals
+
+
+def test_cleanup_does_not_kill_a_group_that_exits_gracefully(monkeypatch):
+    process = SimpleNamespace(pid=4321, poll=lambda: 0, wait=lambda **kwargs: 0)
+    signals = []
+    def signal_group(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError
+        signals.append(sig)
+    monkeypatch.setattr(suite.os, 'killpg', signal_group, raising=False)
+    suite.terminate_groups([process], 0)
+    assert signals == [suite.signal.SIGTERM]
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Actual POSIX process-group signals require Linux/Unix')
+def test_failed_launcher_reaps_a_real_term_ignoring_descendant(tmp_path):
+    import psutil
+    ready = tmp_path / 'child.pid'
+    child = ('import os, signal, time; from pathlib import Path; '
+             'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+             f'Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(60)')
+    launcher = ('import subprocess, sys, time; from pathlib import Path\n'
+                f'subprocess.Popen([sys.executable, "-c", {child!r}])\n'
+                'for _ in range(500):\n'
+                f'    if Path({str(ready)!r}).exists(): break\n'
+                '    time.sleep(.01)\n'
+                'sys.exit(7)\n')
+    runner = suite.Processes(termination_grace_seconds=.15)
+    try:
+        with pytest.raises(subprocess.CalledProcessError):
+            runner.run([sys.executable, '-c', launcher], tmp_path / 'real-process.log')
+        assert ready.is_file()
+        child_pid = int(ready.read_text())
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                if psutil.Process(child_pid).status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                    break
+            except psutil.NoSuchProcess:
+                break
+            time.sleep(.01)
+        else:
+            pytest.fail('A descendant survived the failed launcher cleanup')
+        assert not runner.active
+    finally:
+        if ready.exists():
+            try:
+                suite.os.kill(int(ready.read_text()), suite.signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Production GPU locks use POSIX flock')
+def test_uuid_aliases_contend_on_the_same_actual_file_lock(tmp_path):
+    import fcntl
+    identity = 'abcdef01-0000-0000-0000-000000000001'
+    original = tmp_path / suite.gpu_lock_name(identity)
+    alias = tmp_path / suite.gpu_lock_name('GPU-' + identity.upper())
+    with original.open('a') as first, alias.open('a') as second:
+        fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(first, fcntl.LOCK_UN)
+        fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 def test_scheduler_releases_gpu_while_grade_runs_and_waits_before_large(tmp_path):
     plan = plan_for(tmp_path)
     lock = threading.Lock()
@@ -157,6 +335,7 @@ def test_suite_dry_run_has_no_side_effects(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, 'argv', ['run_h200_suite.py', '--dry-run', '--output', str(dest)])
     monkeypatch.delenv('CUDA_VISIBLE_DEVICES', raising=False)
     monkeypatch.setattr(suite, 'available_resources', lambda: (list(range(64)), 512))
+    monkeypatch.setattr(suite, 'resolve_gpu_uuids', lambda *args: pytest.fail('Dry-run must not query CUDA'))
     suite.main()
     assert json.loads(capsys.readouterr().out)['devices'] == ['0', '1', '2', '3']
     assert not dest.exists()

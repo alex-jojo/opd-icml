@@ -23,11 +23,11 @@ bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/con
 
 流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
-`--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留2–8个CPU线程用于判题，其余按槽分配；四卡阶段使用其余全部CPU。BLAS线程数设为1，避免嵌套线程池。
+`--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU线程用于判题，其余按槽分配；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
 
 `--gradient-cache-total-gib` 默认64，`--ray-object-store-total-gib` 默认16，分别还受可用主存1/8、1/16限制。单卡并行时按槽平分，四卡阶段独享；原有梯度缓存仍执行自己的内存保护。另按每个单卡任务80 GiB起始预留估计限制并行度。它们是缓冲预算和准入估计，**不是模型、优化器、checkpoint合并与判题的全过程硬内存上限**；33B尤其需要充分主存和磁盘。
 
-两个总调度实例通过GPU ID锁避免重复占卡；不要再手动启动占同一组卡的独立任务。失败或中断只终止本套已启动进程组，不执行全局 `ray stop`，不删除结果。总调度不自动续训或覆盖已有目录，已完成数据保留；可用下面的单模型入口重试评测。
+正式执行时先按CUDA实际设备顺序解析完整UUID，再按UUID加锁；GPU序号、完整UUID和可识别的UUID前缀共用同一把锁。dry-run不查询GPU。不要再手动启动占同一组卡的独立任务。失败或中断只终止本套已启动进程组：即使顶层进程已经退出，也继续检查组内残留进程，宽限期后发送SIGKILL；不执行全局 `ray stop`，不删除结果。总调度不自动续训或覆盖已有目录，已完成数据保留；可用下面的单模型入口重试评测。
 
 ## 按模型的吞吐起始配置
 
@@ -68,12 +68,12 @@ bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
 bash scripts/h200/train_eval_deepseek_coder_33b.sh --stage train-generate \
   --devices 0,1,2,3 --output runs/h200/deepseek33-run1
 
-# 同一目录，仅CPU判题，不加载模型或检查GPU。
-bash scripts/h200/train_eval_deepseek_coder_33b.sh --stage grade \
-  --devices 0,1,2,3 --output runs/h200/deepseek33-run1
+# 同一目录，仅CPU判题；不需要可见GPU，也不需要--devices。
+CUDA_VISIBLE_DEVICES="" bash scripts/h200/train_eval_deepseek_coder_33b.sh \
+  --stage grade --output runs/h200/deepseek33-run1
 ```
 
-原有 `--stage train`、`eval`保留；`generate`对已有最终checkpoint合并并生成，`grade`仅限Code。Code的`all`/`eval`先完成全部生成再判题。更换采样/题集/模型需新目录；最终checkpoint完整性检查、合并标记、评测缓存校验保留。
+原有 `--stage train`、`eval`保留；`generate`对已有最终checkpoint合并并生成，`grade`仅限Code，跳过训练配置解析和GPU选择/检查，忽略`--devices`。Code的`all`/`eval`先完成全部生成再判题。更换采样/题集/模型需新目录；最终checkpoint完整性检查、合并标记、评测缓存校验保留。
 
 可用 `--student`、`--teacher`、`--cache-dir`、`--model-dir`、`--data`、`--val-data`指定资源。单模型还支持 `--optimizer-offload on|off`、`--teacher-offload on|off`、`--ray-num-cpus`、`--cpu-ids`、`--ray-object-store-gib`、`--gradient-cache-gib`；两个内存上限在独立入口中是该实验预算。
 
