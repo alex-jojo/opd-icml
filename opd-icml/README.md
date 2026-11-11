@@ -32,13 +32,17 @@ Qwen3-1.7B / 4B、Qwen3-8B Base → 32B 教师，以及 Gemma-3-12B PT → IT �
 
 逐 token 测量在启用 `replication17.compact_head` 时，仅对目标预测位置的 hidden 和该位置缓存的 16 个词表 ID 做输出投影，再计算该 token 的 KL；不再投影其他 response 位置或构造它们的词表并集。`exact_all` 和 `kl_stratified` 共用此路径，保留所需的 Transformer 上下文、完整参数反传和模型自身的 logits 后处理；正常训练仍计算全部训练位置的损失。
 
+同一回答内的待测 token 默认每 4 个复用一次前向计算图（`parameter_tokens.graph_group_size=4`），前缀保留到该组最后一个目标位置。每个 token 仍分别反传、计算完整参数梯度平方范数并清空梯度，最后一个 token 反传后释放计算图；不减少待测 token 数，不把多个梯度相加后求范数。每个位置只投影自己的 16 个词表 ID。可按显存和实测耗时调整 `--parameter-token-group-size`，设为 `1` 恢复逐 token 前向；这不是自动显存预算或 OOM 重试机制。
+
 参数统计与 hidden 统计写在同一个 `replication/token_audit/step_XXX_inner_N.json` 和 `.npz` 中。每个现有 token 分组（包括 KL top 1/5/10/20%、固定 step-1 阈值、位置等）增加 `quantities.parameter_gradient_energy`，含总和、均值和能量占比；还保存参数梯度 RMS、Frobenius 范数、平均 L2 范数、能量集中度，以及逐 token 标量和 row/pos。高/中/低 KL 分组也增加参数能量和 RMS。`parameter_gradient_measurement` 记录全量覆盖、额外反传次数、耗时和定义；不保存整个参数梯度向量，不额外调用 teacher，不执行诊断 optimizer step。
 
-**代价很大：若一个测量步有 N 个有效 token，该步额外执行 N 次完整学生 forward/backward。** 所有诊断在正式训练 backward 前运行，并恢复 RNG、模块模式和清空诊断梯度；正式训练仍使用原损失。控制台会显示进度。原有 `actor/grad_norm` 是 batch 参数梯度范数；逐 token 平方范数之和不等于 batch 梯度平方范数，也不代表 AdamW 更新能量。
+**代价仍大：测量 N 个 token 仍需 N 次全参数反传，显式前向次数降为各回答 `ceil(待测 token 数 / graph_group_size)` 之和。** 梯度检查点每次反传仍可能重算内部前向，不能按前向次数比例推断总提速；分组还会延长计算图的存活时间，并让组内较早 token 使用较长前缀。所有诊断在正式训练 backward 前运行，并恢复 RNG、模块模式和清空诊断梯度；正式训练仍使用原损失。控制台及 `parameter_gradient_measurement` 记录 `forward_calls`、有效 `graph_group_size` 和 `graph_reuse_fallback`，前向计数不含检查点重算。原有 `actor/grad_norm` 是 batch 参数梯度范数；逐 token 平方范数之和不等于 batch 梯度平方范数，也不代表 AdamW 更新能量。
 
 ```bash
 python train.py --scale 1.7b --experiment paired-full --parameter-token-gradients exact-all
 python train.py --scale 4b --task code --experiment paired-full --parameter-token-gradients exact-all
+# 显存紧张或回归对照：保留完整逐 token 测量，关闭计算图复用
+python train.py --scale 4b --task code --experiment paired-full --parameter-token-group-size 1
 # 快速调试时显式关闭；RQ1 正式全量记录使用 exact-all
 python train.py --scale 1.7b --experiment paired-full --parameter-token-gradients off
 python analysis/extract_signal.py --run-17 runs/1.7b/paired-full --run-4 runs/4b/paired-full --output outputs/rq1.csv
@@ -48,6 +52,8 @@ python analysis/plot_rq1_rq4.py --rq1 outputs/rq1.csv
 新 CSV 增加 `top_kl_decile_parameter_energy_pct`、参数梯度范数、hidden/参数 RMS 与 Frobenius 范数和诊断开销；有新数据时额外生成 `rq1_parameter_energy.pdf` 和 `rq1_gradient_norm.pdf`。旧日志缺失的新字段留空，不回填或编造历史参数梯度数据。此统计不包含全程移除高 KL 监督的消融训练。
 
 当前模型配对使用零 dropout，记录器会检查这一点，保证确定性诊断与训练的目标一致。当前支持项目的 FSDP1 分片方案（`use_orig_params=false`），尚不支持 FSDP2/DTensor 或混合分片。服务器可先在两张 GPU 上运行 `python tests/check_parameter_tokens_distributed.py --fsdp` 验证分片范数；无 GPU 时去掉 `--fsdp` 可验证两进程 CPU DDP。
+
+计算图复用的 FSDP1 适配依赖 PyTorch 2.6/2.7 的内部反传钩子生命周期，其他版本、编译模型、参数 CPU offload 或项目的 activation offload 会自动回退到组大小 1 并记录原因。已在本地 PyTorch 2.7.1 CPU 上验证按层 FSDP 分片、共享 embedding、非重入梯度检查点及 BF16 混合精度；项目固定的 PyTorch 2.6 CUDA 配置仍需在服务器运行 `python tests/check_parameter_graph_reuse_distributed.py --cuda --fsdp --checkpoint --mixed-precision` 验证。CPU 可运行同一命令并去掉 `--cuda`，Windows 下需先设 `USE_LIBUV=0`。本地测试不代表 GPU 吞吐或显存实测。
 
 ## 安装和准备数据
 

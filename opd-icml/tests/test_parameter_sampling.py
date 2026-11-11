@@ -109,6 +109,8 @@ def test_sampled_study_preserves_full_hidden_population_and_saves_identical_pair
     assert metadata['sampled'] and not metadata['exact']
     assert metadata['individual_token_gradients_exact']
     assert metadata['token_count'] == 4 and metadata['population_token_count'] == 5
+    assert metadata['forward_calls'] == len(set(measured['row']))
+    assert metadata['graph_group_size'] == 4
     with np.load(directory/'step_001_inner_1.npz') as full, np.load(directory/'parameter_sample_001_inner_1.npz') as paired:
         assert len(full['row']) == 5 and len(paired['row']) == 4
         np.testing.assert_array_equal(full['eos'],np.isin(full['token'],[15,6]))

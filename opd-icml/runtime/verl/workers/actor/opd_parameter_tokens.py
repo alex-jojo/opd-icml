@@ -82,6 +82,16 @@ class FullParameterTokenAudit:
     def __init__(self, actor, cfg):
         self.actor = actor
         self.cfg = dict(cfg)
+        # Bound the number of live token heads, without batching parameter
+        # Jacobians. Setting 1 preserves the original low-memory replay path.
+        self.group_size = self.cfg.get('graph_group_size', 4)
+        if isinstance(self.group_size, bool) or int(self.group_size) != self.group_size or self.group_size < 1:
+            raise ValueError('graph_group_size must be a positive integer')
+        self.group_size = int(self.group_size)
+        from .opd_graph_reuse import reuse_fallback_reason
+        self.reuse_fallback = reuse_fallback_reason(actor.actor_module) if self.group_size > 1 else None
+        if self.reuse_fallback:
+            self.group_size = 1
         self.mode = self.cfg.get('mode', 'exact_all')
         if self.mode not in {'exact_all', 'kl_stratified'}:
             raise ValueError('Unsupported parameter token audit mode: ' + str(self.mode))
@@ -105,6 +115,7 @@ class FullParameterTokenAudit:
     def measure(self, data, step, inner):
         from .opd_gradient_study import gradient_observation
         from .opd_top16 import forward, reverse_kl
+        from .opd_graph_reuse import RetainedGraph
         started = time.perf_counter()
         # No training gradients need copying/restoring. No optimizer step.
         if any(p.grad is not None for p in self.actor.actor_module.parameters()):
@@ -139,33 +150,50 @@ class FullParameterTokenAudit:
             label = f'ALL {len(rows)}' if sampling is None else f'SAMPLED {len(rows)}/{population}'
             print(f'[parameter tokens] step={step} inner={inner+1}: exact full-model '
                   f'gradients for {label} tokens; {len(rows)} extra backwards', flush=True)
+            print(f'[parameter tokens] graph group size={self.group_size}' +
+                  (f'; fallback: {self.reuse_fallback}' if self.reuse_fallback else ''), flush=True)
         cursor = 0
-        full_forward_tokens = actual_forward_tokens = 0
+        full_forward_tokens = actual_forward_tokens = forward_calls = 0
         with gradient_observation(self.actor):
             for row in np.unique(rows):
                 selected = data.select_idxs([row])
                 inputs = {k: v.to(device) for k, v in selected.batch.items()}
-                for pos in positions[rows == row]:
+                row_positions = positions[rows == row]
+                for start in range(0, len(row_positions), self.group_size):
+                    group = row_positions[start:start+self.group_size].tolist()
                     self.actor.actor_optimizer.zero_grad(set_to_none=True)
-                    token_inputs = causal_token_prefix(inputs,pos) if self.prefix else inputs
-                    full_forward_tokens += inputs['input_ids'].numel()
+                    token_inputs = causal_token_prefix(inputs,group[-1]) if self.prefix else inputs
+                    full_forward_tokens += inputs['input_ids'].numel() * len(group)
                     actual_forward_tokens += token_inputs['input_ids'].numel()
+                    forward_calls += 1
                     _, logits, _, _ = forward(self.actor, token_inputs, float(data.meta_info['temperature']),
                                               token_inputs['opd_top16_ids'], diagnostics=False,
-                                              response_position=int(pos))
-                    teacher_logits = token_inputs['opd_teacher_top16_logits'][:, int(pos):int(pos)+1]
-                    token_loss = reverse_kl(logits, teacher_logits)[0, 0]
-                    token_loss.backward()
-                    energy[cursor] = layout.squared_norm()
-                    losses[cursor] = float(token_loss.detach())
-                    del logits, token_loss
-                    cursor += 1
-                    if dp.primary() and (cursor % (16 if sampling is not None else 256) == 0 or cursor == len(rows)):
-                        print(f'[parameter tokens] {cursor}/{len(rows)}; '
-                              f'{time.perf_counter()-started:.1f}s', flush=True)
+                                              response_positions=group)
+                    teacher_logits = token_inputs['opd_teacher_top16_logits'][:, group]
+                    token_losses = reverse_kl(logits, teacher_logits)[0]
+                    graph = RetainedGraph(self.actor.actor_module) if len(group) > 1 else None
+                    for index in range(len(group)):
+                        if index:
+                            graph.prepare_next_backward()
+                        token_loss = token_losses[index]
+                        token_loss.backward(retain_graph=index+1 < len(group))
+                        energy[cursor] = layout.squared_norm()
+                        losses[cursor] = float(token_loss.detach())
+                        self.actor.actor_optimizer.zero_grad(set_to_none=True)
+                        del token_loss
+                        cursor += 1
+                        if dp.primary() and (cursor % (16 if sampling is not None else 256) == 0 or cursor == len(rows)):
+                            print(f'[parameter tokens] {cursor}/{len(rows)}; '
+                                  f'{time.perf_counter()-started:.1f}s', flush=True)
+                    del logits, token_losses, graph
+        if dp.primary():
+            print(f'[parameter tokens] completed: {forward_calls} forwards, {len(rows)} backwards '
+                  '(checkpoint recomputations excluded)', flush=True)
         result = dict(row=rows, pos=positions, energy=energy, diagnostic_kl=losses,
                       seconds=time.perf_counter()-started, backwards=len(rows),
                       causal_prefix=self.prefix, forward_input_tokens=actual_forward_tokens,
+                      forward_calls=forward_calls, graph_group_size=self.group_size,
+                      graph_reuse_fallback=self.reuse_fallback,
                       full_suffix_forward_input_tokens=full_forward_tokens)
         if sampling is not None:
             result['sampling'] = sampling
@@ -186,6 +214,9 @@ def attach_parameter_energy(fields, measurement):
                 diagnostic_optimizer_steps=0, extra_teacher_calls=0,
                 parameter_vectors_saved=False, seconds=measurement['seconds'],
                 causal_prefix=measurement.get('causal_prefix',False),
+                forward_calls=measurement.get('forward_calls'),
+                graph_group_size=measurement.get('graph_group_size',1),
+                graph_reuse_fallback=measurement.get('graph_reuse_fallback'),
                 forward_input_tokens=measurement.get('forward_input_tokens'),
                 full_suffix_forward_input_tokens=measurement.get('full_suffix_forward_input_tokens'),
                 definition='E_i = sum over unique trainable parameters theta of (d ell_i / d theta)^2',

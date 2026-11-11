@@ -82,8 +82,8 @@ def test_prefix_only_diagnostic_matches_full_sequence_gradients_and_next_update(
     optimizer_update(actor,data)
     baseline=copy.deepcopy(actor)
     state=copy.deepcopy(actor.actor_optimizer.state_dict())
-    full=audit_module.FullParameterTokenAudit(actor,dict(mode='exact_all',causal_prefix=False)).measure(data,1,0)
-    prefix=audit_module.FullParameterTokenAudit(actor,dict(mode='exact_all',causal_prefix=True)).measure(data,1,0)
+    full=audit_module.FullParameterTokenAudit(actor,dict(mode='exact_all',causal_prefix=False,graph_group_size=1)).measure(data,1,0)
+    prefix=audit_module.FullParameterTokenAudit(actor,dict(mode='exact_all',causal_prefix=True,graph_group_size=1)).measure(data,1,0)
     assert prefix['causal_prefix'] and prefix['forward_input_tokens']<full['forward_input_tokens']
     np.testing.assert_allclose(prefix['energy'],full['energy'],rtol=3e-5,atol=1e-7)
     np.testing.assert_allclose(prefix['diagnostic_kl'],full['diagnostic_kl'],rtol=3e-5,atol=1e-7)

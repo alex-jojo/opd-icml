@@ -495,6 +495,7 @@ class ActivationHandler:
             return out
 
         module.forward = wrapped_method.__get__(module, type(module))
+        module._verl_activation_offloading = True
 
 
 def enable_activation_offloading(model, strategy, enable_ckpt=False):

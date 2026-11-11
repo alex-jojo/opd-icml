@@ -182,6 +182,8 @@ def main():
                         help="Override full per-token parameter-gradient recording (gradient-study profiles only)")
     parser.add_argument("--parameter-token-samples", type=int,
                         help="Sampled diagnostic token count (default 256); one quarter from the top-KL decile")
+    parser.add_argument('--parameter-token-group-size', type=int,
+                        help='Tokens from one response sharing a diagnostic graph (default 4; 1 disables reuse)')
     parser.add_argument("--hardware", choices=["l40x4", "a100x1"],
                         help="Memory-conscious runtime overrides: four L40 GPUs or one A100 80GB")
     parser.add_argument('--num-gpus', type=int, help='GPUs to use; overrides preset count, keeps global batch fixed')
@@ -195,6 +197,8 @@ def main():
     args = parser.parse_args()
     if args.code_workers < 1:
         parser.error("--code-workers must be positive")
+    if args.parameter_token_group_size is not None and args.parameter_token_group_size < 1:
+        parser.error('--parameter-token-group-size must be positive')
     if args.parameter_token_samples is not None and (
             args.parameter_token_gradients != 'sampled' or args.parameter_token_samples < 2):
         parser.error('--parameter-token-samples requires --parameter-token-gradients sampled and a count >= 2')
@@ -229,6 +233,10 @@ def main():
             mode='kl_stratified' if args.parameter_token_gradients == 'sampled' else 'exact_all')
         if args.parameter_token_gradients == 'sampled':
             study['parameter_tokens'].update(sample_size=args.parameter_token_samples or 256, seed=42)
+    if args.parameter_token_group_size is not None:
+        if not study.get('enabled', False) or not study.get('parameter_tokens', {}).get('enabled', False):
+            parser.error('--parameter-token-group-size requires enabled parameter-token diagnostics')
+        study['parameter_tokens']['graph_group_size'] = args.parameter_token_group_size
     default_run = ROOT / 'runs' / args.scale / args.experiment if args.task == 'math' else ROOT / 'runs/code' / args.scale / args.experiment
     output = (args.output or default_run).resolve()
     data = (args.data or ROOT / ('data/eurus_code_train.parquet' if args.task == 'code' else 'data/dapo14k_train.parquet')).resolve()
@@ -236,7 +244,7 @@ def main():
     command = [sys.executable, "-m", "verl.trainer.main_ppo", "--config-dir", str(profile),
                "--config-name", config_name, "hydra.run.dir=" + str(output / "hydra")]
     command += ['++' + key + '=' + json.dumps(value) for key, value in hardware_overrides.items()]
-    if args.parameter_token_gradients:
+    if args.parameter_token_gradients or args.parameter_token_group_size is not None:
         prefix = '++actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens.'
         command += [prefix + key + '=' + json.dumps(value) for key,value in study['parameter_tokens'].items()]
     print(json.dumps(dict(experiment=args.experiment, scale=args.scale, task=args.task, gpu_count=cfg["trainer"]["n_gpus_per_node"],

@@ -284,16 +284,29 @@ def _teacher_vocab_ids(actor,token_ids):
     return mapped
 
 
-def forward(actor,inputs,temperature,ids=None,teacher=False,gradient_basis=None,projection_state=None,diagnostics=True,hidden_only=False,response_position=None):
+def forward(actor,inputs,temperature,ids=None,teacher=False,gradient_basis=None,projection_state=None,diagnostics=True,hidden_only=False,response_position=None,response_positions=None):
     if temperature!=1.:raise ValueError('This experiment fixes temperature=1')
     if actor.use_remove_padding or actor.use_ulysses_sp:raise ValueError('Top16 audit uses padded, single-GPU HF forwards')
     n=inputs['responses'].shape[1]
-    if response_position is not None:
+    selection=None
+    if response_position is not None or response_positions is not None:
         if ids is None or diagnostics or hidden_only or gradient_basis is not None:
-            raise ValueError('Single-position forward requires fixed IDs, diagnostics=False and no hidden projection')
+            raise ValueError('Selected-position forward requires fixed IDs, diagnostics=False and no hidden projection')
+        if response_position is not None and response_positions is not None:
+            raise ValueError('Specify either response_position or response_positions')
+    if response_position is not None:
         if int(response_position)!=response_position or not 0<=response_position<n:
             raise ValueError('Token position is outside the response')
         response_position=int(response_position)
+        selection=slice(response_position,response_position+1)
+        selected_count=1
+    elif response_positions is not None:
+        response_positions=tuple(response_positions)
+        if not response_positions or any(int(p)!=p or not 0<=p<n for p in response_positions):
+            raise ValueError('Token positions are empty or outside the response')
+        response_positions=tuple(int(p) for p in response_positions)
+        selection=list(response_positions)
+        selected_count=len(response_positions)
     prefix='ref_' if teacher and 'ref_input_ids' in inputs else ''
     device=inputs[prefix+'input_ids'].device
     projection_context=(nullcontext() if gradient_basis is None else
@@ -302,7 +315,7 @@ def forward(actor,inputs,temperature,ids=None,teacher=False,gradient_basis=None,
     use_compact=ids is not None and not diagnostics and enabled(actor)
     head=_unwrap_actor_module(_unwrap_actor_module(actor.actor_module).lm_head)
     gather_ids=_teacher_vocab_ids(actor,ids) if teacher and ids is not None else ids
-    head_context=compact_head(head,gather_ids,hidden_only,response_position) if use_compact or hidden_only else nullcontext()
+    head_context=compact_head(head,gather_ids,hidden_only,response_position,response_positions) if use_compact or hidden_only else nullcontext()
     input_ids=inputs[prefix+'input_ids'];attention_mask=inputs[prefix+'attention_mask'];position_ids=inputs[prefix+'position_ids']
     if getattr(actor.config,'policy_loss',{}).get('replication17',{}).get('trim_prompt_padding',False):
         # Only a COMMON all-zero leading prompt prefix; keep every response
@@ -320,17 +333,17 @@ def forward(actor,inputs,temperature,ids=None,teacher=False,gradient_basis=None,
         ):
             out=actor.actor_module(input_ids=input_ids,attention_mask=attention_mask,
                 position_ids=position_ids,use_cache=False,return_dict=True,logits_to_keep=n+1)
-            if response_position is not None and use_compact:
+            if selection is not None and use_compact:
                 # compact_head already selected the prediction BEFORE projection;
                 # retain the official model's output transformations (e.g. softcap).
-                logits=out.logits[:,:1,:]
+                logits=out.logits[:,:selected_count,:]
             else:
                 logits=out.logits[:,-n-1:-1,:]
-                if response_position is not None:
-                    logits=logits[:,response_position:response_position+1,:]
+                if selection is not None:
+                    logits=logits[:,selection,:]
     if hidden_only:return None,None,None,None
-    if response_position is not None:
-        ids=ids[:,response_position:response_position+1,:]
+    if selection is not None:
+        ids=ids[:,selection,:]
     if gradient_basis is not None and ids is None:
         raise ValueError('hidden-gradient projection is actor-update only and requires fixed student Top-16 IDs')
     if ids is None:ids=logits.detach().topk(16,dim=-1).indices

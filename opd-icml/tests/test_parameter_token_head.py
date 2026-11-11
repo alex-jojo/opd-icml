@@ -79,7 +79,7 @@ def test_audit_projects_and_compares_only_one_positions_support(monkeypatch, pre
     monkeypatch.setattr(fast_head.F, 'linear', linear)
     monkeypatch.setattr(opd, 'reverse_kl', reverse_kl)
     result = audit_module.FullParameterTokenAudit(actor, dict(mode=mode, causal_prefix=prefix,
-                                                             sample_size=4)).measure(data, 1, 0)
+                                                             sample_size=4, graph_group_size=1)).measure(data, 1, 0)
     indices = result['sampling']['index'] if mode == 'kl_stratified' else np.arange(len(expected))
     np.testing.assert_allclose(result['energy'], expected[indices], rtol=2e-5, atol=1e-7)
     assert projections == [((1, 1, 4), (16, 4))] * len(indices)

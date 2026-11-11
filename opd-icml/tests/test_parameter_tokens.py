@@ -185,6 +185,8 @@ def test_same_population_groups_and_outputs(tmp_path):
     assert report['parameter_gradient_frobenius'] == pytest.approx(np.sqrt(energy.sum()))
     assert report['parameter_gradient_measurement']['coverage_fraction'] == 1.
     assert not report['parameter_gradient_measurement']['sampled']
+    assert report['parameter_gradient_measurement']['forward_calls'] == 2
+    assert report['parameter_gradient_measurement']['graph_group_size'] == 4
     for label in ('low', 'middle', 'high'):
         assert 'parameter_gradient_rms' in report['kl_high_middle_low'][label]
     replication.begin(data, None, 2)

@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 
 @contextmanager
-def compact_head(head, ids=None, hidden_only=False, response_position=None):
+def compact_head(head, ids=None, hidden_only=False, response_position=None, response_positions=None):
     if not isinstance(head,torch.nn.Linear):raise TypeError('compact OPD head requires nn.Linear')
     if hasattr(head,'_opd_compact_active'):raise RuntimeError('nested compact head')
     local_forward=head.__dict__.get('forward')
@@ -23,17 +23,21 @@ def compact_head(head, ids=None, hidden_only=False, response_position=None):
             return hidden.new_zeros((*hidden.shape[:-1],1))
         if hidden.ndim!=3 or ids.ndim!=3 or hidden.shape[0]!=ids.shape[0] or hidden.shape[1]!=ids.shape[1]+1:
             raise ValueError('compact head requires response_length+1 hidden positions')
-        prediction_hidden=hidden[:,:-1]
-        support=ids
-        if response_position is not None:
+        def project(prediction_hidden,support):
+            unique,inverse=torch.unique(support.reshape(-1),sorted=True,return_inverse=True)
+            weight=head.weight.index_select(0,unique)
+            bias=None if head.bias is None else head.bias.index_select(0,unique)
+            logits=F.linear(prediction_hidden,weight,bias)
+            return logits.gather(-1,inverse.reshape_as(support))
+        if response_positions is not None:
+            # Keep each token's own support: no group-wide vocabulary union.
+            selected=torch.cat([project(hidden[:,p:p+1],ids[:,p:p+1]) for p in response_positions],dim=1)
+        elif response_position is not None:
             # hidden starts one input token BEFORE the first response token.
-            prediction_hidden=prediction_hidden[:,response_position:response_position+1]
-            support=support[:,response_position:response_position+1]
-        unique,inverse=torch.unique(support.reshape(-1),sorted=True,return_inverse=True)
-        weight=head.weight.index_select(0,unique)
-        bias=None if head.bias is None else head.bias.index_select(0,unique)
-        logits=F.linear(prediction_hidden,weight,bias)
-        selected=logits.gather(-1,inverse.reshape_as(support))
+            p=response_position
+            selected=project(hidden[:,p:p+1],ids[:,p:p+1])
+        else:
+            selected=project(hidden[:,:-1],ids)
         # Keep a final unused slot, also when only one prediction is returned.
         return torch.cat((selected,selected.new_zeros((len(selected),1,ids.shape[-1]))),dim=1)
     head.forward=call
