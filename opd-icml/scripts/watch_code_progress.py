@@ -80,11 +80,15 @@ class EvaluationProgress:
 
 
 def main():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from project_paths import project_absolute
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--interval', type=float, default=2.)
     parser.add_argument('--once', action='store_true', help='Print one JSON snapshot and exit')
     args = parser.parse_args()
+    args.output_dir = project_absolute(args.output_dir)
     if args.interval <= 0:
         parser.error('--interval must be positive')
     state = EvaluationProgress(args.output_dir)

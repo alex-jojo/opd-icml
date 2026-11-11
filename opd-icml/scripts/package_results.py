@@ -4,8 +4,12 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_paths import project_absolute, project_relative, saved_path_matches
 
 PROTOCOL = 'opd-experiment-data-zip-v1'
 MANIFEST = 'EXPORT_MANIFEST.json'
@@ -25,7 +29,7 @@ CREDENTIAL_NAMES = {'.wandb.local.json', '.netrc', '_netrc', 'credentials.json'}
 
 
 def archive_path(run, label=None):
-    run = Path(run).resolve()
+    run = project_absolute(run)
     prefix = f'{label}-' if label else ''
     return run.with_name(f'{prefix}{run.name}-results.zip')
 
@@ -46,8 +50,7 @@ def _data_file(path):
 
 def result_files(run):
     """Do not follow links or collect files from model/cache directories."""
-    private_config = Path(os.environ.get('OPD_WANDB_CONFIG',
-        Path(__file__).resolve().parents[1] / '.wandb.local.json')).expanduser().resolve()
+    private_config = project_absolute(os.environ.get('OPD_WANDB_CONFIG', '.wandb.local.json')).resolve()
     for directory, subdirs, names in os.walk(run, followlinks=False):
         folder = Path(directory)
         subdirs[:] = sorted(name for name in subdirs
@@ -61,10 +64,10 @@ def result_files(run):
 
 
 def package_results(run, output=None, *, phase='manual'):
-    run = Path(run).resolve()
+    run = project_absolute(run).resolve()
     if not run.is_dir():
         raise ValueError(f'Experiment directory does not exist: {run}')
-    output = Path(output).resolve() if output else archive_path(run)
+    output = project_absolute(output).resolve() if output else archive_path(run)
     if output.suffix.lower() != '.zip':
         raise ValueError('Results archive output must end in .zip')
     files = list(result_files(run))
@@ -74,7 +77,8 @@ def package_results(run, output=None, *, phase='manual'):
         try:
             with zipfile.ZipFile(output) as previous:
                 saved = json.loads(previous.read(MANIFEST))
-            if saved.get('protocol') != PROTOCOL or saved.get('source_directory') != str(run):
+            if (saved.get('protocol') != PROTOCOL
+                    or not saved_path_matches(saved.get('source_directory', ''), run)):
                 raise ValueError
         except (OSError, ValueError, KeyError, zipfile.BadZipFile):
             raise ValueError(f'Output already exists and is not this experiment data archive: {output}') from None
@@ -83,7 +87,7 @@ def package_results(run, output=None, *, phase='manual'):
     os.close(fd)
     temporary = Path(temporary_name)
     entries = []
-    print(f'[ZIP] Packaging {len(files)} experiment data files from {run}', flush=True)
+    print(f'[ZIP] Packaging {len(files)} experiment data files from {project_relative(run)}', flush=True)
     try:
         with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED,
                              compresslevel=3, allowZip64=True, strict_timestamps=False) as archive:
@@ -101,7 +105,7 @@ def package_results(run, output=None, *, phase='manual'):
                     raise ValueError(f'Experiment file is still being written; retry after it finishes: {path}')
                 info = archive.getinfo(member)
                 entries.append(dict(path=member, bytes=info.file_size, crc32=f'{info.CRC:08x}'))
-            manifest = dict(protocol=PROTOCOL, source_directory=str(run), phase=phase,
+            manifest = dict(protocol=PROTOCOL, source_directory=project_relative(run), path_base='project_root', phase=phase,
                 created_at_utc=datetime.now(timezone.utc).isoformat(timespec='seconds'),
                 contents='experiment data only; no models, checkpoints, credentials or nested archives',
                 file_count=len(entries), original_bytes=sum(item['bytes'] for item in entries), files=entries,
@@ -119,7 +123,7 @@ def package_results(run, output=None, *, phase='manual'):
     finally:
         if temporary.exists():
             temporary.unlink()
-    print(f'[DOWNLOAD ZIP] {output} ({len(entries)} data files, {output.stat().st_size / 1024**2:.2f} MiB)', flush=True)
+    print(f'[DOWNLOAD ZIP] {project_relative(output)} ({len(entries)} data files, {output.stat().st_size / 1024**2:.2f} MiB)', flush=True)
     return output
 
 

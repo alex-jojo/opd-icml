@@ -227,6 +227,8 @@ def grade(args, questions, directory):
 
 
 def main():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from project_paths import project_absolute
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['generate', 'grade'], required=True)
     parser.add_argument('--benchmark', required=True)
@@ -247,6 +249,9 @@ def main():
     parser.add_argument('--shard-count', type=int, default=0)
     parser.add_argument('--shard-index', type=int, default=0)
     args = parser.parse_args()
+    args.data_dir, args.output_dir = project_absolute(args.data_dir), project_absolute(args.output_dir)
+    if args.model_path is not None:
+        args.model_path = str(project_absolute(args.model_path))
     if args.samples < 4 or min(args.workers, args.batch_size, args.max_num_seqs, args.timeout) < 1:
         parser.error('Invalid pass@4 sample/worker/batch/timeout settings')
     questions = list(read_jsonl(args.data_dir / args.benchmark / 'questions.jsonl'))

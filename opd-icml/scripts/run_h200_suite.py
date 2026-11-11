@@ -16,6 +16,7 @@ import uuid
 
 from run_h200_experiment import ROOT, EXPERIMENTS, select_devices
 from wandb_config import load_wandb_environment
+from project_paths import project_absolute, project_relative
 from package_results import archive_path, package_results
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
@@ -41,7 +42,7 @@ def available_resources():
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--devices', help='Four GPU IDs/UUIDs, in scheduling order')
-    p.add_argument('--output', type=Path, default=ROOT / 'runs/h200-suite')
+    p.add_argument('--output', type=Path, default=Path('runs/h200-suite'))
     p.add_argument('--scales', nargs='+', choices=EXPERIMENTS, default=SMALL + LARGE)
     p.add_argument('--max-parallel-small', type=int, choices=[1, 2, 3, 4], default=4)
     p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
@@ -82,7 +83,7 @@ def build_suite(args, environment, cpus, free_gib):
     # merge buffers. Actual memory remains model-dependent; never silently shrink statistics.
     slots = min(args.max_parallel_small, len(selected_small) or 1,
                 max(1, len(training_cpus) // 4), max(1, int((free_gib-cache-objects) // 80)))
-    run = args.output.resolve()
+    run = project_absolute(args.output)
     common = ['--profile', args.profile, '--parameter-token-gradients', args.parameter_token_gradients,
               '--parameter-token-samples', str(args.parameter_token_samples), '--no-package']
     def job(scale, ids, cores, concurrency):
@@ -90,20 +91,20 @@ def build_suite(args, environment, cpus, free_gib):
         if len(cores) < spec.gpus + 1:
             raise ValueError(f'{scale} requires at least {spec.gpus + 1} training CPUs')
         output = run / scale
-        cmd = [sys.executable, str(ROOT / 'scripts/run_h200_experiment.py'), '--scale', scale,
-               '--devices', ','.join(ids), '--output', str(output), *common,
+        cmd = [sys.executable, 'scripts/run_h200_experiment.py', '--scale', scale,
+               '--devices', ','.join(ids), '--output', project_relative(output), *common,
                '--ray-num-cpus', str(len(cores)), '--cpu-ids', ','.join(map(str, cores)),
                '--ray-object-store-gib', str(objects/concurrency),
                '--gradient-cache-gib', str(cache/concurrency),
                '--code-workers', str(max(1, min(8, len(cores)//2))),
                '--score-workers', str(max(1, min(8, len(cores)//2))),
-               '--data', str(ROOT / ('data/eurus_code_train.parquet' if spec.task == 'code' else 'data/dapo14k_train.parquet'))]
+               '--data', 'data/eurus_code_train.parquet' if spec.task == 'code' else 'data/dapo14k_train.parquet']
         if spec.task == 'code':
-            cmd += ['--val-data', str(ROOT / 'data/eurus_code_validation.parquet')]
+            cmd += ['--val-data', 'data/eurus_code_validation.parquet']
         grade = list(cmd)
         grade[grade.index('--cpu-ids')+1] = ','.join(map(str, grade_cpus))
         grade[grade.index('--score-workers')+1] = str(len(grade_cpus))
-        return dict(scale=scale, devices=ids, cpu_ids=cores, output=str(output),
+        return dict(scale=scale, devices=ids, cpu_ids=cores, output=project_relative(output),
                     command=cmd+['--stage', 'train-generate'],
                     grade=grade+['--stage', 'grade'] if spec.task == 'code' else None)
     # Fixed slot queues keep each GPU/CPU partition owned by one task at a time.
@@ -115,13 +116,13 @@ def build_suite(args, environment, cpus, free_gib):
     large = [job(s, devices, training_cpus, 1) for s in LARGE if s in args.scales]
     prepare = []
     if any(EXPERIMENTS[s].task == 'math' for s in args.scales):
-        prepare.append([sys.executable, str(ROOT/'scripts/prepare_dapo14k.py'), '--output', str(ROOT/'data/dapo14k_train.parquet')])
+        prepare.append([sys.executable, 'scripts/prepare_dapo14k.py', '--output', 'data/dapo14k_train.parquet'])
     if any(EXPERIMENTS[s].task == 'code' for s in args.scales):
-        prepare += [[sys.executable, str(ROOT/'scripts/prepare_eurus_code.py')],
-                    [sys.executable, str(ROOT/'scripts/prepare_code_benchmarks.py')]]
-    prepare += [[sys.executable, str(ROOT/'scripts/prepare_models.py'), '--scale', s] for s in args.scales]
-    return dict(output=str(run), devices=devices, free_host_gib=free_gib,
-                results_zip=None if args.no_package else str(archive_path(run)),
+        prepare += [[sys.executable, 'scripts/prepare_eurus_code.py'],
+                    [sys.executable, 'scripts/prepare_code_benchmarks.py']]
+    prepare += [[sys.executable, 'scripts/prepare_models.py', '--scale', s] for s in args.scales]
+    return dict(output=project_relative(run), path_base='project_root', devices=devices, free_host_gib=free_gib,
+                results_zip=None if args.no_package else project_relative(archive_path(run)),
                 small_parallelism=slots, grade_cpus=grade_cpus,
                 gradient_cache_total_gib=cache, ray_object_store_total_gib=objects,
                 prepare=prepare, small_queues=queues, large=large)
@@ -231,7 +232,7 @@ class Processes:
 
 def schedule(plan, runner):
     """GPU completion releases its slot; one bounded CPU grading queue overlaps it."""
-    root = Path(plan['output'])
+    root = project_absolute(plan['output'])
     state = {}
     def record(scale, status):
         state[scale] = status
@@ -319,7 +320,7 @@ def main():
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise ValueError(f'GPU {identity} is already owned by another OPD suite')
-        root = Path(plan['output'])
+        root = project_absolute(plan['output'])
         if root.exists() and any(root.iterdir()):
             raise ValueError('Choose an empty suite --output; existing experiments will not be overwritten')
         root.mkdir(parents=True, exist_ok=True)

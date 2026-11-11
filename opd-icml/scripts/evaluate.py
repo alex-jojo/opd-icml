@@ -5,12 +5,15 @@ import json
 import multiprocessing as mp
 import os
 from pathlib import Path
+import sys
 import time
 import re
 from fractions import Fraction
 from functools import lru_cache
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from evaluation_prompts import CHAT_PROMPT_ENCODING, encode_chat_prompt
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_paths import project_absolute, project_relative
 
 BOXED_INSTRUCTION = r'Please reason step by step, and put your final answer within \boxed{}.'
 LENIENT_MODE='lenient_answers_v1'
@@ -321,6 +324,8 @@ def main():
     p.add_argument('--regrade_only',action='store_true',help='Use saved responses only; never start GPU generation')
     p.add_argument('--compact_output', action='store_true')
     args = p.parse_args()
+    for key in ('input_file', 'model_path', 'output_file'):
+        setattr(args, key, str(project_absolute(getattr(args, key))))
     if args.n < 1 or args.score_workers < 1 or args.max_num_seqs < 1 or (args.n > 1 and args.temperature <= 0):
         raise ValueError('Invalid sample/worker/concurrency settings')
     dest = Path(args.output_file)
@@ -336,7 +341,7 @@ def main():
                 raise ValueError('Cached response dataset/sampling changed')
         else:
             identity=dict(schema=1,dataset_sha256=digest(args.input_file),sampling=sampling(args),
-                model_sha256=None,model_reference=str(model),origin='previously_scored_response_texts')
+                model_sha256=None,model_reference=project_relative(model),origin='previously_scored_response_texts')
         print('[RESCORE] Text-only: preserve original generation identity; no model-weight hashing/loading, no GPU.',flush=True)
     else:
         identity = dict(schema=1, dataset_sha256=digest(args.input_file), sampling=sampling(args),

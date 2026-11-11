@@ -7,6 +7,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(ROOT))
+from project_paths import project_absolute
 FIGURES = ROOT / "outputs/figures"
 FIGURES.mkdir(parents=True, exist_ok=True)
 
@@ -21,6 +24,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--rq1", type=Path, default=ROOT / "data/rq1.csv")
 parser.add_argument("--rq4", type=Path, default=ROOT / "data/rq4.csv")
 args = parser.parse_args()
+args.rq1, args.rq4 = project_absolute(args.rq1), project_absolute(args.rq4)
 signal = rows(args.rq1)
 fig, axes = plt.subplots(1, 3, figsize=(9, 3), constrained_layout=True)
 for ax, key, title in zip(axes, ["train_kl", "above_initial_kl_threshold_pct", "top_kl_decile_hidden_energy_pct"],

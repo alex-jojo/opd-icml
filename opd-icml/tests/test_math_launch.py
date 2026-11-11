@@ -64,7 +64,8 @@ def test_batch_diagnostic_and_quoted_path_overrides():
     assert plan['rollout_batch']==plan['mini_batch_size']==64
     assert plan['micro_batch_size_per_gpu']==2 and plan['rollout_max_num_seqs']==32
     assert plan['parameter_token_gradients']['sample_size']==128
-    assert plan['data']=='/tmp/math data/train.parquet' and plan['output']=='/tmp/math runs/test'
+    assert (ROOT / plan['data']).resolve()==Path('/tmp/math data/train.parquet')
+    assert (ROOT / plan['output']).resolve()==Path('/tmp/math runs/test')
 
 
 def test_unsupported_hardware_probe_combination_fails_without_removing_probes():

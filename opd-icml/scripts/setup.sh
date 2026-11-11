@@ -12,7 +12,7 @@ python -m pip install --retries 10 --timeout 120 \
   --index-url https://download.pytorch.org/whl/cu124
 
 python -m pip install --retries 10 --timeout 120 \
-  -r "$ROOT/runtime/requirements.txt" \
+  -r runtime/requirements.txt \
   vllm==0.8.5.post1 \
   transformers==4.52.4 tokenizers==0.21.2 huggingface-hub==0.33.1 \
   tensordict==0.8.3 torchdata==0.11.0 \
@@ -28,5 +28,5 @@ python -m pip install --no-cache-dir --retries 10 --timeout 120 \
 python -m pip install --no-cache-dir --retries 10 --timeout 120 \
   "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.2.2.post1/flashinfer_python-0.2.2.post1%2Bcu124torch2.6-cp38-abi3-linux_x86_64.whl"
 
-python -m pip install -e "$ROOT/runtime" matplotlib==3.9.4 lxml psutil
+python -m pip install -e runtime matplotlib==3.9.4 lxml psutil
 python -m pip check

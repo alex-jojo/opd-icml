@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from project_paths import project_absolute, project_relative, saved_path_matches
 
 
 def digest(path):
@@ -13,8 +14,8 @@ def digest(path):
 def prepare_deepseek_student(source, teacher, destination):
     """Share the Instruct template and retain BOTH native and instruction EOS."""
     from transformers import AutoTokenizer
-    source, teacher, destination = [Path(p).resolve() for p in (source, teacher, destination)]
-    if destination in (source, teacher):
+    source, teacher, destination = [project_absolute(p) for p in (source, teacher, destination)]
+    if destination.resolve() in (source.resolve(), teacher.resolve()):
         raise ValueError('DeepSeek OPD runtime must be separate from the original checkpoints')
     base_cfg = json.loads((source/'config.json').read_text(encoding='utf8'))
     teacher_cfg = json.loads((teacher/'config.json').read_text(encoding='utf8'))
@@ -41,7 +42,7 @@ def prepare_deepseek_student(source, teacher, destination):
         raise ValueError('No Base checkpoint weights found')
     stop_ids = list(dict.fromkeys([shared.eos_token_id, original.eos_token_id]))
     stop_ids = [int(token) for token in stop_ids if token is not None]
-    identity = dict(protocol='deepseek-coder-dual-eos-v2', source=str(source), teacher=str(teacher),
+    identity = dict(protocol='deepseek-coder-dual-eos-v2', source=project_relative(source), teacher=project_relative(teacher),
         source_config_sha256=digest(source/'config.json'), teacher_config_sha256=digest(teacher/'config.json'),
         weights=[dict(name=p.name, bytes=p.stat().st_size, mtime_ns=p.stat().st_mtime_ns) for p in weights],
         teacher_template_sha256=hashlib.sha256(shared.chat_template.encode()).hexdigest(),
@@ -49,7 +50,10 @@ def prepare_deepseek_student(source, teacher, destination):
     marker = destination/'opd_pair_runtime.json'
     if marker.exists():
         previous = json.loads(marker.read_text(encoding='utf8'))
-        if previous['identity'] != identity:
+        saved = previous['identity']
+        if (dict(saved, source=identity['source'], teacher=identity['teacher']) != identity
+                or not saved_path_matches(saved.get('source', ''), source)
+                or not saved_path_matches(saved.get('teacher', ''), teacher)):
             raise ValueError('DeepSeek runtime destination belongs to different source files')
         if previous.get('complete'):
             if (all((destination/p.name).is_file() and os.path.samefile(p, destination/p.name) for p in weights)
@@ -70,7 +74,7 @@ def prepare_deepseek_student(source, teacher, destination):
             os.link(weight.resolve(),target)
         except OSError:
             try:
-                target.symlink_to(weight.resolve())
+                target.symlink_to(os.path.relpath(weight, target.parent))
             except OSError as error:
                 raise ValueError('Cannot link weights; choose --model-dir on the same filesystem as the Base checkpoint') from error
     for index in indices:

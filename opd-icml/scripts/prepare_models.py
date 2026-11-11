@@ -7,6 +7,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from model_assets import model_profiles, prepare_models, read_models
+from project_paths import project_absolute, project_relative
 
 
 def main():
@@ -18,6 +19,9 @@ def main():
     parser.add_argument('--model-dir', type=Path, help='Root for Gemma text-only exports; defaults to models/')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    for name in ('student', 'teacher', 'cache_dir', 'model_dir'):
+        if getattr(args, name) is not None:
+            setattr(args, name, project_absolute(getattr(args, name)))
     if args.dry_run:
         print(json.dumps(dict(scale=args.scale, models=read_models(args.scale)), indent=2))
         return
@@ -25,7 +29,8 @@ def main():
         paths = prepare_models(args.scale, args.student, args.teacher, args.cache_dir, args.model_dir)
     except ValueError as error:
         parser.error(str(error))
-    print(json.dumps(dict(scale=args.scale, **paths), indent=2))
+    print(json.dumps(dict(scale=args.scale, path_base='project_root',
+                         **{role: project_relative(path) for role, path in paths.items()}), indent=2))
 
 
 if __name__ == '__main__':

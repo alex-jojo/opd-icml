@@ -8,6 +8,7 @@ import subprocess
 import sys
 from model_assets import model_profiles, prepare_models
 from wandb_config import load_wandb_environment, apply_wandb_tracking
+from project_paths import project_absolute, project_relative
 
 ROOT = Path(__file__).resolve().parent
 
@@ -203,6 +204,9 @@ def main():
     parser.add_argument('--rollout-gpu-memory-utilization', type=float, help='vLLM GPU memory fraction, between 0 and 1')
     parser.add_argument('--learning-rate', type=float, help='Student optimizer learning rate')
     args = parser.parse_args()
+    for name in ('data', 'val_data', 'output', 'student', 'teacher', 'cache_dir', 'model_dir', 'ray_temp_dir'):
+        if getattr(args, name) is not None:
+            setattr(args, name, project_absolute(getattr(args, name)))
     if args.code_workers < 1:
         parser.error("--code-workers must be positive")
     if args.parameter_token_group_size is not None and args.parameter_token_group_size < 1:
@@ -270,11 +274,11 @@ def main():
             parser.error('--parameter-token-group-size requires enabled parameter-token diagnostics')
         study['parameter_tokens']['graph_group_size'] = args.parameter_token_group_size
     default_run = ROOT / 'runs' / args.scale / args.experiment if args.task == 'math' else ROOT / 'runs/code' / args.scale / args.experiment
-    output = (args.output or default_run).resolve()
-    data = (args.data or ROOT / ('data/eurus_code_train.parquet' if args.task == 'code' else 'data/dapo14k_train.parquet')).resolve()
-    validation = (args.val_data or ROOT / 'data/eurus_code_validation.parquet').resolve() if args.task == 'code' else data
-    command = [sys.executable, "-m", "verl.trainer.main_ppo", "--config-dir", str(profile),
-               "--config-name", config_name, "hydra.run.dir=" + str(output / "hydra")]
+    output = project_absolute(args.output or default_run)
+    data = project_absolute(args.data or Path('data/eurus_code_train.parquet' if args.task == 'code' else 'data/dapo14k_train.parquet'))
+    validation = project_absolute(args.val_data or Path('data/eurus_code_validation.parquet')) if args.task == 'code' else data
+    command = [sys.executable, "-m", "verl.trainer.main_ppo", "--config-dir", Path(os.path.relpath(profile, output)).as_posix(),
+               "--config-name", config_name, "hydra.run.dir=hydra"]
     command += ['++' + key + '=' + json.dumps(value, ensure_ascii=False) for key, value in hardware_overrides.items()]
     if args.parameter_token_gradients or args.parameter_token_group_size is not None:
         prefix = '++actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens.'
@@ -293,7 +297,8 @@ def main():
                           rollout_tensor_parallel_size=cfg['actor_rollout_ref']['rollout']['tensor_model_parallel_size'],
                           rollout_batch=cfg["data"]["train_batch_size"], rounds_cap=cfg["trainer"]["opd_pause_after_rollout_rounds"],
                           updates_per_round=cfg["actor_rollout_ref"]["actor"]["policy_loss"]["jump_reuse_updates"],
-                          output=str(output), data=str(data), validation_data=str(validation),
+                          output=project_relative(output), data=project_relative(data), validation_data=project_relative(validation),
+                          path_base='project_root', command_cwd=project_relative(output),
                           max_prompt_tokens=cfg['data']['max_prompt_length'], max_response_tokens=cfg['data']['max_response_length'],
                           code_judge=('sandbox' if args.sandbox_url else 'local') if args.task == 'code' else None,
                           parameter_token_gradients=study.get('parameter_tokens', {'enabled': False}),

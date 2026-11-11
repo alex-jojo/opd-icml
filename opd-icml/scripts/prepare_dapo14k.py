@@ -4,6 +4,10 @@
 import argparse
 import json
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_paths import project_absolute, project_relative
 
 import pyarrow.parquet as pq
 from datasets import Dataset, load_dataset
@@ -85,16 +89,16 @@ def validate_existing(path: Path) -> int:
 
 def main():
     args = parse_args()
-    output = Path(args.output).resolve()
+    output = project_absolute(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     if output.is_file():
         try:
             rows = validate_existing(output)
         except ValueError as error:
-            print(json.dumps({"phase": "rebuild_dapo14k", "path": str(output), "reason": str(error)}))
+            print(json.dumps({"phase": "rebuild_dapo14k", "path": project_relative(output), "reason": str(error)}))
         else:
-            print(json.dumps({"phase": "reuse_dapo14k", "path": str(output), "rows": rows}))
+            print(json.dumps({"phase": "reuse_dapo14k", "path": project_relative(output), "rows": rows}))
             return
 
     source = load_dataset(SOURCE_DATASET, split="train", revision=SOURCE_REVISION)
@@ -146,7 +150,7 @@ def main():
                 "source": SOURCE_DATASET,
                 "source_revision": SOURCE_REVISION,
                 "source_fingerprint": str(source._fingerprint),
-                "path": str(output),
+                "path": project_relative(output),
                 "rows": count,
                 "columns": prepared.column_names,
             }

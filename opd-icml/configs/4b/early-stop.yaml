@@ -507,7 +507,7 @@
       "lora_alpha": 16,
       "lora_rank": 0,
       "override_config": {},
-      "path": "~/models/deepseek-llm-7b-chat",
+      "path": "${oc.env:OPD_PROJECT_ROOT,.}/models/deepseek-llm-7b-chat",
       "target_modules": "all-linear",
       "tokenizer_path": "${oc.env:OPD_STUDENT}",
       "trust_remote_code": false,
@@ -689,7 +689,7 @@
         }
       },
       "input_tokenizer": "${oc.env:OPD_STUDENT}",
-      "path": "~/models/FsfairX-LLaMA3-RM-v0.1",
+      "path": "${oc.env:OPD_PROJECT_ROOT,.}/models/FsfairX-LLaMA3-RM-v0.1",
       "trust_remote_code": false,
       "use_fused_kernels": false,
       "use_remove_padding": false,

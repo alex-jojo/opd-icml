@@ -4,12 +4,15 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from project_paths import project_absolute, project_relative
 SOURCE_DATASET = 'PRIME-RL/Eurus-2-RL-Data'
 SOURCE_REVISION = '9776b13264b5aaa0b16495fcf086a0a8d86fd655'
 EXPECTED_ROWS = {'train': 25_276, 'validation': 1_024}
@@ -152,16 +155,19 @@ def prepare_split(source, output, split, expected_count=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output-dir', type=Path, default=ROOT / 'data')
+    parser.add_argument('--output-dir', type=Path, default=Path('data'))
     parser.add_argument('--source-dir', type=Path, help='Offline directory with original train.parquet and validation.parquet')
     parser.add_argument('--split', choices=['train', 'validation', 'all'], default='all')
     args = parser.parse_args()
+    args.output_dir = project_absolute(args.output_dir)
+    if args.source_dir:
+        args.source_dir = project_absolute(args.source_dir)
     splits = ['train', 'validation'] if args.split == 'all' else [args.split]
     filesystem = None
     for split in splits:
         output = args.output_dir / f'eurus_code_{split}.parquet'
         if validate_existing(output, split, EXPECTED_ROWS[split]):
-            print(json.dumps(dict(phase='reuse_eurus_code', split=split, output=str(output))), flush=True)
+            print(json.dumps(dict(phase='reuse_eurus_code', split=split, output=project_relative(output))), flush=True)
             continue
         if args.source_dir:
             prepare_split(args.source_dir / f'{split}.parquet', output, split)

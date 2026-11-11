@@ -6,9 +6,12 @@ import json
 import math
 from pathlib import Path
 import urllib.request
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from project_paths import project_absolute, project_relative
 SOURCE_DATASET = "math-ai/amc23"
 SOURCE_REVISION = "80815d37005feb82cd7f8fbc6901d5d3eff43057"
 SOURCE_FILE = "test-00000-of-00001.parquet"
@@ -57,9 +60,12 @@ def append_benchmark(output, additions):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "data/benchmarks.jsonl")
+    parser.add_argument("--output", type=Path, default=Path("data/benchmarks.jsonl"))
     parser.add_argument("--source-parquet", type=Path, help="Use a downloaded source file with the pinned checksum")
     args = parser.parse_args()
+    args.output = project_absolute(args.output)
+    if args.source_parquet:
+        args.source_parquet = project_absolute(args.source_parquet)
     if not args.output.is_file():
         parser.error(f"Existing benchmark suite not found: {args.output}")
     if args.source_parquet:
@@ -69,7 +75,7 @@ def main():
             payload = response.read()
     additions = benchmark_rows(payload)
     changed = append_benchmark(args.output, additions)
-    print(json.dumps(dict(output=str(args.output), benchmark="amc23", questions=len(additions),
+    print(json.dumps(dict(output=project_relative(args.output), benchmark="amc23", questions=len(additions),
                           appended=changed, source_dataset=SOURCE_DATASET, source_revision=SOURCE_REVISION)))
 
 

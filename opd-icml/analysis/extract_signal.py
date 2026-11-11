@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(ROOT))
+from project_paths import project_absolute
 FIELDS = ["step", "model", "train_kl", "above_initial_kl_threshold_pct", "top_kl_decile_hidden_energy_pct",
           "top_kl_decile_parameter_energy_pct", "parameter_grad_norm", "hidden_gradient_rms",
           "parameter_gradient_rms", "hidden_gradient_frobenius", "parameter_gradient_frobenius",
@@ -55,6 +58,8 @@ if __name__ == "__main__":
     parser.add_argument("--run-4", type=Path, default=ROOT / "runs/4b/paired-full")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs/rq1.csv")
     args = parser.parse_args()
+    for name in ('run_17', 'run_4', 'output'):
+        setattr(args, name, project_absolute(getattr(args, name)))
     rows = sorted([*read_run(args.run_17, "1.7B"), *read_run(args.run_4, "4B")])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf8", newline="") as f:

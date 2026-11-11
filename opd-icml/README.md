@@ -27,6 +27,10 @@ H200 入口默认采用按模型设置的 `throughput` 起始预设；可用 `--
 
 以下命令在 Linux x86_64 服务器执行。先进入包含 `train.py`、`configs/`、`runtime/`、`scripts/` 的目录；若上传时保留了双层目录，它通常是 `opd-icml/opd-icml/`。每次重连服务器后，都先回到这个目录并激活环境。
 
+模型、数据、配置、运行结果和 ZIP 的相对路径统一以这个**项目根目录**为基准。例如 `--student models/student`、`--data data/train.parquet`、`--output runs/test1`；从其他目录启动入口也使用同一基准。运行计划中的 `path_base: project_root` 表示这一规则；直接训练计划的 `command_cwd` 则标明 Hydra 命令的执行目录。复制项目到服务器后无需替换机器用户名或磁盘挂载路径。
+
+项目外的资源可用 `../shared/models/student` 这样的相对路径。Python 解释器、系统临时目录，以及 Ray/Hydra/模型加载接口所需的绝对路径由程序在运行时解析。Hugging Face 未指定 `--cache-dir` 时仍复用其原有缓存设置。
+
 先确认能看到四张卡，以及主存和磁盘空间：
 
 ```bash
@@ -115,13 +119,13 @@ WANDB_MODE=offline bash scripts/h200/train_eval_qwen3_4b.sh
 
 ### 3. 准备模型权限、缓存和数据
 
-模型按 `configs/<scale>/models.json` 的固定 revision 下载并复用 Hugging Face 缓存。可选：如果模型缓存需要放到大容量持久化磁盘，在登录和下载前设置 `HF_HOME`，并在后续终端保持相同设置。下面路径需替换成服务器实际挂载点：
+模型按 `configs/<scale>/models.json` 的固定 revision 下载并复用 Hugging Face 缓存。单独准备模型时，也可以指定项目内的相对缓存目录；后续独立运行脚本使用相同的 `--cache-dir`：
 
 ```bash
-# export HF_HOME=/data/huggingface
+python scripts/prepare_models.py --scale 4b --cache-dir models/huggingface
 ```
 
-Gemma 需要先在对应模型页面取得访问权限，再在服务器交互登录。若设置了 `HF_HOME`，先设置再登录，以保持缓存和登录凭据的位置一致：
+Gemma 需要先在对应模型页面取得访问权限，再在服务器交互登录：
 
 ```bash
 huggingface-cli login
@@ -216,16 +220,16 @@ bash scripts/h200/train_eval_qwen3_8b.sh \
 
 ```bash
 bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
-  --student /data/models/deepseek-coder-6.7b-base \
-  --teacher /data/models/deepseek-coder-6.7b-instruct \
-  --model-dir /data/models/opd-prepared \
-  --data /data/eurus/eurus_code_train.parquet \
-  --val-data /data/eurus/eurus_code_validation.parquet \
-  --code-benchmarks /data/code_benchmarks \
+  --student models/deepseek-coder-6.7b-base \
+  --teacher models/deepseek-coder-6.7b-instruct \
+  --model-dir models/opd-prepared \
+  --data data/eurus_code_train.parquet \
+  --val-data data/eurus_code_validation.parquet \
+  --code-benchmarks data/code_benchmarks \
   --output runs/h200/deepseek6.7-code-local
 ```
 
-`/data/...` 示例路径需要替换成已有资源位置。`--model-dir` 存放 DeepSeek 学生运行目录或 Gemma 文本权重；仅缓存下载可用 `--cache-dir`。自定义数学评测题用 `--math-benchmarks`；自定义代码 benchmark 目录用 `--code-benchmarks`，其中应包含原准备流程生成的三项题目和 manifest。
+上面的路径均相对于项目根目录，请按实际目录调整。`--model-dir` 存放 DeepSeek 学生运行目录或 Gemma 文本权重；仅缓存下载可用 `--cache-dir`。自定义数学评测题用 `--math-benchmarks`；自定义代码 benchmark 目录用 `--code-benchmarks`，其中应包含原准备流程生成的三项题目和 manifest。
 
 可调参数还包括 `--micro-batch-size`、`--teacher-micro-batch-size`、`--optimizer-offload on|off`、`--teacher-offload on|off`、`--rollout-max-num-seqs`、`--rollout-gpu-memory-utilization`、`--eval-max-num-seqs`、`--eval-batch-size`、`--code-workers` 和 `--score-workers`；`--eval-batch-size` 只用于代码评测。资源控制支持 `--ray-num-cpus`、`--ray-object-store-gib`、`--gradient-cache-gib`、`--cpu-ids`。这些选项不会更改固定的单卡/四卡规则。完整选项可执行：
 
@@ -290,10 +294,10 @@ cat runs/h200/8b/math-paired-full/eval/final_mean8.summary.json
 - Qwen 8B 默认输出 → `runs/h200/8b/8b-math-paired-full-results.zip`。
 - Qwen 8B 自定义 `--output runs/h200/qwen8-math-run1` → `runs/h200/8b-qwen8-math-run1-results.zip`。
 
-使用服务器平台文件浏览器或 JupyterLab 时，找到该 ZIP 后选择 **Download/下载**。通过 SSH 使用服务器时，也可在本地电脑终端下载；替换下面的用户名、服务器地址及项目绝对路径：
+使用服务器平台文件浏览器或 JupyterLab 时，找到该 ZIP 后选择 **Download/下载**。通过 SSH 使用服务器时，也可在本地电脑终端下载；替换下面的用户名和服务器地址。冒号后的项目路径相对于服务器登录目录，示例假设项目位于登录目录下的 `opd-icml/`：
 
 ```bash
-scp username@server:/path/to/opd-icml/runs/h200-suite/run1-results.zip .
+scp username@server:opd-icml/runs/h200-suite/run1-results.zip .
 ```
 
 已完成的实验、历史结果或中途保留的数据，也可不启动训练，直接打包：
@@ -387,7 +391,7 @@ source .venv/bin/activate
 python scripts/prepare_dapo14k.py --output data/dapo14k_train.parquet
 ```
 
-默认使用模型配置中记录的 Hugging Face revision。已有模型可通过 `--student /path/to/student --teacher /path/to/teacher` 指定。训练数据可通过 `--data` 指定。首次下载模型和训练集需要网络。
+默认使用模型配置中记录的 Hugging Face revision。已有模型可通过 `--student models/student --teacher models/teacher` 指定。训练数据可通过 `--data` 指定。首次下载模型和训练集需要网络。
 
 ## 新增模型配对与模型准备
 
@@ -488,7 +492,7 @@ python train.py --scale 1.7b --experiment early-stop
 python train.py --scale 1.7b --experiment reuse
 ```
 
-默认输出为 `runs/<scale>/<experiment>/`；也可以传入 `--output /path/to/new-run`。其中 `checkpoints/` 保存权重，`training_records/` 保存训练记录，`replication/` 保存该协议开启的诊断。早停步数由当前运行的规则判定。
+默认输出为 `runs/<scale>/<experiment>/`；也可以传入 `--output runs/new-run`。其中 `checkpoints/` 保存权重，`training_records/` 保存训练记录，`replication/` 保存该协议开启的诊断。早停步数由当前运行的规则判定。
 
 ## Code 实验：Eurus-2-RL-Data Code
 
@@ -504,7 +508,7 @@ DeepSeek-Coder 1.3B Base → Instruct 的四卡 OPD 已接入为 `--scale deepse
 python scripts/prepare_eurus_code.py
 ```
 
-输出 `data/eurus_code_train.parquet`、`data/eurus_code_validation.parquet` 和各自 `.manifest.json`。源文件较大，完整准备需要下载 code 测试用例并占用相应磁盘；本仓库不包含下载后的训练数据。若已有原始文件，可指定 `--source-dir /data/Eurus-2-RL-Data`，其中应有原始 `train.parquet`、`validation.parquet`；`--output-dir` 可更换输出位置。重复运行会校验版本、题量和输出 SHA-256 后复用；不覆盖其他协议或未完成的数据文件。
+输出 `data/eurus_code_train.parquet`、`data/eurus_code_validation.parquet` 和各自 `.manifest.json`。源文件较大，完整准备需要下载 code 测试用例并占用相应磁盘；本仓库不包含下载后的训练数据。若已有原始文件，可指定 `--source-dir data/Eurus-2-RL-Data`，其中应有原始 `train.parquet`、`validation.parquet`；`--output-dir` 可更换输出位置。重复运行会校验版本、题量和输出 SHA-256 后复用；不覆盖其他协议或未完成的数据文件。
 
 转换保留原始题目、Python 代码输出要求，以及完整的 `reward_model.ground_truth` JSON 测试用例（含可选 `fn_name`）。原始 PRIME system 指令折叠到第一条 user 消息，保留内容，统一兼容 Qwen 和 Gemma；不会添加数学 `\boxed{}` 指令。每题保存原始 split、原始行号、数据来源、prompt hash、测试用例数和固定 revision。
 
@@ -643,7 +647,7 @@ python analysis/parameter_appendix.py
 
 ```bash
 python -m pip install lxml
-python analysis/extract_report.py "/path/to/OPD_论文全部实验报告_合并版.zip"
+python analysis/extract_report.py "data/OPD_论文全部实验报告_合并版.zip"
 ```
 
 ## 论文

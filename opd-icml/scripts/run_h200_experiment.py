@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from model_assets import read_models
 from wandb_config import load_wandb_environment
+from project_paths import project_absolute, project_relative, saved_path_matches
 from package_results import archive_path, package_results
 
 
@@ -57,8 +58,8 @@ def parser():
     p.add_argument('--output', type=Path, help='Pipeline root; contains training/, merged/, eval/, logs/')
     for name in ('student', 'teacher', 'cache-dir', 'model-dir', 'data', 'val-data'):
         p.add_argument('--' + name, type=Path)
-    p.add_argument('--code-benchmarks', type=Path, default=ROOT / 'data/code_benchmarks')
-    p.add_argument('--math-benchmarks', type=Path, default=ROOT / 'data/benchmarks.jsonl')
+    p.add_argument('--code-benchmarks', type=Path, default=Path('data/code_benchmarks'))
+    p.add_argument('--math-benchmarks', type=Path, default=Path('data/benchmarks.jsonl'))
     p.add_argument('--micro-batch-size', type=int)
     p.add_argument('--teacher-micro-batch-size', type=int)
     p.add_argument('--optimizer-offload', choices=['on', 'off'])
@@ -120,21 +121,21 @@ def build_plan(args, environment):
     if min(args.eval_max_num_seqs, args.eval_batch_size, args.score_workers, args.code_workers) < 1:
         raise ValueError('Evaluation concurrency and worker counts must be positive')
     devices = '' if args.stage == 'grade' else select_devices(spec.gpus, args.devices, environment)
-    run = (args.output or ROOT / 'runs/h200' / args.scale / f'{task}-paired-full').resolve()
+    run = project_absolute(args.output or Path('runs/h200') / args.scale / f'{task}-paired-full')
     training, merged = run / 'training', run / 'merged'
     ray_temp = Path(tempfile.gettempdir()) / ('opd-ray-' + hashlib.sha256(str(run).encode()).hexdigest()[:12])
-    command = [sys.executable, str(ROOT / 'train.py'), '--scale', args.scale, '--task', task,
+    command = [sys.executable, 'train.py', '--scale', args.scale, '--task', task,
                '--experiment', 'paired-full', '--hardware', f'h200x{spec.gpus}',
                '--num-gpus', str(spec.gpus), '--rollout-tp-size', str(spec.gpus),
                '--micro-batch-size', str(micro), '--teacher-micro-batch-size', str(teacher_micro),
                '--optimizer-offload', optimizer_offload, '--teacher-offload', teacher_offload,
                '--ray-num-cpus', str(cpus), '--ray-object-store-gib', str(args.ray_object_store_gib),
-               '--ray-temp-dir', str(ray_temp),
+               '--ray-temp-dir', project_relative(ray_temp),
                '--rollout-max-num-seqs', str(sequences),
                '--rollout-gpu-memory-utilization', str(args.rollout_gpu_memory_utilization),
                '--learning-rate', str(args.learning_rate),
                '--parameter-token-gradients', args.parameter_token_gradients,
-               '--code-workers', str(args.code_workers), '--output', str(training)]
+               '--code-workers', str(args.code_workers), '--output', project_relative(training)]
     if args.parameter_token_gradients == 'sampled':
         command += ['--parameter-token-samples', str(args.parameter_token_samples)]
     if args.parameter_token_group_size is not None:
@@ -142,40 +143,40 @@ def build_plan(args, environment):
     for name in ('student', 'teacher', 'cache_dir', 'model_dir', 'data', 'val_data'):
         value = getattr(args, name)
         if value is not None:
-            command += ['--' + name.replace('_', '-'), str(value.resolve())]
+            command += ['--' + name.replace('_', '-'), project_relative(value)]
     prepare = []
     if task == 'code':
         if args.data is None or args.val_data is None:
-            prepare.append([sys.executable, str(ROOT / 'scripts/prepare_eurus_code.py')])
-        evaluation = [sys.executable, str(ROOT / 'scripts/evaluate_code.py'),
-            '--model-path', str(merged), '--data-dir', str(args.code_benchmarks.resolve()),
-            '--output-dir', str(run / 'eval/code_pass4'), '--parallel-mode', 'tensor',
+            prepare.append([sys.executable, 'scripts/prepare_eurus_code.py'])
+        evaluation = [sys.executable, 'scripts/evaluate_code.py',
+            '--model-path', project_relative(merged), '--data-dir', project_relative(args.code_benchmarks),
+            '--output-dir', project_relative(run / 'eval/code_pass4'), '--parallel-mode', 'tensor',
             '--prompt-style', 'chat', '--samples', '4', '--temperature', '1', '--top-p', '1',
             '--seed', '42', '--max-prompt-tokens', '4096', '--max-tokens', '8192',
             '--max-num-seqs', str(args.eval_max_num_seqs), '--batch-size', str(args.eval_batch_size),
             '--workers', str(args.score_workers)]
-        prepare_eval = [sys.executable, str(ROOT / 'scripts/prepare_code_benchmarks.py'),
-                        '--output-dir', str(args.code_benchmarks.resolve())]
+        prepare_eval = [sys.executable, 'scripts/prepare_code_benchmarks.py',
+                        '--output-dir', project_relative(args.code_benchmarks)]
     else:
         if args.data is None:
-            prepare.append([sys.executable, str(ROOT / 'scripts/prepare_dapo14k.py'),
-                            '--output', str(ROOT / 'data/dapo14k_train.parquet')])
-        evaluation = [sys.executable, str(ROOT / 'scripts/evaluate.py'),
-            '--model_path', str(merged), '--input_file', str(args.math_benchmarks.resolve()),
-            '--output_file', str(run / 'eval/final_mean8.jsonl'), '--n', '8',
+            prepare.append([sys.executable, 'scripts/prepare_dapo14k.py',
+                            '--output', 'data/dapo14k_train.parquet'])
+        evaluation = [sys.executable, 'scripts/evaluate.py',
+            '--model_path', project_relative(merged), '--input_file', project_relative(args.math_benchmarks),
+            '--output_file', project_relative(run / 'eval/final_mean8.jsonl'), '--n', '8',
             '--temperature', '1', '--top_p', '1', '--seed', '42',
             '--max_prompt_tokens', '1024', '--max_tokens', '8192',
             '--max_num_seqs', str(args.eval_max_num_seqs), '--score_workers', str(args.score_workers)]
         prepare_eval = None
     checkpoint = training / 'checkpoints/global_step_<latest>/actor'
     merge = [sys.executable, '-m', 'verl.model_merger', 'merge', '--backend', 'fsdp',
-             '--local_dir', str(checkpoint), '--target_dir', str(merged), '--use_cpu_initialization']
+             '--local_dir', project_relative(checkpoint), '--target_dir', project_relative(merged), '--use_cpu_initialization']
     return dict(scale=args.scale, task=task, experiment='paired-full', gpu_count=spec.gpus,
         training_gpus=spec.gpus, evaluation_gpus=0 if args.stage == 'grade' else spec.gpus,
         rollout_tp=spec.gpus, evaluation_tp=None if args.stage == 'grade' else spec.gpus,
         stage=args.stage, stage_gpu_count=0 if args.stage == 'grade' else spec.gpus,
-        results_zip=None if args.no_package else str(archive_path(run, args.scale)),
-        cuda_visible_devices=devices, output=str(run), models=read_models(args.scale),
+        results_zip=None if args.no_package else project_relative(archive_path(run, args.scale)),
+        path_base='project_root', cuda_visible_devices=devices, output=project_relative(run), models=read_models(args.scale),
         profile=args.profile, ray_cpus=cpus, gradient_cache_gib=args.gradient_cache_gib,
         prepare_training=prepare, prepare_evaluation=prepare_eval,
         train=command, merge=merge, evaluate=evaluation)
@@ -233,7 +234,7 @@ def run_command(command, env, log):
 
 
 def execute(args, plan, env):
-    run = Path(plan['output'])
+    run = project_absolute(plan['output'])
     if args.stage == 'grade':
         run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
         return
@@ -253,12 +254,12 @@ def execute(args, plan, env):
         if plan['task'] == 'code':
             # Existing benchmark manifests keep their chosen release/date window.
             from code_benchmarks import BENCHMARKS, read_manifest
-            directory = args.code_benchmarks.resolve()
+            directory = project_absolute(args.code_benchmarks)
             if not all((directory / name / 'manifest.json').is_file() for name in BENCHMARKS):
                 run_command(plan['prepare_evaluation'], env, run / 'logs/prepare_evaluation.log')
             for name in BENCHMARKS:
                 read_manifest(directory, name)
-        elif not args.math_benchmarks.is_file():
+        elif not project_absolute(args.math_benchmarks).is_file():
             raise ValueError(f'Missing math benchmark file: {args.math_benchmarks}')
     if training_stage:
         run_command(plan['train'], env, run / 'logs/train.log')
@@ -268,13 +269,15 @@ def execute(args, plan, env):
     actor = final_checkpoint(run / 'training', plan['gpu_count'], expected)
     merged = run / 'merged'
     merge_marker = merged / 'h200_merge.json'
-    identity = dict(scale=plan['scale'], task=plan['task'], checkpoint=str(actor), gpu_count=plan['gpu_count'])
+    identity = dict(scale=plan['scale'], task=plan['task'], checkpoint=project_relative(actor), gpu_count=plan['gpu_count'])
     if merged.exists():
-        if not merge_marker.is_file() or json.loads(merge_marker.read_text(encoding='utf-8')) != identity:
+        saved = json.loads(merge_marker.read_text(encoding='utf-8')) if merge_marker.is_file() else {}
+        if (dict(saved, checkpoint=identity['checkpoint']) != identity
+                or not saved_path_matches(saved.get('checkpoint', ''), actor)):
             raise ValueError(f'Unverified or incomplete merged model: {merged}; move it aside before retrying --stage eval')
     else:
         command = list(plan['merge'])
-        command[command.index('--local_dir') + 1] = str(actor)
+        command[command.index('--local_dir') + 1] = project_relative(actor)
         run_command(command, env, run / 'logs/merge.log')
         if not (merged / 'config.json').is_file() or not list(merged.glob('*.safetensors')):
             raise ValueError('Model merge did not produce a complete Hugging Face model')
@@ -287,7 +290,7 @@ def execute(args, plan, env):
             run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
     else:
         run_command(plan['evaluate'], env, run / 'logs/evaluate.log')
-    print(f'[DONE] Results: {run / "eval"}', flush=True)
+    print(f'[DONE] Results: {project_relative(run / "eval")}', flush=True)
 
 
 def main():

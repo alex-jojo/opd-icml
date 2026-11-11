@@ -4,11 +4,16 @@ import numpy as np
 
 import argparse
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(ROOT))
+from project_paths import project_absolute
 parser = argparse.ArgumentParser(description="Build the parameter appendix from two completed paired FULL runs.")
 parser.add_argument("--run-17", type=Path, default=ROOT/"runs/1.7b/paired-full")
 parser.add_argument("--run-4", type=Path, default=ROOT/"runs/4b/paired-full")
 parser.add_argument("--output", type=Path, default=ROOT/"outputs/parameter_appendix")
 args = parser.parse_args()
+for name in ('run_17', 'run_4', 'output'):
+    setattr(args, name, project_absolute(getattr(args, name)))
 P = args.output
 for name in ["tables", "evidence"]:
     (P/name).mkdir(parents=True, exist_ok=True)

@@ -5,9 +5,12 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import sys
 import urllib.request
 
 from code_benchmarks import BENCHMARKS, PROTOCOL, ROOT, date_selected, digest, lcb_sample, lockfile, read_jsonl, read_manifest, save_json, save_jsonl
+sys.path.insert(0, str(ROOT))
+from project_paths import project_absolute
 
 
 def source_file(spec, cache, relative, sha256, source_dir=None):
@@ -118,14 +121,17 @@ def prepare(benchmark, output, cache, source_dir=None, release='release_v6', sta
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--benchmark', choices=['all', *BENCHMARKS], default='all')
-    parser.add_argument('--output-dir', type=Path, default=ROOT / 'data/code_benchmarks')
-    parser.add_argument('--cache-dir', type=Path, default=ROOT / 'data/code_benchmarks_sources')
+    parser.add_argument('--output-dir', type=Path, default=Path('data/code_benchmarks'))
+    parser.add_argument('--cache-dir', type=Path, default=Path('data/code_benchmarks_sources'))
     parser.add_argument('--source-dir', type=Path, help='Offline source files with their original names/layout')
     parser.add_argument('--lcb-release', choices=[f'release_v{i}' for i in range(1, 7)], default='release_v6')
     parser.add_argument('--start-date', help='Inclusive LCB contest date, YYYY-MM-DD')
     parser.add_argument('--end-date', help='Inclusive LCB contest date, YYYY-MM-DD')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    for name in ('output_dir', 'cache_dir', 'source_dir'):
+        if getattr(args, name) is not None:
+            setattr(args, name, project_absolute(getattr(args, name)))
     from datetime import date
     if args.start_date:
         date.fromisoformat(args.start_date)

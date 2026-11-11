@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+from project_paths import project_absolute, project_relative, saved_path_matches
 
 
 ROOT = Path(__file__).resolve().parent
@@ -40,7 +41,7 @@ def export_gemma_text(source, destination):
     from safetensors.torch import save_file
     from transformers import AutoTokenizer
 
-    source, destination = Path(source).resolve(), Path(destination).resolve()
+    source, destination = project_absolute(source), project_absolute(destination)
     config_bytes = (source / 'config.json').read_bytes()
     config = json.loads(config_bytes)
     if config['model_type'] == 'gemma3_text':
@@ -53,13 +54,14 @@ def export_gemma_text(source, destination):
     source_files = sorted(source.glob('*.safetensors'))
     if not source_files:
         raise ValueError(f'No safetensors weights in {source}')
-    identity = dict(source=str(source), config_sha256=hashlib.sha256(config_bytes).hexdigest(),
+    identity = dict(source=project_relative(source), config_sha256=hashlib.sha256(config_bytes).hexdigest(),
                     shards=[dict(name=p.name, bytes=p.stat().st_size, mtime_ns=p.stat().st_mtime_ns) for p in source_files],
                     protocol='gemma3-text-turn-eos-v1')
     marker = destination / 'opd_text_export.json'
     if marker.exists():
         saved = json.loads(marker.read_text(encoding='utf-8'))
-        if saved['source'] != identity:
+        if (dict(saved['source'], source=identity['source']) != identity
+                or not saved_path_matches(saved['source'].get('source', ''), source)):
             raise ValueError(f'Export destination belongs to another checkpoint: {destination}')
         index = destination / 'model.safetensors.index.json'
         if saved.get('complete') and index.is_file():
@@ -117,6 +119,8 @@ def export_gemma_text(source, destination):
 
 
 def prepare_models(scale, student=None, teacher=None, cache_dir=None, model_dir=None):
+    student, teacher, cache_dir, model_dir = [project_absolute(p) if p is not None else None
+                                            for p in (student, teacher, cache_dir, model_dir)]
     models = read_models(scale)
     paths = {}
     for role, local in [('student', student), ('teacher', teacher)]:
@@ -124,7 +128,7 @@ def prepare_models(scale, student=None, teacher=None, cache_dir=None, model_dir=
             raise ValueError(f'Missing {role} config.json in {local}')
     for role, local in [('student', student), ('teacher', teacher)]:
         if local is not None:
-            path = Path(local).resolve()
+            path = local
         else:
             from huggingface_hub import snapshot_download
             from huggingface_hub.errors import GatedRepoError

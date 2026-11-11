@@ -10,10 +10,13 @@ import os
 from pathlib import Path
 import subprocess
 import signal
+import sys
 import time
 from tqdm import tqdm
 from code_benchmarks import digest, read_jsonl, save_json, save_jsonl, validate_generations
 from watch_code_progress import LineCounter
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_paths import ROOT, project_relative
 
 
 def visible_devices():
@@ -128,13 +131,13 @@ def generate_parallel(command, directory, questions, samples, devices):
                     save_jsonl(folder / 'generations.jsonl', [])
                     continue
                 logfile = folder / 'worker.log'
-                execution['logs'][str(index)] = str(logfile)
+                execution['logs'][str(index)] = project_relative(logfile)
                 stream = stack.enter_context(logfile.open('a', encoding='utf8'))
                 env = os.environ.copy()
                 env['CUDA_VISIBLE_DEVICES'] = device
                 env.setdefault('OMP_NUM_THREADS', '1')
                 process = subprocess.Popen(command+['--shard-count', str(count), '--shard-index', str(index)],
-                                           env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                           cwd=ROOT, env=env, stdout=stream, stderr=subprocess.STDOUT,
                                            start_new_session=os.name == 'posix')
                 processes.append((process, logfile))
             while True:

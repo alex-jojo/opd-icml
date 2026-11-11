@@ -1,6 +1,7 @@
 """Shared W&B credentials for every training entry point; never include keys in Hydra."""
 import json
 from pathlib import Path
+from project_paths import project_absolute
 
 ROOT = Path(__file__).resolve().parent
 PRIVATE_CONFIG = ROOT / '.wandb.local.json'
@@ -9,7 +10,7 @@ FIELDS = {'WANDB_API_KEY', 'WANDB_MODE', 'WANDB_PROJECT', 'WANDB_ENTITY'}
 
 def load_wandb_environment(environment):
     env = environment.copy()
-    path = Path(env.get('OPD_WANDB_CONFIG', PRIVATE_CONFIG)).expanduser()
+    path = project_absolute(env.get('OPD_WANDB_CONFIG', PRIVATE_CONFIG))
     if path.is_file():
         try:
             settings = json.loads(path.read_text(encoding='utf-8'))

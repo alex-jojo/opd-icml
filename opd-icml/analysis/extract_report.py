@@ -1,9 +1,13 @@
 from pathlib import Path
 import json, zipfile, re, base64, argparse
 from lxml import html
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_paths import project_absolute
 parser=argparse.ArgumentParser()
 parser.add_argument("report",type=Path)
 a=parser.parse_args()
+a.report=project_absolute(a.report)
 OUT=Path(__file__).resolve().parents[1]/"data"
 with zipfile.ZipFile(a.report) as archive:
     source = archive.read(archive.namelist()[0]).decode('utf8')
