@@ -183,6 +183,15 @@ def test_pipeline_grade_only_never_loads_model_and_rejects_changed_data(tmp_path
     assert [mode for mode, _ in calls] == ['generate', 'grade']
     assert calls[-1][1]['env']['CUDA_VISIBLE_DEVICES'] == ''
     assert json.loads((output / 'summary.json').read_text())['benchmarks']['humanevalplus']['pass@4'] == 1.
+    from evaluation_prompts import CHAT_PROMPT_ENCODING
+    marker = output / 'run.json'
+    legacy = json.loads(marker.read_text(encoding='utf-8'))
+    assert legacy.pop('prompt_encoding') == CHAT_PROMPT_ENCODING
+    cb.save_json(marker, legacy)
+    calls.clear()
+    with pytest.raises(ValueError, match='prompt encoding identity changed'):
+        evaluate.main()
+    assert calls == []
     # Saved model identity suffices for regrading, even if its path is unavailable.
     (model / 'config.json').unlink()
     calls.clear()

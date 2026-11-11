@@ -95,14 +95,16 @@ def test_generation_bar_starts_at_saved_questions_and_suppresses_batch_bar(tmp_p
     for module in (fake_torch, fake_hf, fake_vllm):
         monkeypatch.setitem(sys.modules, module.__name__, module)
     questions = [q(0), q(1)]
-    cb.save_jsonl(tmp_path / 'generation.partial.jsonl', [row(questions[0])])
+    from evaluation_prompts import CHAT_PROMPT_ENCODING
+    prefix = dict(row(questions[0]), prompt_encoding=CHAT_PROMPT_ENCODING)
+    cb.save_jsonl(tmp_path / 'generation.partial.jsonl', [prefix])
     args = types.SimpleNamespace(model_path='unused', samples=4, max_prompt_tokens=1000, max_tokens=100,
         max_num_seqs=8, batch_size=2, temperature=1., top_p=1., seed=42, benchmark='humanevalplus')
     worker.generate(args, questions, tmp_path)
     assert Bar.created[0].options['initial'] == 1 and Bar.created[0].options['total'] == 2
     assert Bar.created[0].updates == [1] and len(calls[0]) == 1
     saved = list(cb.read_jsonl(tmp_path / 'generations.jsonl'))
-    assert saved[0] == row(questions[0])
+    assert saved[0] == prefix
     cb.validate_generations(questions, saved, 4)
 
 

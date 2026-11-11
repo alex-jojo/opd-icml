@@ -10,6 +10,7 @@ import re
 from fractions import Fraction
 from functools import lru_cache
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from evaluation_prompts import CHAT_PROMPT_ENCODING, encode_chat_prompt
 
 BOXED_INSTRUCTION = r'Please reason step by step, and put your final answer within \boxed{}.'
 LENIENT_MODE='lenient_answers_v1'
@@ -246,7 +247,8 @@ def load_cache(cache, metadata, identity):
         return None
     saved = json.loads(metadata.read_text(encoding='utf-8'))
     if saved['identity'] != identity or saved['sha256'] != digest(cache):
-        raise ValueError('Generation cache model/dataset/sampling identity changed; refusing reuse')
+        raise ValueError('Generation cache model/dataset/sampling/prompt encoding identity changed; '
+                         'use a new output file for generation or --regrade_only for saved texts')
     rows = read_rows(cache)
     if len(rows) != saved['rows'] or any(len(r['responses']) != identity['sampling']['n'] for r in rows):
         raise ValueError('Incomplete generation cache')
@@ -270,21 +272,22 @@ def generate(args, inputs):
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
     toker = AutoTokenizer.from_pretrained(args.model_path)
-    prompts = []
+    prompts, tokenized = [], []
     for item in inputs:
         problem = str(item['problem']).rstrip()
         if not problem.endswith(BOXED_INSTRUCTION):
             problem += '\n' + BOXED_INSTRUCTION
-        prompts.append(toker.apply_chat_template([dict(role='user', content=problem)],
-            add_generation_prompt=True, tokenize=False, enable_thinking=False))
-    for i, prompt in enumerate(prompts):
-        if len(toker.encode(prompt, add_special_tokens=False)) > args.max_prompt_tokens:
+        rendered, ids = encode_chat_prompt(toker, [dict(role='user', content=problem)])
+        prompts.append(rendered)
+        tokenized.append(ids)
+    for i, ids in enumerate(tokenized):
+        if len(ids) > args.max_prompt_tokens:
             raise ValueError(f'Prompt {i} exceeds max_prompt_tokens; refusing truncation')
     llm = LLM(model=args.model_path, tokenizer=args.model_path, gpu_memory_utilization=0.95,
         tensor_parallel_size=torch.cuda.device_count(), max_num_seqs=args.max_num_seqs,
         max_model_len=args.max_prompt_tokens + args.max_tokens)
     print(f'[GENERATE] {len(inputs)} problems x {args.n}; max_num_seqs={args.max_num_seqs}', flush=True)
-    outputs = llm.generate(prompts, sampling_params=SamplingParams(temperature=args.temperature,
+    outputs = llm.generate([{'prompt_token_ids': ids} for ids in tokenized], sampling_params=SamplingParams(temperature=args.temperature,
         top_p=args.top_p, max_tokens=args.max_tokens, n=args.n, seed=args.seed))
     if len(outputs) != len(inputs):
         raise ValueError('Incomplete generation batch')
@@ -297,7 +300,8 @@ def generate(args, inputs):
             response_lengths=[len(toker.encode(r, add_special_tokens=False)) for r in responses],
             rendered_prompt=prompts[i], finish_reasons=[o.finish_reason for o in output.outputs],
             stop_reasons=[o.stop_reason for o in output.outputs], generation_config=sampling(args),
-            generation_execution=dict(max_num_seqs=args.max_num_seqs), model=Path(args.model_path).name))
+            generation_execution=dict(max_num_seqs=args.max_num_seqs, prompt_encoding=CHAT_PROMPT_ENCODING),
+            model=Path(args.model_path).name))
     return rows
 
 
@@ -336,6 +340,7 @@ def main():
         print('[RESCORE] Text-only: preserve original generation identity; no model-weight hashing/loading, no GPU.',flush=True)
     else:
         identity = dict(schema=1, dataset_sha256=digest(args.input_file), sampling=sampling(args),
+            prompt_encoding=CHAT_PROMPT_ENCODING,
             model_sha256={f.name: digest(f) for f in sorted(model.iterdir()) if f.is_file()})
     rows = load_cache(cache, metadata, identity)
     if rows is None:

@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from code_benchmarks import (ROOT, digest, evalplus_grades, extract_solution, prompt_for,
     read_jsonl, read_manifest, save_json, save_jsonl, summarize_pass4, validate_generations)
+from evaluation_prompts import CHAT_PROMPT_ENCODING, encode_chat_prompt, validate_chat_prompt_encoding
 
 
 def generate(args, questions, directory):
@@ -20,20 +21,29 @@ def generate(args, questions, directory):
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
     output = directory / 'generations.jsonl'
+    style = getattr(args, 'prompt_style', 'chat')
     rows = list(read_jsonl(output)) if output.exists() else []
     validate_generations(questions[:len(rows)], rows, args.samples)
+    if style == 'chat':
+        validate_chat_prompt_encoding(rows)
     if len(rows) == len(questions):
         return
+    journal = directory / 'generation.partial.jsonl'
+    if journal.exists():
+        rows = list(read_jsonl(journal))
+        validate_generations(questions[:len(rows)], rows, args.samples)
+        if style == 'chat':
+            validate_chat_prompt_encoding(rows)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    style = getattr(args, 'prompt_style', 'chat')
     if style == 'completion':
         prompts = [prompt_for(q, style) for q in questions]
+        tokenized = [tokenizer.encode(prompt, add_special_tokens=True) for prompt in prompts]
     else:
         if getattr(tokenizer, 'chat_template', True) is None:
             raise ValueError('Model has no chat template; use --prompt-style completion for a Base model')
-        prompts = [tokenizer.apply_chat_template([dict(role='user', content=prompt_for(q))],
-                    tokenize=False, add_generation_prompt=True, enable_thinking=False) for q in questions]
-    tokenized = [tokenizer.encode(prompt, add_special_tokens=style == 'completion') for prompt in prompts]
+        encoded = [encode_chat_prompt(tokenizer, [dict(role='user', content=prompt_for(q))]) for q in questions]
+        prompts = [rendered for rendered, _ in encoded]
+        tokenized = [ids for _, ids in encoded]
     for question, ids in zip(questions, tokenized):
         if len(ids) > args.max_prompt_tokens:
             raise ValueError(f'Prompt too long; refusing to truncate/drop {question["task_id"]}')
@@ -49,18 +59,14 @@ def generate(args, questions, directory):
     sampling = SamplingParams(n=args.samples, temperature=args.temperature, top_p=args.top_p,
                               seed=args.seed, max_tokens=args.max_tokens,
                               **({'stop': ['```']} if style == 'completion' and args.benchmark == 'livecodebench' else {}))
-    journal = directory / 'generation.partial.jsonl'
-    if journal.exists():
-        rows = list(read_jsonl(journal))
-        validate_generations(questions[:len(rows)], rows, args.samples)
     with journal.open('a', encoding='utf-8') as stream, tqdm(
             total=len(questions), initial=len(rows), desc=f'{args.benchmark} | generate',
             unit='question', dynamic_ncols=True) as progress:
         progress.set_postfix(samples=args.samples, refresh=False)
         for start in range(len(rows), len(questions), args.batch_size):
             end = min(start + args.batch_size, len(questions))
-            # Explicit token IDs preserve the Base tokenizer's BOS exactly once.
-            inputs = [{'prompt_token_ids': ids} for ids in tokenized[start:end]] if style == 'completion' else prompts[start:end]
+            # Submit the exact IDs checked above; never tokenize template BOS again.
+            inputs = [{'prompt_token_ids': ids} for ids in tokenized[start:end]]
             batch_started = time.perf_counter()
             if generation_started_unix is None:
                 generation_started_unix = time.time()
@@ -79,6 +85,8 @@ def generate(args, questions, directory):
                            finish_reasons=[result.finish_reason for result in answer.outputs])
                 if style != 'chat':
                     row.update(prompt_style=style, prompt_tokens=len(tokenized[start + index]))
+                else:
+                    row.update(prompt_encoding=CHAT_PROMPT_ENCODING, prompt_tokens=len(tokenized[start + index]))
                 rows.append(row)
                 generated_tokens += sum(row['response_lengths'])
                 new_questions += 1

@@ -106,6 +106,8 @@ python train.py --scale gemma3-12b --prepare-only
 
 Gemma 官方 12B checkpoint 包含视觉模块，本项目的数学任务使用纯文本。准备阶段按 shard 提取语言模型权重到 `models/gemma3-12b/{student,teacher}/`，保留原始 tensor 数值与 dtype，供 Transformers、vLLM、checkpoint 合并和现有数学评测共用。输出采用 `Gemma3ForCausalLM`，统一使用 Gemma 的 user/model turn 格式和 `<end_of_turn>` EOS。转换会额外占用一份文本权重的磁盘空间，按一个原始 shard 的大小使用 CPU 内存；重复运行会复用同源的完成输出。`models/` 已加入 `.gitignore`。
 
+数学与代码的 chat 评测按训练规则套用模板，再以 `add_special_tokens=False` 编码并将 `prompt_token_ids` 传给 vLLM，避免 Gemma 模板 BOS 被字符串路径再次添加；模板轮次标记和模型 EOS 配置保留。新生成记录使用 `chat_template_token_ids_v1` 编码标识，旧 chat 缓存不能混入新生成任务；重新生成请使用新的输出路径，历史回答仍可通过数学 `--regrade_only` 或代码 `--grade-only` 纯评分。Base/completion 仍由 tokenizer 添加原有 BOS 后传 token IDs。
+
 新增两组各提供 `paired-full`、`original-full`、`early-stop`、`reuse` 四种配置。例如：
 
 ```bash

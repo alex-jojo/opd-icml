@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from code_benchmarks import BENCHMARKS, PROTOCOL, ROOT, digest, read_jsonl, read_manifest, save_json, validate_generations
+from evaluation_prompts import CHAT_PROMPT_ENCODING, validate_chat_prompt_encoding
 
 
 def main():
@@ -64,13 +65,24 @@ def main():
     if args.grade_only:
         previous = json.loads(marker.read_text(encoding='utf-8'))
         identity['model'] = previous['model']
+        if 'prompt_encoding' in previous:
+            identity['prompt_encoding'] = previous['prompt_encoding']
     else:
         model = args.model_path.resolve()
         if not (model / 'config.json').is_file():
             parser.error('Expected a local model directory containing config.json')
         identity['model'] = dict(path=str(model), sha256={p.name: digest(p) for p in sorted(model.iterdir()) if p.is_file()})
+        if args.prompt_style == 'chat':
+            identity['prompt_encoding'] = CHAT_PROMPT_ENCODING
     if marker.exists() and json.loads(marker.read_text(encoding='utf-8')) != identity:
-        raise ValueError('Code evaluation model/data/sampling identity changed; use another --output-dir')
+        raise ValueError('Code evaluation model/data/sampling/prompt encoding identity changed; use another --output-dir')
+    if not args.grade_only and args.prompt_style == 'chat':
+        # Also guard data-parallel resumes whose serial prefix becomes a seed.
+        for benchmark in selected:
+            for name in ('generations.jsonl', 'generation.partial.jsonl', 'generation.seed.jsonl'):
+                cache = args.output_dir / benchmark / name
+                if cache.exists():
+                    validate_chat_prompt_encoding(list(read_jsonl(cache)))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     save_json(marker, identity)
     worker = ROOT / 'scripts/code_benchmark_worker.py'
