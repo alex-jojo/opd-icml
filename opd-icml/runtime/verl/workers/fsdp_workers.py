@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import warnings
+from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -905,6 +906,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if opd_top16_mode:
                 self.ref_policy.opd_student_eos_token_id = student_special_tokenizer.eos_token_id
                 self.ref_policy.opd_teacher_native_eos_token_id = teacher_native_eos_token_id
+                if self.config.ref.get('opd_stage_offload', False) and not direction_enabled:
+                    offload_fsdp_model_to_cpu(self.ref_module_fsdp)
             self.direction_reward_evaluator = None
             if direction_enabled:
                 from verl.workers.actor.direction_reward import FrozenDirectionReward
@@ -1179,6 +1182,29 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         return output
 
+    @contextmanager
+    def _opd_teacher_on_device(self):
+        enabled = (self.config.ref.get('opd_stage_offload', False)
+                   and self.config.actor.policy_loss.get('loss_mode') == 'opd_top16'
+                   and not self.config.actor.policy_loss.get('direction_reward', {}).get('enabled', False))
+        try:
+            if enabled:
+                load_fsdp_model_to_gpu(self.ref_module_fsdp)
+            yield
+        finally:
+            # Reshard before moving the local flat shards, including error paths.
+            try:
+                if self.world_size > 1:
+                    if fsdp_version(self.ref_module_fsdp) == 1:
+                        handle = self.ref_module_fsdp._handle
+                        if handle is not None:
+                            handle.reshard(True)
+                    else:
+                        self.ref_module_fsdp.reshard()
+            finally:
+                if enabled:
+                    offload_fsdp_model_to_cpu(self.ref_module_fsdp)
+
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="olive", role="ref_compute_log_prob")
     def compute_ref_log_prob(self, data: DataProto):
@@ -1193,27 +1219,21 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # else:
         # otherwise, the class have a standalone ref model
 
-        micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
-        data.meta_info["opd_top16"] = self.config.actor.policy_loss.get("loss_mode") == "opd_top16"
-        data.meta_info["micro_batch_size"] = micro_batch_size
-        data.meta_info["temperature"] = self.config.rollout.temperature
-        data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
-        data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
-        with self.ulysses_sharding_manager:
-            data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            output, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
-            output = DataProto.from_dict(tensors={"ref_log_prob": output,
-                **(self.ref_policy.last_top16_measurement if data.meta_info["opd_top16"] else {})})
+        with self._opd_teacher_on_device():
+            micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
+            data.meta_info["opd_top16"] = self.config.actor.policy_loss.get("loss_mode") == "opd_top16"
+            data.meta_info["micro_batch_size"] = micro_batch_size
+            data.meta_info["temperature"] = self.config.rollout.temperature
+            data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
+            data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
+            with self.ulysses_sharding_manager:
+                data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
+                output, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
+                output = DataProto.from_dict(tensors={"ref_log_prob": output,
+                    **(self.ref_policy.last_top16_measurement if data.meta_info["opd_top16"] else {})})
 
-        output = output.to("cpu")
+            output = output.to("cpu")
 
-        # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
-        # unshard the root FSDP module
-        if self.world_size > 1:
-            if fsdp_version(self.ref_policy.actor_module) == 1:
-                self.ref_policy.actor_module._handle.reshard(True)
-            elif fsdp_version(self.ref_policy.actor_module) == 2:
-                self.ref_policy.actor_module.reshard()
 
         return output
 

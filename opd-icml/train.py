@@ -91,12 +91,13 @@ def apply_batch_overrides(cfg, args):
         'rollout_batch_size': 'data.train_batch_size',
         'mini_batch_size': 'actor_rollout_ref.actor.ppo_mini_batch_size',
         'micro_batch_size': 'actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu',
+        'teacher_micro_batch_size': 'actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu',
         'rollout_max_num_seqs': 'actor_rollout_ref.rollout.max_num_seqs',
         'rollout_gpu_memory_utilization': 'actor_rollout_ref.rollout.gpu_memory_utilization',
         'learning_rate': 'actor_rollout_ref.actor.optim.lr',
     }
     updates = {path: getattr(args, name) for name, path in paths.items()
-               if getattr(args, name) is not None}
+               if getattr(args, name, None) is not None}
     if not updates:
         return {}
     for path, value in updates.items():
@@ -191,6 +192,12 @@ def main():
     parser.add_argument('--rollout-batch-size', type=int, help='Global prompts generated per rollout round')
     parser.add_argument('--mini-batch-size', type=int, help='Global prompts in one OPD update; must equal rollout batch')
     parser.add_argument('--micro-batch-size', type=int, help='Training sequences per forward/backward on each GPU')
+    parser.add_argument('--teacher-micro-batch-size', type=int, help='Teacher queries per GPU forward')
+    parser.add_argument('--optimizer-offload', choices=['on', 'off'])
+    parser.add_argument('--teacher-offload', choices=['on', 'off'])
+    parser.add_argument('--ray-num-cpus', type=int)
+    parser.add_argument('--ray-object-store-gib', type=float)
+    parser.add_argument('--ray-temp-dir', type=Path)
     parser.add_argument('--rollout-max-num-seqs', type=int, help='Maximum concurrent generation sequences')
     parser.add_argument('--rollout-gpu-memory-utilization', type=float, help='vLLM GPU memory fraction, between 0 and 1')
     parser.add_argument('--learning-rate', type=float, help='Student optimizer learning rate')
@@ -222,6 +229,28 @@ def main():
     try:
         hardware_overrides = apply_hardware_profile(cfg, args.hardware, args.num_gpus, args.rollout_tp_size)
         hardware_overrides.update(apply_batch_overrides(cfg, args))
+        for name, key in [('optimizer_offload', 'actor'), ('teacher_offload', 'ref')]:
+            value = getattr(args, name)
+            if value is not None:
+                field = 'optimizer_offload' if key == 'actor' else 'param_offload'
+                cfg['actor_rollout_ref'][key]['fsdp_config'][field] = value == 'on'
+                hardware_overrides[f'actor_rollout_ref.{key}.fsdp_config.{field}'] = value == 'on'
+                if key == 'ref':
+                    # Top16 teachers deliberately bypass FSDP's per-layer CPU
+                    # offload. Opt in to one explicit transfer per query stage.
+                    hardware_overrides['actor_rollout_ref.ref.opd_stage_offload'] = value == 'on'
+        if args.ray_num_cpus is not None:
+            if args.ray_num_cpus < 1:
+                raise ValueError('--ray-num-cpus must be positive')
+            hardware_overrides['ray_kwargs.ray_init.num_cpus'] = args.ray_num_cpus
+        if args.ray_object_store_gib is not None:
+            if not 0 < args.ray_object_store_gib < float('inf'):
+                raise ValueError('--ray-object-store-gib must be finite and positive')
+            hardware_overrides['ray_kwargs.ray_init.object_store_memory'] = int(args.ray_object_store_gib * 1024**3)
+        if args.ray_temp_dir is not None:
+            hardware_overrides['ray_kwargs.ray_init._temp_dir'] = str(args.ray_temp_dir.resolve())
+            hardware_overrides['ray_kwargs.ray_init.address'] = 'local'
+            hardware_overrides['ray_kwargs.ray_init.include_dashboard'] = False
         validate_gpu_topology(cfg)
     except ValueError as error:
         parser.error(str(error))
@@ -243,7 +272,7 @@ def main():
     validation = (args.val_data or ROOT / 'data/eurus_code_validation.parquet').resolve() if args.task == 'code' else data
     command = [sys.executable, "-m", "verl.trainer.main_ppo", "--config-dir", str(profile),
                "--config-name", config_name, "hydra.run.dir=" + str(output / "hydra")]
-    command += ['++' + key + '=' + json.dumps(value) for key, value in hardware_overrides.items()]
+    command += ['++' + key + '=' + json.dumps(value, ensure_ascii=False) for key, value in hardware_overrides.items()]
     if args.parameter_token_gradients or args.parameter_token_group_size is not None:
         prefix = '++actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens.'
         command += [prefix + key + '=' + json.dumps(value) for key,value in study['parameter_tokens'].items()]
@@ -251,6 +280,9 @@ def main():
                           hardware_profile=args.hardware,
                           explicit_gpu_count=args.num_gpus,
                           micro_batch_size_per_gpu=cfg['actor_rollout_ref']['actor']['ppo_micro_batch_size_per_gpu'],
+                          teacher_micro_batch_size_per_gpu=cfg['actor_rollout_ref']['ref']['log_prob_micro_batch_size_per_gpu'],
+                          optimizer_offload=cfg['actor_rollout_ref']['actor']['fsdp_config']['optimizer_offload'],
+                          teacher_offload=cfg['actor_rollout_ref']['ref']['fsdp_config']['param_offload'],
                           mini_batch_size=cfg['actor_rollout_ref']['actor']['ppo_mini_batch_size'],
                           learning_rate=cfg['actor_rollout_ref']['actor']['optim']['lr'],
                           rollout_max_num_seqs=cfg['actor_rollout_ref']['rollout']['max_num_seqs'],
@@ -305,7 +337,7 @@ def main():
     env.update(OPD_DATA=str(data), OPD_RUN=str(output), OPD_PROJECT_ROOT=str(ROOT),
                OPD_VALIDATION_DATA=str(validation), OPD_CODE_WORKERS=str(args.code_workers),
                OPD_CODE_JUDGE_BACKEND='sandbox' if args.sandbox_url else 'local',
-               OPD_CODE_SANDBOX_URL=args.sandbox_url or '', TOKENIZERS_PARALLELISM="true",
+               OPD_CODE_SANDBOX_URL=args.sandbox_url or '', TOKENIZERS_PARALLELISM=env.get('TOKENIZERS_PARALLELISM', 'true'),
                VLLM_WORKER_MULTIPROC_METHOD="spawn",
                PYTHONPATH=os.pathsep.join(filter(None, [str(ROOT / "runtime"), env.get("PYTHONPATH")])))
     env.setdefault("WANDB_MODE", "offline")

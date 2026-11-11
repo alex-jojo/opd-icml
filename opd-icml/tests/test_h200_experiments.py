@@ -113,7 +113,9 @@ def checkpoint_fixture(training, gpus, step=106):
 def test_pipeline_handoff_preserves_devices_and_can_retry_evaluation(name, scale, task, gpus, tmp_path, monkeypatch):
     import code_benchmarks
     monkeypatch.setattr(code_benchmarks, 'read_manifest', lambda *args: {})
-    args = h200.parser().parse_args(['--scale', scale, '--output', str(tmp_path / 'run')])
+    benchmark = tmp_path / 'math.jsonl'
+    benchmark.write_text('{}\n')
+    args = h200.parser().parse_args(['--scale', scale, '--output', str(tmp_path / 'run'), '--math-benchmarks', str(benchmark)])
     plan = h200.build_plan(args, {'CUDA_VISIBLE_DEVICES': '3,2,1,0'})
     plan['resolved_training'] = dict(rounds_cap=106, updates_per_round=1)
     env = h200.child_environment(plan, {'CUDA_VISIBLE_DEVICES': '3,2,1,0'})
@@ -121,7 +123,7 @@ def test_pipeline_handoff_preserves_devices_and_can_retry_evaluation(name, scale
 
     def fake_run(command, environment, log):
         called.append(list(command))
-        assert environment['CUDA_VISIBLE_DEVICES'] == ('3' if gpus == 1 else '3,2,1,0')
+        assert environment['CUDA_VISIBLE_DEVICES'] == ('' if '--grade-only' in command else ('3' if gpus == 1 else '3,2,1,0'))
         if command == plan['train']:
             checkpoint_fixture(Path(plan['output']) / 'training', gpus)
         if 'verl.model_merger' in command:
@@ -136,16 +138,21 @@ def test_pipeline_handoff_preserves_devices_and_can_retry_evaluation(name, scale
     h200.execute(args, plan, env)
     training_index = called.index(plan['train'])
     merge_index = next(i for i, command in enumerate(called) if 'verl.model_merger' in command)
-    assert training_index < merge_index < called.index(plan['evaluate'])
+    first_eval = plan['evaluate'] + (['--generate-only'] if task == 'code' else [])
+    assert training_index < merge_index < called.index(first_eval)
+    if task == 'code':
+        assert called.index(first_eval) < called.index(plan['evaluate'] + ['--grade-only'])
     called.clear()
     args.stage = 'eval'
     h200.execute(args, plan, env)
-    assert plan['evaluate'] in called and plan['train'] not in called
+    assert first_eval in called and plan['train'] not in called
     assert not any('verl.model_merger' in command for command in called)
 
 
 def test_training_failure_never_merges_or_evaluates(tmp_path, monkeypatch):
-    args = h200.parser().parse_args(['--scale', '8b', '--output', str(tmp_path / 'run')])
+    benchmark = tmp_path / 'math.jsonl'
+    benchmark.write_text('{}\n')
+    args = h200.parser().parse_args(['--scale', '8b', '--output', str(tmp_path / 'run'), '--math-benchmarks', str(benchmark)])
     plan = h200.build_plan(args, {})
     env = h200.child_environment(plan, {})
     called = []

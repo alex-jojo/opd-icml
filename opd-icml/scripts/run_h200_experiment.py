@@ -1,5 +1,6 @@
 """Run one paired-full experiment, merge its final student, and evaluate on the same GPUs."""
 import argparse
+import hashlib
 from dataclasses import dataclass
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -30,20 +32,40 @@ EXPERIMENTS = {
     'gemma3-12b': Experiment('math', 4),
 }
 
+# Throughput starting points; no change to sample counts, precision or diagnostics.
+# Larger pairs retain offload because optimizer state is FP32.
+PRESETS = {
+    'deepseek-coder-1.3b': (4, 4, 64, 'off'),
+    '1.7b': (4, 4, 64, 'off'),
+    '4b': (4, 4, 64, 'off'),
+    'deepseek-coder-6.7b': (2, 2, 32, 'on'),
+    '8b': (2, 2, 32, 'on'),
+    'gemma3-12b': (2, 2, 32, 'on'),
+    'deepseek-coder-33b': (1, 1, 16, 'on'),
+}
+
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--scale', required=True, choices=EXPERIMENTS)
     p.add_argument('--task', choices=['math', 'code'], help='Default: DeepSeek code; Qwen/Gemma math')
-    p.add_argument('--stage', choices=['all', 'train', 'eval'], default='all')
+    p.add_argument('--stage', choices=['all', 'train', 'eval', 'train-generate', 'generate', 'grade'], default='all')
+    p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
     p.add_argument('--devices', help='Exactly one/four comma-separated GPU IDs or UUIDs; otherwise use CUDA_VISIBLE_DEVICES')
     p.add_argument('--output', type=Path, help='Pipeline root; contains training/, merged/, eval/, logs/')
     for name in ('student', 'teacher', 'cache-dir', 'model-dir', 'data', 'val-data'):
         p.add_argument('--' + name, type=Path)
     p.add_argument('--code-benchmarks', type=Path, default=ROOT / 'data/code_benchmarks')
     p.add_argument('--math-benchmarks', type=Path, default=ROOT / 'data/benchmarks.jsonl')
-    p.add_argument('--micro-batch-size', type=int, default=1)
-    p.add_argument('--rollout-max-num-seqs', type=int, default=16)
+    p.add_argument('--micro-batch-size', type=int)
+    p.add_argument('--teacher-micro-batch-size', type=int)
+    p.add_argument('--optimizer-offload', choices=['on', 'off'])
+    p.add_argument('--teacher-offload', choices=['on', 'off'])
+    p.add_argument('--rollout-max-num-seqs', type=int)
+    p.add_argument('--ray-num-cpus', type=int)
+    p.add_argument('--ray-object-store-gib', type=float, default=4)
+    p.add_argument('--gradient-cache-gib', type=float, default=64)
+    p.add_argument('--cpu-ids', help='Linux CPU affinity, comma-separated IDs; inherited by all children')
     p.add_argument('--rollout-gpu-memory-utilization', type=float, default=.30)
     p.add_argument('--learning-rate', type=float, default=1e-5)
     p.add_argument('--parameter-token-gradients', choices=['sampled', 'exact-all', 'off'], default='sampled')
@@ -73,6 +95,20 @@ def select_devices(count, explicit, environment):
 def build_plan(args, environment):
     spec = EXPERIMENTS[args.scale]
     task = args.task or spec.task
+    if args.stage == 'grade' and task != 'code':
+        raise ValueError('--stage grade is for code; math uses its existing combined scoring protocol')
+    micro, teacher_micro, sequences, offload = (PRESETS[args.scale] if args.profile == 'throughput'
+                                               else (1, 1, 16, 'on'))
+    micro = args.micro_batch_size if args.micro_batch_size is not None else micro
+    teacher_micro = args.teacher_micro_batch_size if args.teacher_micro_batch_size is not None else teacher_micro
+    sequences = args.rollout_max_num_seqs if args.rollout_max_num_seqs is not None else sequences
+    optimizer_offload = args.optimizer_offload or offload
+    teacher_offload = args.teacher_offload or offload
+    cpus = args.ray_num_cpus or max(1, len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count() or 1)
+    if args.ray_num_cpus is not None and args.ray_num_cpus < 1:
+        raise ValueError('--ray-num-cpus must be positive')
+    if not 0 < args.ray_object_store_gib < float('inf') or not 0 <= args.gradient_cache_gib < float('inf'):
+        raise ValueError('Ray memory must be positive and cache memory nonnegative, both finite')
     if task != 'code' and args.val_data:
         raise ValueError('--val-data applies only to code training')
     if min(args.eval_max_num_seqs, args.eval_batch_size, args.score_workers, args.code_workers) < 1:
@@ -80,11 +116,15 @@ def build_plan(args, environment):
     devices = select_devices(spec.gpus, args.devices, environment)
     run = (args.output or ROOT / 'runs/h200' / args.scale / f'{task}-paired-full').resolve()
     training, merged = run / 'training', run / 'merged'
+    ray_temp = Path(tempfile.gettempdir()) / ('opd-ray-' + hashlib.sha256(str(run).encode()).hexdigest()[:12])
     command = [sys.executable, str(ROOT / 'train.py'), '--scale', args.scale, '--task', task,
                '--experiment', 'paired-full', '--hardware', f'h200x{spec.gpus}',
                '--num-gpus', str(spec.gpus), '--rollout-tp-size', str(spec.gpus),
-               '--micro-batch-size', str(args.micro_batch_size),
-               '--rollout-max-num-seqs', str(args.rollout_max_num_seqs),
+               '--micro-batch-size', str(micro), '--teacher-micro-batch-size', str(teacher_micro),
+               '--optimizer-offload', optimizer_offload, '--teacher-offload', teacher_offload,
+               '--ray-num-cpus', str(cpus), '--ray-object-store-gib', str(args.ray_object_store_gib),
+               '--ray-temp-dir', str(ray_temp),
+               '--rollout-max-num-seqs', str(sequences),
                '--rollout-gpu-memory-utilization', str(args.rollout_gpu_memory_utilization),
                '--learning-rate', str(args.learning_rate),
                '--parameter-token-gradients', args.parameter_token_gradients,
@@ -127,6 +167,7 @@ def build_plan(args, environment):
     return dict(scale=args.scale, task=task, experiment='paired-full', gpu_count=spec.gpus,
         training_gpus=spec.gpus, evaluation_gpus=spec.gpus, rollout_tp=spec.gpus, evaluation_tp=spec.gpus,
         cuda_visible_devices=devices, output=str(run), models=read_models(args.scale),
+        profile=args.profile, ray_cpus=cpus, gradient_cache_gib=args.gradient_cache_gib,
         prepare_training=prepare, prepare_evaluation=prepare_eval,
         train=command, merge=merge, evaluate=evaluation)
 
@@ -136,6 +177,12 @@ def child_environment(plan, environment):
     env['CUDA_VISIBLE_DEVICES'] = plan['cuda_visible_devices']
     env['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
     env['PYTHONUNBUFFERED'] = '1'
+    env['RAY_ADDRESS'] = 'local'
+    env['OPD_GRADIENT_CACHE_MAX_GIB'] = str(plan['gradient_cache_gib'])
+    # Ray resources and BLAS threads are separate limits. Avoid nested CPU pools.
+    for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        env[key] = '1'
+    env['TOKENIZERS_PARALLELISM'] = 'false'
     env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(ROOT / 'runtime'), env.get('PYTHONPATH')]))
     env.setdefault('WANDB_MODE', 'offline')
     return env
@@ -179,7 +226,11 @@ def run_command(command, env, log):
 
 def execute(args, plan, env):
     run = Path(plan['output'])
-    if args.stage != 'eval' and run.exists() and any(run.iterdir()):
+    if args.stage == 'grade':
+        run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
+        return
+    training_stage = args.stage in ('all', 'train', 'train-generate')
+    if training_stage and run.exists() and any(run.iterdir()):
         raise ValueError(f'Choose an empty --output directory: {run}')
     # Use a fresh process so probing CUDA never initializes it in this orchestrator.
     probe = [sys.executable, '-c',
@@ -187,7 +238,7 @@ def execute(args, plan, env):
         f'assert n == {plan["gpu_count"]}, f"Expected {plan["gpu_count"]} visible GPUs, got {{n}}"; '
         'print("GPUs:", [torch.cuda.get_device_name(i) for i in range(n)])']
     run_command(probe, env, run / 'logs/devices.log')
-    if args.stage != 'eval':
+    if training_stage:
         for number, command in enumerate(plan['prepare_training']):
             run_command(command, env, run / f'logs/prepare_training_{number}.log')
     if args.stage != 'train':
@@ -201,7 +252,7 @@ def execute(args, plan, env):
                 read_manifest(directory, name)
         elif not args.math_benchmarks.is_file():
             raise ValueError(f'Missing math benchmark file: {args.math_benchmarks}')
-    if args.stage != 'eval':
+    if training_stage:
         run_command(plan['train'], env, run / 'logs/train.log')
     if args.stage == 'train':
         return
@@ -220,7 +271,14 @@ def execute(args, plan, env):
         if not (merged / 'config.json').is_file() or not list(merged.glob('*.safetensors')):
             raise ValueError('Model merge did not produce a complete Hugging Face model')
         merge_marker.write_text(json.dumps(identity, indent=2) + '\n', encoding='utf-8')
-    run_command(plan['evaluate'], env, run / 'logs/evaluate.log')
+    if plan['task'] == 'code':
+        # Generate ALL benchmarks before CPU grading; suite scheduling can release
+        # these GPUs immediately with train-generate/generate and grade separately.
+        run_command(plan['evaluate'] + ['--generate-only'], env, run / 'logs/generate.log')
+        if args.stage not in ('train-generate', 'generate'):
+            run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
+    else:
+        run_command(plan['evaluate'], env, run / 'logs/evaluate.log')
     print(f'[DONE] Results: {run / "eval"}', flush=True)
 
 
@@ -228,6 +286,12 @@ def main():
     p = parser()
     args = p.parse_args()
     try:
+        if args.cpu_ids:
+            selected = {int(item) for item in args.cpu_ids.split(',')}
+            if not hasattr(os, 'sched_setaffinity') or not selected or not selected <= os.sched_getaffinity(0):
+                raise ValueError('--cpu-ids must select available Linux CPUs')
+            if not args.dry_run:
+                os.sched_setaffinity(0, selected)
         plan = build_plan(args, os.environ)
         env = child_environment(plan, os.environ)
         # Resolve/validate the actual launcher before downloading anything.

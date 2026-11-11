@@ -15,6 +15,10 @@ DeepSeek-Coder 1.3B / 6.7B / 33B Base → Instruct、Qwen3-1.7B / 4B、Qwen3-8B 
 
 ## H200 操作指南
 
+**四卡整套实验推荐入口：** `bash scripts/h200/run_all.sh --devices 0,1,2,3 --output runs/h200-suite/run1`。先加 `--dry-run` 可以查看资源分配，不下载或启动训练。四个单卡实验在 CPU/主存预算允许时并行，随后 Qwen 8B、Gemma 12B、DeepSeek 33B 分别独占四卡；代码生成完成后交给单独 CPU 队列判题，与后续 GPU 实验重叠。只跑部分模型可加 `--scales 1.7b 4b 8b`。完整参数和资源说明见 [H200 调度说明](scripts/h200/README.md)。
+
+H200 入口默认采用按模型设置的 `throughput` 起始预设；可用 `--profile conservative` 恢复原来 micro-batch=1、生成并发16及卸载策略。它们保持106轮、batch128、学习率、loss、模型精度、诊断样本数与频率。吞吐预设尚无真实 H200 性能/显存测量，不声称是最优值；改变批处理和生成调度可能改变浮点规约与采样轨迹。
+
 本节对应**单机四张 H200**，按学生模型大小固定卡数：**≥8B 用四卡，其余用单卡，训练和评测生成保持相同卡数及 GPU 列表**。四卡 rollout/评测为 TP=4，单卡为 TP=1；代码测试用例判题在 CPU 上执行。
 
 ### 1. 进入项目并创建环境
@@ -175,7 +179,7 @@ bash scripts/h200/train_eval_qwen3_8b.sh --devices 0,1,2,3
 
 ### 5. 常用参数和本地资源
 
-七组脚本默认都是 `paired-full`：全局 batch/mini-batch=128、106 轮、每轮一次更新、学习率 1e-5、每卡 micro-batch=1。H200 预设开启梯度检查点、optimizer 阶段 offload、teacher 参数 offload，rollout 并发 16、显存比例 0.30。逐 token 参数梯度默认每次抽样 256 个 token（64 high-KL + 192 remaining），保留 hidden 统计。
+七组脚本默认都是 `paired-full`：全局 batch/mini-batch=128、106 轮、每轮一次更新、学习率 1e-5。默认 `throughput` 下，1.3B/1.7B/4B 的学生与教师 micro-batch=4、rollout 并发64，并关闭 optimizer/teacher 阶段卸载；6.7B/8B/12B 为2和32，保留卸载；33B为1和16，保留卸载。梯度检查点和 rollout 显存比例0.30保留。逐 token 参数梯度默认每次抽样256个token（64 high-KL + 192 remaining），保留 hidden 统计。
 
 下面示例使用独立输出目录，并显式切换为全量逐 token 参数梯度：
 
@@ -201,7 +205,7 @@ bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
 
 `/data/...` 示例路径需要替换成已有资源位置。`--model-dir` 存放 DeepSeek 学生运行目录或 Gemma 文本权重；仅缓存下载可用 `--cache-dir`。自定义数学评测题用 `--math-benchmarks`；自定义代码 benchmark 目录用 `--code-benchmarks`，其中应包含原准备流程生成的三项题目和 manifest。
 
-可调参数还包括 `--micro-batch-size`、`--rollout-max-num-seqs`、`--rollout-gpu-memory-utilization`、`--eval-max-num-seqs`、`--eval-batch-size`、`--code-workers` 和 `--score-workers`；`--eval-batch-size` 只用于代码评测。这些选项不会更改固定的单卡/四卡规则。完整选项可执行：
+可调参数还包括 `--micro-batch-size`、`--teacher-micro-batch-size`、`--optimizer-offload on|off`、`--teacher-offload on|off`、`--rollout-max-num-seqs`、`--rollout-gpu-memory-utilization`、`--eval-max-num-seqs`、`--eval-batch-size`、`--code-workers` 和 `--score-workers`；`--eval-batch-size` 只用于代码评测。资源控制支持 `--ray-num-cpus`、`--ray-object-store-gib`、`--gradient-cache-gib`、`--cpu-ids`。这些选项不会更改固定的单卡/四卡规则。完整选项可执行：
 
 ```bash
 python scripts/run_h200_experiment.py --help
@@ -210,6 +214,8 @@ python scripts/run_h200_experiment.py --help
 ### 6. 单独训练、重试评测和查看结果
 
 默认 `--stage all` 会训练后自动评测。也可分两次执行；第二次使用相同输出目录、任务和 GPU 设置：
+
+Code 的 `all`/`eval` 先生成完三项 benchmark，再统一判题。`--stage train-generate` 完成训练、合并和全部生成后退出，`--stage generate` 只对已有最终 checkpoint 合并及生成；`--stage grade` 只运行 CPU 判题，不加载模型或检查 GPU。总调度使用这些阶段，在保留 pass@4 题集、采样数、长度和判题标准的同时释放 GPU。Math 继续使用现有 Mean@8 生成与评分流程。
 
 ```bash
 bash scripts/h200/train_eval_qwen3_8b.sh \
