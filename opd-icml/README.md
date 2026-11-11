@@ -30,6 +30,8 @@ Qwen3-1.7B / 4B、Qwen3-8B Base → 32B 教师，以及 Gemma-3-12B PT → IT �
 
 对每个 token 单独反传其未平均、未裁剪的条件 Top16 KL，计算 `parameter_gradient_energy = sum_theta (d loss_i / d theta)^2`。范围是所有参与训练的 backbone、embedding、归一化和输出头参数；共享参数只计一次。FSDP 下所有 rank 同步计算同一个 token，再累加不重叠梯度分片的平方范数。梯度平方和用 FP64 累加；“精确”指直接逐 token 自动微分，不使用范数估计器，仍采用训练环境本身的数值精度。
 
+逐 token 测量在启用 `replication17.compact_head` 时，仅对目标预测位置的 hidden 和该位置缓存的 16 个词表 ID 做输出投影，再计算该 token 的 KL；不再投影其他 response 位置或构造它们的词表并集。`exact_all` 和 `kl_stratified` 共用此路径，保留所需的 Transformer 上下文、完整参数反传和模型自身的 logits 后处理；正常训练仍计算全部训练位置的损失。
+
 参数统计与 hidden 统计写在同一个 `replication/token_audit/step_XXX_inner_N.json` 和 `.npz` 中。每个现有 token 分组（包括 KL top 1/5/10/20%、固定 step-1 阈值、位置等）增加 `quantities.parameter_gradient_energy`，含总和、均值和能量占比；还保存参数梯度 RMS、Frobenius 范数、平均 L2 范数、能量集中度，以及逐 token 标量和 row/pos。高/中/低 KL 分组也增加参数能量和 RMS。`parameter_gradient_measurement` 记录全量覆盖、额外反传次数、耗时和定义；不保存整个参数梯度向量，不额外调用 teacher，不执行诊断 optimizer step。
 
 **代价很大：若一个测量步有 N 个有效 token，该步额外执行 N 次完整学生 forward/backward。** 所有诊断在正式训练 backward 前运行，并恢复 RNG、模块模式和清空诊断梯度；正式训练仍使用原损失。控制台会显示进度。原有 `actor/grad_norm` 是 batch 参数梯度范数；逐 token 平方范数之和不等于 batch 梯度平方范数，也不代表 AdamW 更新能量。

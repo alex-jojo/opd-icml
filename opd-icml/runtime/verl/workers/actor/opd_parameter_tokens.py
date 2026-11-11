@@ -151,8 +151,10 @@ class FullParameterTokenAudit:
                     full_forward_tokens += inputs['input_ids'].numel()
                     actual_forward_tokens += token_inputs['input_ids'].numel()
                     _, logits, _, _ = forward(self.actor, token_inputs, float(data.meta_info['temperature']),
-                                              token_inputs['opd_top16_ids'], diagnostics=False)
-                    token_loss = reverse_kl(logits, token_inputs['opd_teacher_top16_logits'])[0, int(pos)]
+                                              token_inputs['opd_top16_ids'], diagnostics=False,
+                                              response_position=int(pos))
+                    teacher_logits = token_inputs['opd_teacher_top16_logits'][:, int(pos):int(pos)+1]
+                    token_loss = reverse_kl(logits, teacher_logits)[0, 0]
                     token_loss.backward()
                     energy[cursor] = layout.squared_norm()
                     losses[cursor] = float(token_loss.detach())
