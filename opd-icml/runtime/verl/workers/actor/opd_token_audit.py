@@ -9,7 +9,7 @@ from .opd_focus_stats import concentration
 from .opd_priority_stats import minmax, spectrum
 
 
-def output_scores(student, teacher):
+def output_scores(student, teacher, *, include_teacher_entropy=False):
     with torch.no_grad():
         lp = student.detach().double().log_softmax(-1)
         lq = teacher.detach().double().log_softmax(-1)
@@ -23,10 +23,13 @@ def output_scores(student, teacher):
         noise = ((ratio-baseline[..., None]).square()*leverage).sum(-1)-variance
         valid = (variance > 1e-15) & (noise > 1e-15)
         ier = torch.where(valid, variance/noise.clamp_min(1e-15), torch.zeros_like(variance))
-        return dict(kl=kl.clamp_min(0), tv=.5*(p-q).abs().sum(-1),
+        result = dict(kl=kl.clamp_min(0), tv=.5*(p-q).abs().sum(-1),
                     entropy=-(p*lp).sum(-1), logratio_variance=variance,
                     ier=ier, ier_valid=valid, ier_noise=noise.clamp_min(0),
                     top1_disagree=p.argmax(-1)!=q.argmax(-1))
+        if include_teacher_entropy:
+            result['teacher_entropy'] = -(q*lq).sum(-1)
+        return result
 
 
 def enriched(fields):
@@ -49,9 +52,11 @@ def groups(f, thresholds):
     result = {'all': np.ones(n, bool), 'interior': ~f['boundary'].astype(bool)}
     for score in ('kl', 'tv', 'entropy', 'tip', 'logratio_variance', 'ier', 'alignment', 'priority'):
         valid = f['ier_valid'].astype(bool) if score == 'ier' else np.ones(n, bool)
+        indices = np.flatnonzero(valid)
+        order = indices[np.argsort(-np.asarray(f[score])[valid], kind='stable')] if len(indices) else indices
         for fraction in (.01, .05, .1, .2):
             mask = np.zeros(n, bool)
-            if valid.any(): mask[valid] = top_mask(f[score][valid], fraction)
+            mask[order[:max(1, int(np.ceil(len(order)*fraction)))]] = True
             result[f'{score}_top{int(fraction*100)}'] = mask
     edges = (0, .01, .1, 1, np.inf)
     for lo, hi in zip(edges[:-1], edges[1:]):
@@ -65,6 +70,18 @@ def groups(f, thresholds):
     for k in ('first', 'eos', 'numeric', 'operator', 'latex', 'other'):
         if k in f: result['class_'+k] = f[k].astype(bool)
     return result
+
+
+def prepare_groups(f, thresholds):
+    """Update-local group membership shared by full and sampled reports.
+
+    KL partitions keep their original ascending stable tie order. Top-percent
+    groups use descending stable order; reversing that order would change ties.
+    """
+    order = np.argsort(f['kl'], kind='stable')
+    count = max(1, int(np.ceil(len(order)*.1)))
+    return dict(masks=groups(f, thresholds),
+                kl_parts=dict(low=order[:count], middle=order[count:-count], high=order[-count:]))
 
 
 def summarize(f, masks, quantities):
@@ -89,8 +106,10 @@ def summarize(f, masks, quantities):
     return out
 
 
-def training_summary(f, z, thresholds):
-    masks = groups(f, thresholds)
+def training_summary(f, z, thresholds, *, grouping=None):
+    if grouping is None:
+        grouping = prepare_groups(f, thresholds)
+    masks = grouping['masks']
     quantities=['kl','tv','raw_gradient_energy','projected_gradient_energy','logratio_variance']
     concentration_fields=['kl','tv','entropy','tip','logratio_variance','ier',
                           'alignment','priority','raw_gradient_energy','projected_gradient_energy']
@@ -121,8 +140,8 @@ def training_summary(f, z, thresholds):
                       parameter_gradient_l2_mean=float(np.sqrt(energy).mean()))
     # A direct high/middle/low comparison, alongside equal-count subsampling.
     # Do not confuse more positions with more independent correction directions.
-    order=np.argsort(f['kl'],kind='stable');k=max(1,int(np.ceil(len(order)*.1)))
-    parts={'low':order[:k],'middle':order[k:-k],'high':order[-k:]}
+    k=max(1,int(np.ceil(len(f['kl'])*.1)))
+    parts=grouping['kl_parts']
     report['kl_high_middle_low']={}
     for label,ix in parts.items():
         if not len(ix):continue

@@ -78,9 +78,9 @@ def weighted_energy(values, membership, population_group_count, plan):
                 missing_reason='no sampled tokens in nonempty group' if not available else None)
 
 
-def add_sampled_report(report, fields, measurement, thresholds):
+def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None):
     """Keep full hidden fields intact and add weighted paired sample statistics."""
-    from .opd_token_audit import groups
+    from .opd_token_audit import prepare_groups
     target = list(zip(fields['row'].tolist(), fields['pos'].tolist()))
     source = list(zip(measurement['row'].tolist(), measurement['pos'].tolist()))
     if len(set(target)) != len(target) or len(set(source)) != len(source):
@@ -99,10 +99,10 @@ def add_sampled_report(report, fields, measurement, thresholds):
     report.update(parameter_gradient_rms=float(np.sqrt(total / len(target))),
                   parameter_gradient_frobenius=float(np.sqrt(total)),
                   parameter_gradient_l2_mean=float(weights @ np.sqrt(energy) / len(target)))
-    masks = groups(fields, thresholds)
-    order = np.argsort(fields['kl'], kind='stable')
-    count = max(1, int(np.ceil(len(order) * .1)))
-    for label, chosen in dict(low=order[:count], middle=order[count:-count], high=order[-count:]).items():
+    if grouping is None:
+        grouping = prepare_groups(fields, thresholds)
+    masks = grouping['masks']
+    for label, chosen in grouping['kl_parts'].items():
         if label not in report.get('kl_high_middle_low', {}):
             continue
         mask = np.zeros(len(target), bool)

@@ -11,7 +11,7 @@ from . import opd_distributed as dp
 from .opd_replication17 import cumulative_basis,panel_hidden,install_basis
 from .opd_top16 import _final_norm_module,_unwrap_actor_module
 from .opd_plasticity import atomic_json,atomic_npz
-from .opd_token_audit import output_scores,enriched,training_summary
+from .opd_token_audit import output_scores,enriched,training_summary,prepare_groups
 from .opd_gradient_scopes import summarize,metric_values
 from .opd_gradient_study import HiddenMoments,GradientStudy,reshard_after_readout
 
@@ -87,9 +87,8 @@ class StudyReplication:
             with torch.no_grad():
                 z=out[:,-n-1:-1]
                 if z.shape[-1]!=inputs['opd_top16_ids'].shape[-1]:z=z.gather(-1,inputs['opd_top16_ids'])
-                part.update({k:v.detach().cpu().numpy() for k,v in output_scores(z[mask],inputs['opd_teacher_top16_logits'][mask]).items()})
-                teacher=inputs['opd_teacher_top16_logits'][mask].double().log_softmax(-1)
-                part['teacher_entropy']=(-(teacher.exp()*teacher).sum(-1)).cpu().numpy()
+                part.update({k:v.detach().cpu().numpy() for k,v in output_scores(
+                    z[mask],inputs['opd_teacher_top16_logits'][mask],include_teacher_entropy=True).items()})
                 ordinal=mask.long().cumsum(-1)-1
                 part.update(row=(row+cursor).cpu().numpy(),pos=pos.cpu().numpy(),token=inputs['responses'][mask].cpu().numpy(),
                     boundary=(ordinal==0)[mask].cpu().numpy(),
@@ -201,13 +200,18 @@ class StudyReplication:
             from .opd_parameter_tokens import attach_parameter_energy
             parameter_metadata=attach_parameter_energy(merged,self.parameter_measurement)
             self.parameter_measurement=None
-        token_report,token_arrays=dp.primary_call(lambda:training_summary(merged,z,self.thresholds))
-        if sampled_measurement is not None:
+        def build_token_report():
+            # Keep masks/rankings on the primary rank, shared only for this update.
+            grouping=prepare_groups(merged,self.thresholds)
+            report,arrays=training_summary(merged,z,self.thresholds,grouping=grouping)
+            if sampled_measurement is None:
+                return report,arrays,None,None
             from .opd_parameter_sampling import add_sampled_report
-            def add_sample():
-                metadata,arrays=add_sampled_report(token_report,merged,sampled_measurement,self.thresholds)
-                return token_report,metadata,arrays
-            token_report,parameter_metadata,paired_arrays=dp.primary_call(add_sample)
+            metadata,paired=add_sampled_report(report,merged,sampled_measurement,self.thresholds,grouping=grouping)
+            return report,arrays,metadata,paired
+        token_report,token_arrays,sampled_metadata,paired_arrays=dp.primary_call(build_token_report)
+        if sampled_measurement is not None:
+            parameter_metadata=sampled_metadata
             atomic_npz(self.output/'token_audit'/f'parameter_sample_{self.step:03d}_inner_{inner+1}.npz',paired_arrays)
             self.parameter_measurement=None
         if parameter_metadata is not None:

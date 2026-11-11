@@ -36,6 +36,8 @@ Qwen3-1.7B / 4B、Qwen3-8B Base → 32B 教师，以及 Gemma-3-12B PT → IT �
 
 参数统计与 hidden 统计写在同一个 `replication/token_audit/step_XXX_inner_N.json` 和 `.npz` 中。每个现有 token 分组（包括 KL top 1/5/10/20%、固定 step-1 阈值、位置等）增加 `quantities.parameter_gradient_energy`，含总和、均值和能量占比；还保存参数梯度 RMS、Frobenius 范数、平均 L2 范数、能量集中度，以及逐 token 标量和 row/pos。高/中/低 KL 分组也增加参数能量和 RMS。`parameter_gradient_measurement` 记录全量覆盖、额外反传次数、耗时和定义；不保存整个参数梯度向量，不额外调用 teacher，不执行诊断 optimizer step。
 
+报告中的 Top-1/5/10/20% 分组对每个分数只做一次稳定降序排序；KL 高/中/低分组保留原来的稳定升序排序和并列处理。完整报告与抽样报告在主 rank 上共享当前更新的分组和 KL 排序结果。teacher 熵复用输出统计中已算出的双精度 log-probability，不重复计算 `log_softmax`。这些复用不跨参数更新，保持原有分组成员、报告字段和统计精度。
+
 **代价仍大：测量 N 个 token 仍需 N 次全参数反传，显式前向次数降为各回答 `ceil(待测 token 数 / graph_group_size)` 之和。** 梯度检查点每次反传仍可能重算内部前向，不能按前向次数比例推断总提速；分组还会延长计算图的存活时间，并让组内较早 token 使用较长前缀。所有诊断在正式训练 backward 前运行，并恢复 RNG、模块模式和清空诊断梯度；正式训练仍使用原损失。控制台及 `parameter_gradient_measurement` 记录 `forward_calls`、有效 `graph_group_size` 和 `graph_reuse_fallback`，前向计数不含检查点重算。原有 `actor/grad_norm` 是 batch 参数梯度范数；逐 token 平方范数之和不等于 batch 梯度平方范数，也不代表 AdamW 更新能量。
 
 ```bash

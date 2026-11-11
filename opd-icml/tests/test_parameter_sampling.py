@@ -80,7 +80,16 @@ def test_sampled_gradients_match_full_jacobian_and_leave_training_identical():
         torch.testing.assert_close(actual, original, rtol=0, atol=0)
 
 
-def test_sampled_study_preserves_full_hidden_population_and_saves_identical_paired_ids(tmp_path):
+def test_sampled_study_preserves_full_hidden_population_and_saves_identical_paired_ids(tmp_path, monkeypatch):
+    audit = importlib.import_module(audit_module.__package__ + '.opd_token_audit')
+    original_prepare = audit.prepare_groups
+    preparations = []
+    def prepare(*args):
+        prepared = original_prepare(*args)
+        preparations.append(prepared)
+        return prepared
+    monkeypatch.setattr(audit, 'prepare_groups', prepare)
+    monkeypatch.setattr(study_module, 'prepare_groups', prepare)
     torch.manual_seed(42)
     actor, data = make_actor(tied=True), make_data()
     actor.actor_module.config.opd_response_eos_token_ids=[15,6]
@@ -101,6 +110,7 @@ def test_sampled_study_preserves_full_hidden_population_and_saves_identical_pair
         cursor += len(part)
     gradients = [p.grad.clone() for p in actor.actor_module.parameters()]
     replication.before_update(0)
+    assert len(preparations) == 1  # full and sampled reports share the same groups
     for actual, original in zip(actor.actor_module.parameters(), gradients):
         assert torch.equal(actual.grad, original)
     directory = tmp_path/'replication/token_audit'
