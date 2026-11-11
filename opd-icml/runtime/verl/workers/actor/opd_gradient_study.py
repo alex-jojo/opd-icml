@@ -9,7 +9,6 @@ import os
 import pickle
 import re
 import time
-from pathlib import Path
 from contextlib import contextmanager
 from pathlib import Path
 import numpy as np
@@ -91,18 +90,18 @@ class ParameterLayout:
         for p,value in zip(self.params,values):p.copy_(value.reshape(p.shape).to(p.device,p.dtype))
 
 
-def _cache_full_gradients(layout, count):
-    """All ranks choose the same path; cache only within a conservative CPU budget.
+def _gradient_cache_slots(layout, count):
+    """Choose a common number of retained tail gradients within the CPU budget.
 
-    The cap covers all ranks together, including on multi-node jobs. Reserving
-    one additional vector accounts for transient buffers during capture. Missing
-    memory information disables caching; no allocation retry changes statistics.
+    Account for cached vectors, the working anchor/other vectors, and one
+    capture scratch vector. The last gradients are reused most often. Missing
+    memory information disables caching; every rank uses the smallest capacity.
     """
-    local_ok = False
+    local_slots = 0
     try:
         import psutil
         cap = float(os.environ.get('OPD_GRADIENT_CACHE_MAX_GIB', '64')) * (1024 ** 3)
-        required = (count + 1) * sum(p.numel() * 4 for p in layout.params)
+        vector_bytes = sum(p.numel() * 4 for p in layout.params)
         available = int(psutil.virtual_memory().available)
         # Respect container limits in addition to the host's free memory.
         for limit_path, used_path in (
@@ -116,17 +115,24 @@ def _cache_full_gradients(layout, count):
             except (OSError, ValueError):
                 pass
         budget = min(cap, available // 4) / dp.size()
-        local_ok = bool(required > 0 and required <= budget)
+        if vector_bytes > 0:
+            for slots in range(1, count):
+                # If at most two indices are uncached, no uncached pair is
+                # revisited after the tail cache fills. Only the anchor is extra.
+                working = 1 if count - slots <= 2 else 2
+                required = (slots + working + 1) * vector_bytes
+                if required <= budget:
+                    local_slots = slots
     except (ImportError, OSError, ValueError, AttributeError, OverflowError):
         pass
-    return all(dp.gather(local_ok))
+    return min(dp.gather(local_slots))
 
 
 def exact_gram(oracle,layout,count):
-    """Reuse exact FP32 snapshots within budget; otherwise retain two-vector replay."""
+    """Reuse as many exact FP32 gradients as fit; retain original pair ordering."""
     # Keep the same dot product implementation, ordering and parameter groups.
     # The cache lives only for this invocation at one fixed checkpoint.
-    if getattr(layout,'replicated_adapter',None) is not None or _cache_full_gradients(layout,count):
+    if getattr(layout,'replicated_adapter',None) is not None:
         vectors=[oracle(i) for i in range(count)];matrices={}
         for i in range(count):
             for j in range(i,count):
@@ -134,12 +140,25 @@ def exact_gram(oracle,layout,count):
                     matrices.setdefault(group,np.zeros((count,count),np.float64))[i,j]=value
                     matrices[group][j,i]=value
         return matrices,count
-    matrices={};calls=0
+    slots=_gradient_cache_slots(layout,count)
+    if dp.primary():
+        print(f'[gradient Gram] retaining {slots}/{max(0,count-1)} reusable gradients',flush=True)
+    matrices={};calls=0;cache={}
+    cache_start=count-slots
     for i in range(count):
-        anchor=oracle(i);calls+=1
+        if i in cache:
+            anchor=cache.pop(i)
+        else:
+            anchor=oracle(i);calls+=1
         for j in range(i,count):
-            other=anchor if i==j else oracle(j)
-            if i!=j:calls+=1
+            if i==j:
+                other=anchor
+            elif j in cache:
+                other=cache[j]
+            else:
+                other=oracle(j);calls+=1
+                if j>=cache_start:
+                    cache[j]=other
             values=layout.dot(anchor,other)
             for group,value in values.items():
                 matrices.setdefault(group,np.zeros((count,count),np.float64))[i,j]=value
