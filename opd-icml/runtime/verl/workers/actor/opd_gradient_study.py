@@ -1,12 +1,15 @@
 """Fixed-prompt validation + exact sharded parameter-gradient diagnostics.
 
 No trial optimizer steps. Parameter vectors live in bounded CPU buffers, never
-in result files. Exact Gram entries use replays rather than storing M models.
+in result files. Exact Gram entries reuse cached gradients when the host-memory
+budget permits; otherwise the original bounded replay path remains in use.
 """
 import json
+import os
 import pickle
 import re
 import time
+from pathlib import Path
 from contextlib import contextmanager
 from pathlib import Path
 import numpy as np
@@ -88,11 +91,42 @@ class ParameterLayout:
         for p,value in zip(self.params,values):p.copy_(value.reshape(p.shape).to(p.device,p.dtype))
 
 
+def _cache_full_gradients(layout, count):
+    """All ranks choose the same path; cache only within a conservative CPU budget.
+
+    The cap covers all ranks together, including on multi-node jobs. Reserving
+    one additional vector accounts for transient buffers during capture. Missing
+    memory information disables caching; no allocation retry changes statistics.
+    """
+    local_ok = False
+    try:
+        import psutil
+        cap = float(os.environ.get('OPD_GRADIENT_CACHE_MAX_GIB', '64')) * (1024 ** 3)
+        required = (count + 1) * sum(p.numel() * 4 for p in layout.params)
+        available = int(psutil.virtual_memory().available)
+        # Respect container limits in addition to the host's free memory.
+        for limit_path, used_path in (
+                ('/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory.current'),
+                ('/sys/fs/cgroup/memory/memory.limit_in_bytes',
+                 '/sys/fs/cgroup/memory/memory.usage_in_bytes')):
+            try:
+                limit = Path(limit_path).read_text().strip()
+                if limit != 'max':
+                    available = min(available, max(0, int(limit) - int(Path(used_path).read_text())))
+            except (OSError, ValueError):
+                pass
+        budget = min(cap, available // 4) / dp.size()
+        local_ok = bool(required > 0 and required <= budget)
+    except (ImportError, OSError, ValueError, AttributeError, OverflowError):
+        pass
+    return all(dp.gather(local_ok))
+
+
 def exact_gram(oracle,layout,count):
-    """At most two full sharded FP32 gradient snapshots. No disk spill."""
-    # A is only rank*hidden_size parameters. Cache these small gradients, not
-    # full-model gradients; each diagnostic batch/path then needs ONE backward.
-    if getattr(layout,'replicated_adapter',None) is not None:
+    """Reuse exact FP32 snapshots within budget; otherwise retain two-vector replay."""
+    # Keep the same dot product implementation, ordering and parameter groups.
+    # The cache lives only for this invocation at one fixed checkpoint.
+    if getattr(layout,'replicated_adapter',None) is not None or _cache_full_gradients(layout,count):
         vectors=[oracle(i) for i in range(count)];matrices={}
         for i in range(count):
             for j in range(i,count):

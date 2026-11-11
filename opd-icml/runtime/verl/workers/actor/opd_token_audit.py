@@ -148,7 +148,11 @@ def training_summary(f, z, thresholds, *, grouping=None):
         aligned=z[ix].astype(np.float64)
         e0,_,s0=spectrum(aligned.T@aligned/len(ix))
         take=ix[np.linspace(0,len(ix)-1,min(k,len(ix))).round().astype(int)]
-        sample=z[take].astype(np.float64);e1,_,s1=spectrum(sample.T@sample/len(take))
+        if np.array_equal(take,ix):
+            # Same rows, ordering and normalization: reuse the exact spectrum.
+            e1,s1=e0,s0.copy()
+        else:
+            sample=z[take].astype(np.float64);e1,_,s1=spectrum(sample.T@sample/len(take))
         report['kl_high_middle_low'][label]=dict(count=len(ix),fraction=len(ix)/len(z),
             kl_min=float(f['kl'][ix].min()),kl_max=float(f['kl'][ix].max()),
             gradient_energy_u=float(np.square(aligned).sum()),spectrum=s0,
