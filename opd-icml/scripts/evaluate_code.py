@@ -1,4 +1,4 @@
-"""Generate four samples per task, then run official code judges for pass@4."""
+"""Generate eight samples per task, then run official code judges for pass@8."""
 import argparse
 import json
 import os
@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from code_benchmarks import BENCHMARKS, PROTOCOL, ROOT, digest, read_jsonl, read_manifest, save_json, validate_generations
+from code_benchmarks import BENCHMARKS, EVALUATION_PROTOCOL as PROTOCOL, ROOT, digest, read_jsonl, read_manifest, save_json, validate_generations
 from evaluation_prompts import CHAT_PROMPT_ENCODING, validate_chat_prompt_encoding
 sys.path.insert(0, str(ROOT))
 from project_paths import project_absolute, project_relative
@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--benchmark', choices=['all', *BENCHMARKS], default='all')
     parser.add_argument('--data-dir', type=Path, default=Path('data/code_benchmarks'))
     parser.add_argument('--output-dir', type=Path, required=True)
-    parser.add_argument('--samples', type=int, default=4, help='>=4; default four independent samples per task')
+    parser.add_argument('--samples', type=int, default=8, help='>=8; default eight independent samples per task')
     parser.add_argument('--temperature', type=float, default=1.)
     parser.add_argument('--top-p', type=float, default=1.)
     parser.add_argument('--seed', type=int, default=42)
@@ -48,8 +48,8 @@ def main():
     for name in ('model_path', 'data_dir', 'output_dir'):
         if getattr(args, name) is not None:
             setattr(args, name, project_absolute(getattr(args, name)))
-    if args.samples < 4 or args.temperature <= 0 or not 0 < args.top_p <= 1:
-        parser.error('pass@4 requires >=4 sampled responses and positive temperature/top-p')
+    if args.samples < 8 or args.temperature <= 0 or not 0 < args.top_p <= 1:
+        parser.error('pass@8 requires >=8 sampled responses and positive temperature/top-p')
     if min(args.workers, args.batch_size, args.max_num_seqs, args.max_tokens, args.max_prompt_tokens, args.timeout) < 1:
         parser.error('Worker, batch, length and timeout settings must be positive')
     if not args.grade_only and args.model_path is None:
@@ -66,7 +66,7 @@ def main():
     if args.prompt_style != 'chat':
         sampling['prompt_style'] = args.prompt_style
     if args.dry_run:
-        print(json.dumps(dict(benchmarks=list(selected), metric='pass@4', sampling=sampling,
+        print(json.dumps(dict(benchmarks=list(selected), metric='pass@8', sampling=sampling,
                               parallel_mode=args.parallel_mode, generation_devices=devices,
                               data_dir=project_relative(args.data_dir), output_dir=project_relative(args.output_dir),
                               path_base='project_root',
@@ -75,7 +75,7 @@ def main():
     manifests = {b: read_manifest(args.data_dir, b) for b in selected}
     marker = args.output_dir / 'run.json'
     identity = dict(protocol=PROTOCOL, benchmarks=list(selected), sampling=sampling,
-                    data=manifests, metric='pass@4')
+                    data=manifests, metric='pass@8')
     if args.grade_only:
         previous = json.loads(marker.read_text(encoding='utf-8'))
         identity['model'] = previous['model']
@@ -122,10 +122,11 @@ def main():
             subprocess.run(base + ['--mode', 'grade'], cwd=ROOT, env=env, check=True)
     if not args.generate_only:
         summaries = {b: json.loads((args.output_dir / b / 'summary.json').read_text(encoding='utf-8')) for b in selected}
-        save_json(args.output_dir / 'summary.json', dict(metric='pass@4', benchmarks=summaries))
+        save_json(args.output_dir / 'summary.json', dict(metric='pass@8', benchmarks=summaries))
         for name, summary in summaries.items():
-            print(f'{name}: pass@4={100 * summary["pass@4"]:.2f}% ({summary["problems"]} tasks)', flush=True)
+            print(f'{name}: pass@8={100 * summary["pass@8"]:.2f}% ({summary["problems"]} tasks)', flush=True)
 
 
 if __name__ == '__main__':
     main()
+

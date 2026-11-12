@@ -162,4 +162,4 @@ def test_data_mode_dry_run_preserves_sampling(tmp_path, monkeypatch):
         check=True, capture_output=True, text=True)
     plan = json.loads(result.stdout)
     assert plan['parallel_mode'] == 'data' and plan['generation_devices'] == ['0','1','2','3']
-    assert plan['sampling']['samples'] == 4 and plan['sampling']['max_tokens'] == 8192
+    assert plan['sampling']['samples'] == 8 and plan['sampling']['max_tokens'] == 8192

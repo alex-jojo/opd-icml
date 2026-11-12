@@ -1,4 +1,4 @@
-"""Shared data identities, prompts and pass@4 checks for code benchmarks."""
+"""Shared data identities, prompts and pass@8 checks for code benchmarks."""
 import base64
 from datetime import date
 import gzip
@@ -13,7 +13,9 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARKS = ('livecodebench', 'mbppplus', 'humanevalplus')
+# Dataset encoding is unchanged; existing prepared questions/tests remain reusable.
 PROTOCOL = 'official-code-pass4-v1'
+EVALUATION_PROTOCOL = 'official-code-pass8-v1'
 
 
 def digest(path):
@@ -144,8 +146,8 @@ def extract_solution(response, question, prompt_style='chat'):
 
 
 def validate_generations(questions, generations, samples):
-    if samples < 4 or len(generations) != len(questions):
-        raise ValueError('pass@4 requires >=4 samples for every question; task count mismatch')
+    if samples < 1 or len(generations) != len(questions):
+        raise ValueError('Positive sample count required; task count mismatch')
     for question, generation in zip(questions, generations):
         expected = hashlib.sha256(prompt_for(question, generation.get('prompt_style', 'chat')).encode()).hexdigest()
         if generation['task_id'] != question['task_id'] or generation['prompt_sha256'] != expected:
@@ -154,23 +156,23 @@ def validate_generations(questions, generations, samples):
             raise ValueError('Incomplete code generations')
 
 
-def summarize_pass4(graded):
-    """The same unbiased estimator as EvalPlus/LCB, fixed k=4."""
+def summarize_pass8(graded):
+    """The same unbiased estimator as EvalPlus/LCB, fixed k=8."""
     if not graded:
         raise ValueError('Cannot summarize an empty benchmark')
     values = []
     for grades in graded:
         n, c = len(grades), sum(grades)
-        if n < 4 or any(type(x) is not bool for x in grades):
-            raise ValueError('pass@4 requires at least four boolean grades per task')
+        if n < 8 or any(type(x) is not bool for x in grades):
+            raise ValueError('pass@8 requires at least eight boolean grades per task')
         probability = 1.
-        if n - c < 4:
+        if n - c < 8:
             probability = 0.
         else:
-            for i in range(4):
+            for i in range(8):
                 probability *= (n - c - i) / (n - i)
         values.append(1. - probability)
-    return dict(metric='pass@4', **{'pass@4': sum(values) / len(values)},
+    return dict(metric='pass@8', **{'pass@8': sum(values) / len(values)},
                 problems=len(graded), samples=sum(map(len, graded)),
                 samples_per_problem=sorted(set(map(len, graded))))
 

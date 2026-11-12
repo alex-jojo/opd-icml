@@ -61,7 +61,7 @@ bash scripts/h200/train_eval_qwen3_8b.sh
 bash scripts/h200/train_eval_gemma3_12b.sh
 ```
 
-它们仍可单独使用，默认训练后评测。DeepSeek默认Code pass@4（LiveCodeBench、MBPP+、HumanEval+），Qwen/Gemma默认数学六项Mean@8；训练和评测GPU列表相同，单卡TP=1、四卡TP=4。`--devices`指定所需一张/四张卡，`--task`切换任务。入口不自动跑RQ4 early-stop/reuse或Base基线。
+它们仍可单独使用，默认训练后评测。DeepSeek默认Code pass@8（LiveCodeBench、MBPP+、HumanEval+），每题生成8个回答，结果写入 `eval/code_pass8/`；旧 `code_pass4/` 结果保留，不作为 pass@8 缓存复用。Qwen/Gemma默认数学六项Mean@8；训练和评测GPU列表相同，单卡TP=1、四卡TP=4。`--devices`指定所需一张/四张卡，`--task`切换任务。入口不自动跑RQ4 early-stop/reuse或Base基线。
 
 ```bash
 bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
@@ -114,3 +114,4 @@ bash scripts/h200/train_eval_qwen3_4b.sh \\
 ```
 
 此命令复用完整的合并模型与匹配的评测缓存。合并中断且没有完成标记时，先将该实验的 `merged/` 移到另一个位置后重试。训练中断需使用新输出目录重新训练。
+

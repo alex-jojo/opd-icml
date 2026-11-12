@@ -12,7 +12,7 @@ import time
 from tqdm import tqdm
 
 from code_benchmarks import (ROOT, digest, evalplus_grades, extract_solution, prompt_for,
-    read_jsonl, read_manifest, save_json, save_jsonl, summarize_pass4, validate_generations)
+    EVALUATION_PROTOCOL, read_jsonl, read_manifest, save_json, save_jsonl, summarize_pass8, validate_generations)
 from evaluation_prompts import CHAT_PROMPT_ENCODING, encode_chat_prompt, validate_chat_prompt_encoding
 
 
@@ -199,7 +199,7 @@ def grade(args, questions, directory):
     generation_path = directory / 'generations.jsonl'
     generations = list(read_jsonl(generation_path))
     validate_generations(questions, generations, args.samples)
-    identity = dict(generations_sha256=digest(generation_path), benchmark_manifest=manifest,
+    identity = dict(protocol=EVALUATION_PROTOCOL, metric='pass@8', generations_sha256=digest(generation_path), benchmark_manifest=manifest,
                     samples=args.samples, lcb_timeout=args.timeout,
                     evalplus_version='0.3.1', lcb_commit='28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24')
     marker = directory / 'grading.identity.json'
@@ -218,7 +218,7 @@ def grade(args, questions, directory):
         grades, files = grade_lcb(args, questions, generations, directory, data_directory)
     else:
         grades, files = grade_evalplus(args, questions, generations, directory, data_directory)
-    summary = dict(benchmark=args.benchmark, **summarize_pass4(grades), data=manifest,
+    summary = dict(benchmark=args.benchmark, **summarize_pass8(grades), data=manifest,
                    grading='official LCB public+private' if args.benchmark == 'livecodebench' else 'official EvalPlus base AND plus')
     save_json(directory / 'summary.json', summary)
     save_jsonl(directory / 'grades.jsonl', [dict(task_id=q['task_id'], grades=g) for q, g in zip(questions, grades)])
@@ -235,7 +235,7 @@ def main():
     parser.add_argument('--data-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--model-path')
-    parser.add_argument('--samples', type=int, default=4)
+    parser.add_argument('--samples', type=int, default=8)
     parser.add_argument('--temperature', type=float, default=1.)
     parser.add_argument('--top-p', type=float, default=1.)
     parser.add_argument('--seed', type=int, default=42)
@@ -252,8 +252,8 @@ def main():
     args.data_dir, args.output_dir = project_absolute(args.data_dir), project_absolute(args.output_dir)
     if args.model_path is not None:
         args.model_path = str(project_absolute(args.model_path))
-    if args.samples < 4 or min(args.workers, args.batch_size, args.max_num_seqs, args.timeout) < 1:
-        parser.error('Invalid pass@4 sample/worker/batch/timeout settings')
+    if args.samples < 8 or min(args.workers, args.batch_size, args.max_num_seqs, args.timeout) < 1:
+        parser.error('Invalid pass@8 sample/worker/batch/timeout settings')
     questions = list(read_jsonl(args.data_dir / args.benchmark / 'questions.jsonl'))
     directory = args.output_dir / args.benchmark
     directory.mkdir(parents=True, exist_ok=True)
@@ -272,3 +272,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

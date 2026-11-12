@@ -112,4 +112,4 @@ python train.py --scale deepseek-coder-1.3b --task code \
 
 本轮训练使用 Instruct 的提示格式。要比较 OPD 的净增益，应先用准备后的、尚未更新的 `student-opd-eos-v2` 与训练后合并 checkpoint，在同样的 `--prompt-style chat`、题集、双 EOS 停止规则和采样参数下各测一次。此前原始 Base 的 `--prompt-style completion` 成绩属于另一提示协议，不是严格同提示的训练前基线。
 
-checkpoint 合并与 code pass@4 命令沿用 README 的流程，`--model-path` 指向合并后的学生模型。新增模型默认提供 paired-full、original-full、early-stop、reuse 的 math/code 配置；这次教师针对代码任务，正式实验请明确使用 `--task code`。
+checkpoint 合并与 code pass@8 命令沿用 README 的流程，`--model-path` 指向合并后的学生模型。新增模型默认提供 paired-full、original-full、early-stop、reuse 的 math/code 配置；这次教师针对代码任务，正式实验请明确使用 `--task code`。

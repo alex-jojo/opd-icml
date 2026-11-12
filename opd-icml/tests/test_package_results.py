@@ -27,7 +27,7 @@ def test_archive_preserves_all_experiment_data_and_excludes_models_and_credentia
     run = tmp_path / 'experiment output'
     data = {
         'eval/final_mean8.summary.json': b'{"mean_at_8": 0.75}',
-        'eval/code_pass4/livecodebench/generations.jsonl': b'{"responses":["answer"]}\n',
+        'eval/code_pass8/livecodebench/generations.jsonl': b'{"responses":["answer"]}\n',
         'training/training_records/1.jsonl': b'{"step":1}\n',
         'training/validation_records/20.jsonl': b'{"acc":1}\n',
         'training/replication/token_audit/step_001.npz': b'array-data-preserved-exactly',
@@ -158,7 +158,7 @@ def test_single_experiment_packages_only_after_success(tmp_path, monkeypatch, ca
         arguments.append('--no-package')
     monkeypatch.setattr(sys, 'argv', arguments)
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '')
-    monkeypatch.setattr(h200, 'execute', lambda *args: save(run, 'eval/code_pass4/summary.json', b'{"score":1}'))
+    monkeypatch.setattr(h200, 'execute', lambda *args: save(run, 'eval/code_pass8/summary.json', b'{"score":1}'))
     h200.main()
     output = exports.archive_path(run, 'deepseek-coder-1.3b')
     assert output.exists() == (not no_package)
@@ -222,3 +222,4 @@ def test_suite_suppresses_individual_zips_and_exports_one_archive_after_all_jobs
         assert 'suite/4b/eval/final_mean8.summary.json' in archive.namelist()
         assert json.loads(archive.read(exports.MANIFEST))['phase'] == 'suite-complete'
         assert not any('model.safetensors' in name for name in archive.namelist())
+

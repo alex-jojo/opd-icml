@@ -97,7 +97,7 @@ def test_completion_choice_is_in_run_plan(tmp_path):
         '--output-dir', str(tmp_path / 'run'), '--prompt-style', 'completion', '--dry-run'],
         capture_output=True, text=True, check=True)
     plan = json.loads(result.stdout)
-    assert plan['sampling']['prompt_style'] == 'completion' and plan['metric'] == 'pass@4'
+    assert plan['sampling']['prompt_style'] == 'completion' and plan['metric'] == 'pass@8'
 
 
 def test_evalplus_receives_reconstructed_full_code(tmp_path, monkeypatch):

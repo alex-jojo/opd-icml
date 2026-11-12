@@ -150,8 +150,8 @@ def build_plan(args, environment):
             prepare.append([sys.executable, 'scripts/prepare_eurus_code.py'])
         evaluation = [sys.executable, 'scripts/evaluate_code.py',
             '--model-path', project_relative(merged), '--data-dir', project_relative(args.code_benchmarks),
-            '--output-dir', project_relative(run / 'eval/code_pass4'), '--parallel-mode', 'tensor',
-            '--prompt-style', 'chat', '--samples', '4', '--temperature', '1', '--top-p', '1',
+            '--output-dir', project_relative(run / 'eval/code_pass8'), '--parallel-mode', 'tensor',
+            '--prompt-style', 'chat', '--samples', '8', '--temperature', '1', '--top-p', '1',
             '--seed', '42', '--max-prompt-tokens', '4096', '--max-tokens', '8192',
             '--max-num-seqs', str(args.eval_max_num_seqs), '--batch-size', str(args.eval_batch_size),
             '--workers', str(args.score_workers)]
@@ -325,3 +325,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

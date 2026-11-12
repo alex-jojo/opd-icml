@@ -109,7 +109,7 @@ def prepare(benchmark, output, cache, source_dir=None, release='release_v6', sta
         questions, files = build_evalplus(benchmark, spec, hf, official, directory)
     manifest = dict(**identity, rows=len(questions), files={name: digest(directory / name) for name in files},
                     test_protocol='official public+private tests' if benchmark == 'livecodebench' else 'official EvalPlus base+plus tests',
-                    default_samples=4, metric='pass@4')
+                    default_samples=8, metric='pass@8')
     if benchmark == 'livecodebench':
         manifest.update(first_contest_date=min(q['contest_date'] for q in questions),
                         last_contest_date=max(q['contest_date'] for q in questions))
@@ -141,7 +141,7 @@ def main():
         parser.error('--start-date must not be after --end-date')
     selected = BENCHMARKS if args.benchmark == 'all' else [args.benchmark]
     if args.dry_run:
-        print(json.dumps(dict(benchmarks=list(selected), metric='pass@4', lcb_release=args.lcb_release,
+        print(json.dumps(dict(benchmarks=list(selected), metric='pass@8', lcb_release=args.lcb_release,
                               start_date=args.start_date, end_date=args.end_date,
                               locked_sources=lockfile()['datasets']), indent=2))
         return
@@ -151,3 +151,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

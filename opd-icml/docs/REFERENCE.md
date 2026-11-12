@@ -228,9 +228,9 @@ CPU 数据和接入测试：
 python -m pytest tests/test_code_task.py -q
 ```
 
-## 三项 Code benchmark：pass@4
+## 三项 Code benchmark：pass@8
 
-独立评测入口 `scripts/evaluate_code.py` 接入 LiveCodeBench、MBPP+、HumanEval+，主指标固定为 **pass@4**。默认每题独立采样 4 个回答（temperature=1、top_p=1、seed=42）：只要有一个回答通过该题完整测试，该题的 pass@4 即为 1。若指定 `--samples N` 且 N>4，则使用官方一致的无偏 pass@4 估计器；不把四次回答的平均正确率称作 pass@4。
+独立评测入口 `scripts/evaluate_code.py` 接入 LiveCodeBench、MBPP+、HumanEval+，主指标固定为 **pass@8**。默认每题独立采样 8 个回答（temperature=1、top_p=1、seed=42）：只要有一个回答通过该题完整测试，该题的 pass@8 即为 1。若指定 `--samples N` 且 N>8，则使用官方一致的无偏 pass@8 估计器；不把八次回答的平均正确率称作 pass@8。
 
 - HumanEval+：164 题；Hugging Face `evalplus/humanevalplus` 固定 revision `d32357cf319e50e9c8d8dab5ea876c72b0fd321b`，官方测试发布版 `HumanEvalPlus v0.1.10`。
 - MBPP+：378 题；Hugging Face `evalplus/mbppplus` 固定 revision `b2d74c91837c3f2a20c1299ae98133cbe7cfa077`，官方测试发布版 `MbppPlus v0.2.0`。题集 ID 与 HF 快照逐项核对，提示和测试采用官方修订版本。
@@ -255,12 +255,12 @@ python scripts/prepare_code_benchmarks.py --benchmark livecodebench --lcb-releas
 
 若只比较某个时间窗口，可在 LCB 准备阶段指定，例如 `--start-date 2025-01-01 --end-date 2025-04-30 --output-dir data/code_benchmarks_2025`，评测时对应传入 `--data-dir data/code_benchmarks_2025`。`--dry-run` 只显示数据版本，不下载。数据默认放在 `data/code_benchmarks/`，下载缓存默认放在 `data/code_benchmarks_sources/`，均不提交到 Git；`--source-dir` 支持按原文件名/layout 提供离线数据源。不同版本或时间窗口请使用不同目录，避免混用。
 
-将训练 checkpoint 按下文方法合并为 HF 模型后，运行三项 pass@4：
+将训练 checkpoint 按下文方法合并为 HF 模型后，运行三项 pass@8：
 
 ```bash
 RUN="runs/code/8b/paired-full"
 python scripts/evaluate_code.py --model-path "$RUN/merged" \
-  --output-dir "$RUN/eval/code_pass4"
+  --output-dir "$RUN/eval/code_pass8"
 ```
 
 `--benchmark` 可单独选 `livecodebench`、`mbppplus`、`humanevalplus`；默认 `all`。也可将 `--model-path` 指向准备好的 Base/PT/IT 模型进行基线评测。默认 prompt 上限 4,096、回答上限 8,192；若某题超长，入口明确报错，不截断或丢弃该题，可按模型上下文和显存调整 `--max-prompt-tokens` / `--max-tokens`。
@@ -269,15 +269,15 @@ python scripts/evaluate_code.py --model-path "$RUN/merged" \
 
 ```bash
 python scripts/evaluate_code.py --model-path "$RUN/merged" \
-  --output-dir "$RUN/eval/code_pass4" --generate-only
-python scripts/evaluate_code.py --output-dir "$RUN/eval/code_pass4" --grade-only
+  --output-dir "$RUN/eval/code_pass8" --generate-only
+python scripts/evaluate_code.py --output-dir "$RUN/eval/code_pass8" --grade-only
 ```
 
 重判不需要模型目录或 GPU；需使用相同的题集、采样参数和 benchmark 选择。回答按任务保存，生成支持批次续跑；判题完成标记包含回答、测试和输出文件校验值。改变模型、题集或采样参数时使用新的输出目录。
 
-HumanEval+/MBPP+ 通过固定版本 EvalPlus 的判题入口执行，单个回答必须同时通过 base 和 plus 两部分测试。EvalPlus 0.3.1 的控制台可能同时打印其自带的 pass@1；本项目从完整判题结果另行计算 pass@4。LiveCodeBench 使用官方 runner 检查全部公开和私有用例，按任务限制并发加载测试数据；私有测试不进入生成 prompt。测试用例、参考答案与模型生成输入分开保存。
+HumanEval+/MBPP+ 通过固定版本 EvalPlus 的判题入口执行，单个回答必须同时通过 base 和 plus 两部分测试。EvalPlus 0.3.1 的控制台可能同时打印其自带的 pass@1；本项目从完整判题结果另行计算 pass@8。LiveCodeBench 使用官方 runner 检查全部公开和私有用例，按任务限制并发加载测试数据；私有测试不进入生成 prompt。测试用例、参考答案与模型生成输入分开保存。
 
-每项输出 `generations.jsonl`、官方判题记录、`grades.jsonl`、`summary.json`；总览为 `<output-dir>/summary.json`，三个 benchmark 各自报告 pass@4（0 到 1）。保留题集 revision、LCB release/日期窗口、模型文件校验值、采样设置、回答长度和结束原因。数学 Mean@8 与 Code pass@4 分别报告。
+每项输出 `generations.jsonl`、官方判题记录、`grades.jsonl`、`summary.json`；总览为 `<output-dir>/summary.json`，三个 benchmark 各自报告 pass@8（0 到 1）。保留题集 revision、LCB release/日期窗口、模型文件校验值、采样设置、回答长度和结束原因。数学 Mean@8 与 Code pass@8 分别报告。
 
 接入与指标验证：
 

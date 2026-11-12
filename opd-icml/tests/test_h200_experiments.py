@@ -54,7 +54,8 @@ def test_seven_actual_shell_entry_points_keep_train_and_evaluation_gpus_equal(na
     if task == 'code':
         assert plan['evaluate'][plan['evaluate'].index('--parallel-mode') + 1] == 'tensor'
         assert '--prompt-style' in plan['evaluate'] and 'chat' in plan['evaluate']
-        assert '--samples' in plan['evaluate'] and '4' in plan['evaluate']
+        assert plan['evaluate'][plan['evaluate'].index('--samples') + 1] == '8'
+        assert 'eval/code_pass8' in next(v for v in plan['evaluate'] if 'eval/code_pass8' in v)
     else:
         assert plan['evaluate'][plan['evaluate'].index('--n') + 1] == '8'
     assert not output.exists(), 'dry-run must not create a run or download models/data'
@@ -190,3 +191,4 @@ def test_existing_training_output_is_never_overwritten(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='empty --output'):
         h200.execute(args, plan, h200.child_environment(plan, {}))
     assert saved.read_text() == 'existing run'
+

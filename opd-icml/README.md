@@ -59,21 +59,21 @@ bash scripts/h200/run_all.sh \
 
 本命令运行以下七组实验（模型列为学生 → 教师）：
 
-| 模型配对 | 训练数据 | 测评 benchmark | 测评指标 |
-|---|---|---|---|
-| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@4 |
-| Qwen3-1.7B-Base → Qwen3-1.7B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
-| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
-| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@4 |
-| Qwen3-8B-Base → Qwen3-32B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
-| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
-| DeepSeek-Coder-33B-Base → 33B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@4 |
+| 模型配对（学生 → 教师） | 训练数据 | 测评 benchmark | 指标 | GPU 数 | 运行顺序 |
+|---|---|---|---|---|---|
+| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 1 | 第一阶段：可并行 |
+| Qwen3-1.7B-Base → Qwen3-1.7B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行 |
+| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行 |
+| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 1 | 第一阶段：可并行 |
+| Qwen3-8B-Base → Qwen3-32B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 4 | 第2阶段：独占四卡 |
+| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 4 | 第3阶段：独占四卡 |
+| DeepSeek-Coder-33B-Base → 33B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 4 | 第4阶段：独占四卡 |
 
 前四组各用单卡，按 CPU/主存预算最多四组并行；后三组每组独占四卡，依次运行。
 
 **不用逐个下载模型、准备数据或启动七个脚本。**总入口会自动完成这些步骤。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘；33B 训练还需要充分主存。
 
-七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。参数梯度诊断默认每个观测点抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量；hidden 统计同时保留。Code 评测 pass@4，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
+七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。参数梯度诊断默认每个观测点抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量；hidden 统计同时保留。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
 
 输出目录必须是新目录；再次从头运行换成 `run2`。当前入口不支持中断后的训练续跑。
 
@@ -98,3 +98,4 @@ ZIP 包含训练统计、表征和参数梯度数据、生成回答、评测结�
 
 - [单模型运行、调参、重试评测和资源设置](scripts/h200/README.md)
 - [实验协议、历史配置、数据分析和论文说明](docs/REFERENCE.md)
+
