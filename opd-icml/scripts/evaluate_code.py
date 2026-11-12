@@ -17,7 +17,16 @@ def same_identity(saved, current):
     # encoding, datasets and sampling parameters still have to match exactly.
     def content(identity):
         return dict(identity, model={k: v for k, v in identity.get('model', {}).items() if k != 'path'})
-    return content(saved) == content(current)
+    saved = content(saved)
+    current = content(current)
+    # One-way removal of MBPP+: keep existing answers only if every remaining
+    # model/data/sampling/prompt identity still matches.
+    if (saved.get('benchmarks') == ['livecodebench', 'mbppplus', 'humanevalplus']
+            and current.get('benchmarks') == list(BENCHMARKS)
+            and saved.get('protocol') == current.get('protocol') == PROTOCOL):
+        saved['benchmarks'] = list(BENCHMARKS)
+        saved['data'] = {key: value for key, value in saved.get('data', {}).items() if key != 'mbppplus'}
+    return saved == current
 
 
 def main():

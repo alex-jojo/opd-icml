@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 from tqdm import tqdm
 
-NAMES = {'livecodebench': 'LiveCodeBench', 'mbppplus': 'MBPP+', 'humanevalplus': 'HumanEval+'}
+NAMES = {'livecodebench': 'LiveCodeBench', 'humanevalplus': 'HumanEval+'}
 
 
 class LineCounter:

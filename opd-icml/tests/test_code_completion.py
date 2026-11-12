@@ -18,18 +18,15 @@ def question(benchmark='humanevalplus'):
     return dict(benchmark=benchmark, task_id='test/0', prompt='def add(a,b):\n    """Add."""\n', entry_point='add')
 
 
-@pytest.mark.parametrize('benchmark', ['humanevalplus', 'mbppplus'])
-def test_native_code_prefix_and_indentation(benchmark):
-    q = question(benchmark)
-    if benchmark == 'mbppplus':
-        q['prompt'] = '"""Return the sum of a and b.\nassert add(1,2)==3\n"""\n'
+def test_native_code_prefix_and_indentation():
+    q = question()
     prefix = cb.prompt_for(q, 'completion')
     assert prefix == q['prompt'] and 'Implement the following' not in prefix
-    response = '    return a+b\n' if benchmark == 'humanevalplus' else 'def add(a,b):\n    return a+b\n'
+    response = '    return a+b\n'
     solution = cb.extract_solution(response, q, 'completion')
     assert solution == prefix + response
     scope = {}
-    exec(solution, scope)  # This test fixture is owned code, not dataset/model output.
+    exec(solution, scope)  # Owned fixture.
     assert scope['add'](2, 3) == 5
 
 

@@ -11,7 +11,7 @@ import sys
 import time
 from tqdm import tqdm
 
-from code_benchmarks import (ROOT, digest, evalplus_grades, extract_solution, prompt_for,
+from code_benchmarks import (BENCHMARKS, ROOT, digest, evalplus_grades, extract_solution, prompt_for,
     EVALUATION_PROTOCOL, read_jsonl, read_manifest, save_json, save_jsonl, summarize_pass8, validate_generations)
 from evaluation_prompts import CHAT_PROMPT_ENCODING, encode_chat_prompt, validate_chat_prompt_encoding
 
@@ -107,10 +107,12 @@ def generate(args, questions, directory):
 
 
 def grade_evalplus(args, questions, generations, directory, data_directory):
+    if args.benchmark != 'humanevalplus':
+        raise ValueError('Only HumanEval+ is supported by the EvalPlus adapter')
     if importlib.metadata.version('evalplus') != '0.3.1':
         raise RuntimeError('Install the pinned code benchmark dependencies: scripts/setup_code_benchmarks.sh')
-    dataset = 'humaneval' if args.benchmark == 'humanevalplus' else 'mbpp'
-    variable = 'HUMANEVAL_OVERRIDE_PATH' if dataset == 'humaneval' else 'MBPP_OVERRIDE_PATH'
+    dataset = 'humaneval'
+    variable = 'HUMANEVAL_OVERRIDE_PATH'
     os.environ[variable] = str((data_directory / 'official.jsonl').resolve())
     samples = [dict(task_id=q['task_id'], solution=extract_solution(response, q, row.get('prompt_style', 'chat')))
                for q, row in zip(questions, generations) for response in row['responses']]
@@ -231,7 +233,7 @@ def main():
     from project_paths import project_absolute
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['generate', 'grade'], required=True)
-    parser.add_argument('--benchmark', required=True)
+    parser.add_argument('--benchmark', choices=BENCHMARKS, required=True)
     parser.add_argument('--data-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--model-path')

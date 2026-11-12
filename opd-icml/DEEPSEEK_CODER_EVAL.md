@@ -38,13 +38,13 @@ huggingface-cli download deepseek-ai/deepseek-coder-1.3b-base \
 
 模型约 2.7 GB；已经下载的文件会复用。无需为 Base 模型创建或修改 chat template。
 
-## 3. 准备三个 benchmark
+## 3. 准备两个 benchmark
 
 ```bash
 python scripts/prepare_code_benchmarks.py --benchmark all --lcb-release release_v6
 ```
 
-准备 HumanEval+ 164 题、MBPP+ 378 题及 LiveCodeBench release_v6，使用项目固定版本和校验值。LCB 原始文件合计约 4.49 GB，需额外留出处理后数据与输出空间。此步骤需要访问 Hugging Face 和 EvalPlus GitHub release，复用已完成且校验通过的数据。
+准备 HumanEval+ 164 题及 LiveCodeBench release_v6，使用项目固定版本和校验值。LCB 原始文件合计约 4.49 GB，需额外留出处理后数据与输出空间。此步骤需要访问 Hugging Face 和 EvalPlus GitHub release，复用已完成且校验通过的数据。
 
 ## 4. 运行 pass@8
 
@@ -65,13 +65,13 @@ python scripts/evaluate_code.py \
   --output-dir results/deepseek-coder-1.3b-base-pass8-tp4-batch8
 ```
 
-每题采样 8 次，按通过任意一次的题目比例计算 pass@8。每个 benchmark 先生成并退出 GPU 子进程，再运行 CPU 官方判题。HumanEval+/MBPP+ 要同时通过 base 和 plus tests；LCB 使用 public+private tests。
+每题采样 8 次，按通过任意一次的题目比例计算 pass@8。每个 benchmark 先生成并退出 GPU 子进程，再运行 CPU 官方判题。HumanEval+ 要同时通过 base 和 plus tests；LCB 使用 public+private tests。
 
 这里为提示和回答各预留 8192 token，总计 16384，对应该模型配置的上下文长度；并发限制为 16 条生成序列。一次提交 8 道题、每题 8 个回答，引擎持续调度这些采样请求。`--workers 32` 是 CPU 判题进程数，不是 GPU 数。
 
-Base 模型用 `--prompt-style completion`：HumanEval+/MBPP+ 直接续写官方代码前缀，判题时补回该前缀；LCB 使用题目和打开的 Python 代码块作为前缀，生成在关闭代码块时停止。输入使用模型 tokenizer 的 BOS 设置；不套 chat template。提示方式记录在 run manifest 和回答中。这是本项目的固定三 benchmark 协议，不声称复现原 DeepSeek 发布的分数或其 few-shot 提示。
+Base 模型用 `--prompt-style completion`：HumanEval+ 直接续写官方代码前缀，判题时补回该前缀；LCB 使用题目和打开的 Python 代码块作为前缀，生成在关闭代码块时停止。输入使用模型 tokenizer 的 BOS 设置；不套 chat template。提示方式记录在 run manifest 和回答中。这是本项目的固定两 benchmark 协议，不声称复现原 DeepSeek 发布的分数或其 few-shot 提示。
 
-只先检查 HumanEval+ 时，将 `--benchmark all` 改成 `--benchmark humanevalplus`，并使用另一个 `--output-dir`；正式跑三个 benchmark 使用上面的新目录。输出目录记录模型、题集、采样与 prompt style 身份，改变设置必须换目录。提示超长会明确报错，不静默截断/丢题。
+只先检查 HumanEval+ 时，将 `--benchmark all` 改成 `--benchmark humanevalplus`，并使用另一个 `--output-dir`；正式跑两个 benchmark 使用上面的新目录。输出目录记录模型、题集、采样与 prompt style 身份，改变设置必须换目录。提示超长会明确报错，不静默截断/丢题。
 
 ## 5. 查看结果
 
@@ -109,7 +109,7 @@ python scripts/evaluate_code.py \
 
 大模型只有在单卡能容纳权重、激活和 KV cache 时才能使用此模式；默认仍为 `--parallel-mode tensor`，兼容原来的多卡模型分片。将回答上限从 8192 减到 2048 或新增函数结束停止规则会改变测评协议，不作为默认提速选项。
 
-新启动的生成进程显示整个 benchmark 的题目进度条（包含总题数、已完成题数、速度和 ETA），断点续跑从已有题数起步；隐藏 vLLM 每个小批次的 `8/8` 进度。LCB 判题也按整项题目数显示；HumanEval+/MBPP+ 保留官方 EvalPlus 以回答数计的判题进度。
+新启动的生成进程显示整个 benchmark 的题目进度条（包含总题数、已完成题数、速度和 ETA），断点续跑从已有题数起步；隐藏 vLLM 每个小批次的 `8/8` 进度。LCB 判题也按整项题目数显示；HumanEval+ 保留官方 EvalPlus 以回答数计的判题进度。
 
 查看本次 pass@8 运行，可另开一个终端，在同一项目和环境下执行：
 
@@ -118,7 +118,7 @@ python scripts/watch_code_progress.py \
   --output-dir results/deepseek-coder-1.3b-base-pass8-tp4-batch8
 ```
 
-该窗口显示三项数据集及全部题目的生成进度、已保存的判题进度。只读取新增日志，不使用 GPU，不修改回答；在此窗口按 Ctrl+C 只关闭进度显示。EvalPlus 的实时判题条仍在原运行窗口，最终保存的题数会在本窗口更新。
+该窗口显示两项数据集及全部题目的生成进度、已保存的判题进度。只读取新增日志，不使用 GPU，不修改回答；在此窗口按 Ctrl+C 只关闭进度显示。EvalPlus 的实时判题条仍在原运行窗口，最终保存的题数会在本窗口更新。
 
 ```bash
 python -m json.tool results/deepseek-coder-1.3b-base-pass8-tp4-batch8/summary.json

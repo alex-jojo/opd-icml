@@ -12,7 +12,7 @@ import re
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ('livecodebench', 'mbppplus', 'humanevalplus')
+BENCHMARKS = ('livecodebench', 'humanevalplus')
 # Dataset encoding is unchanged; existing prepared questions/tests remain reusable.
 PROTOCOL = 'official-code-pass4-v1'
 EVALUATION_PROTOCOL = 'official-code-pass8-v1'
@@ -108,7 +108,7 @@ def prompt_for(question, prompt_style='chat'):
     if prompt_style not in ('chat', 'completion'):
         raise ValueError('Unknown code prompt style')
     if prompt_style == 'completion' and question['benchmark'] != 'livecodebench':
-        # Native EvalPlus prefix: HumanEval function stub or MBPP docstring.
+        # Native EvalPlus prefix: HumanEval function stub.
         return question['prompt']
     if question['benchmark'] == 'livecodebench':
         prefix = 'Solve the following programming problem in Python. '

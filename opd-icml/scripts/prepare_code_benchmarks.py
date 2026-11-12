@@ -1,4 +1,4 @@
-"""Prepare pinned LiveCodeBench, MBPP+ and HumanEval+ evaluation data."""
+"""Prepare pinned LiveCodeBench and HumanEval+ evaluation data."""
 import argparse
 import gzip
 import hashlib
@@ -41,10 +41,12 @@ def official_release(spec, cache, source_dir=None):
 
 
 def build_evalplus(benchmark, spec, hf_path, official_path, directory):
+    if benchmark != 'humanevalplus':
+        raise ValueError('Only HumanEval+ is supported by the EvalPlus adapter')
     import pyarrow.parquet as pq
     hf = pq.read_table(hf_path).to_pylist()
     official = list(read_jsonl(official_path))
-    hf_ids = {str(r['task_id']) if benchmark == 'humanevalplus' else 'Mbpp/' + str(r['task_id']) for r in hf}
+    hf_ids = {str(r['task_id']) for r in hf}
     if len(hf) != spec['rows'] or len(official) != spec['rows'] or hf_ids != {r['task_id'] for r in official}:
         raise ValueError('Hugging Face and official EvalPlus task IDs/counts differ')
     questions = [dict(benchmark=benchmark, task_id=r['task_id'], prompt=r['prompt'], entry_point=r['entry_point']) for r in official]

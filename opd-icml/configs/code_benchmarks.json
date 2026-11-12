@@ -15,16 +15,6 @@
       "official_url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus.jsonl.gz",
       "official_sha256": "272720b90ac375502c8ed23cd791c2a93dfb22a911641a494da74a426c09f101"
     },
-    "mbppplus": {
-      "repo": "evalplus/mbppplus",
-      "revision": "b2d74c91837c3f2a20c1299ae98133cbe7cfa077",
-      "file": "data/test-00000-of-00001-d5781c9c51e02795.parquet",
-      "file_sha256": "dc20030b3788fccf617444edcb34138ef13d7e4fafd17bfcb8c1279dbb12399b",
-      "rows": 378,
-      "official_release": "v0.2.0",
-      "official_url": "https://github.com/evalplus/mbppplus_release/releases/download/v0.2.0/MbppPlus.jsonl.gz",
-      "official_sha256": "af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63"
-    },
     "livecodebench": {
       "repo": "livecodebench/code_generation_lite",
       "revision": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",

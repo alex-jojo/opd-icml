@@ -174,12 +174,12 @@ def test_extracts_final_code_and_humaneval_completion():
     assert cb.extract_solution('    return a + b\n', q) == q['prompt'] + '    return a + b\n'
 
 
-def test_all_three_default_to_eight_samples_without_loading_data_or_models(tmp_path):
+def test_both_benchmarks_default_to_eight_samples_without_loading_data_or_models(tmp_path):
     result = subprocess.run([sys.executable, str(ROOT / 'scripts/evaluate_code.py'), '--model-path', 'unused-model',
                              '--output-dir', str(tmp_path / 'run'), '--dry-run'], capture_output=True, text=True, check=True)
     plan = json.loads(result.stdout)
     assert plan['metric'] == 'pass@8' and plan['sampling']['samples'] == 8
-    assert set(plan['benchmarks']) == set(cb.BENCHMARKS)
+    assert plan['benchmarks'] == ['livecodebench', 'humanevalplus']
     assert not (tmp_path / 'run').exists()
 
 
@@ -306,3 +306,37 @@ def test_official_lcb_runner_with_owned_small_fixtures(monkeypatch):
     results, _ = official.run_test(sample, test='a,b=map(int,input().split())\nprint(a+b)', debug=False, timeout=1)
     assert len(results) == 2 and all(bool(value == True) for value in results)
 
+
+
+@pytest.mark.parametrize('script,extra', [
+    ('evaluate_code.py', ['--output-dir', 'unused', '--model-path', 'unused', '--dry-run']),
+    ('prepare_code_benchmarks.py', ['--dry-run']),
+    ('code_benchmark_worker.py', ['--mode', 'generate', '--data-dir', 'unused', '--output-dir', 'unused']),
+])
+def test_mbpp_is_rejected_by_every_cli(script, extra):
+    result = subprocess.run([sys.executable, str(ROOT / 'scripts' / script),
+                             '--benchmark', 'mbppplus', *extra], capture_output=True, text=True)
+    assert result.returncode != 0 and 'invalid choice' in result.stderr
+
+
+def test_no_mbpp_download_in_config():
+    assert set(cb.lockfile()['datasets']) == {'livecodebench', 'humanevalplus'}
+
+
+def test_removing_mbpp_can_reuse_only_identical_remaining_results():
+    current = dict(protocol=cb.EVALUATION_PROTOCOL, benchmarks=list(cb.BENCHMARKS),
+                   data={'livecodebench': {'hash': 'a'}, 'humanevalplus': {'hash': 'b'}},
+                   model={'path': 'model', 'sha256': {'weights': 'xyz'}},
+                   sampling={'samples': 8}, metric='pass@8', prompt_encoding='test')
+    old = copy.deepcopy(current)
+    old['benchmarks'] = ['livecodebench', 'mbppplus', 'humanevalplus']
+    old['data']['mbppplus'] = {'hash': 'discarded'}
+    assert evaluate.same_identity(old, current)
+    assert old['benchmarks'] == ['livecodebench', 'mbppplus', 'humanevalplus']
+    for modified in [
+        dict(current, sampling={'samples': 4}),
+        dict(current, data={'livecodebench': {'hash': 'changed'}, 'humanevalplus': {'hash': 'b'}}),
+        dict(current, model={'path': 'model', 'sha256': {'weights': 'changed'}}),
+        dict(current, prompt_encoding='changed'),
+    ]:
+        assert not evaluate.same_identity(old, modified)

@@ -58,7 +58,7 @@ bash scripts/h200/train_eval_qwen3_8b.sh
 bash scripts/h200/train_eval_gemma3_12b.sh
 ```
 
-它们仍可单独使用，默认训练后评测。DeepSeek默认Code pass@8（LiveCodeBench、MBPP+、HumanEval+），每题生成8个回答，结果写入 `eval/code_pass8/`；旧 `code_pass4/` 结果保留，不作为 pass@8 缓存复用。Qwen/Gemma默认数学六项Mean@8；训练和评测GPU列表相同，单卡TP=1、四卡TP=4。`--devices`指定所需一张/四张卡，`--task`切换任务。入口不自动跑RQ4 early-stop/reuse或Base基线。
+它们仍可单独使用，默认训练后评测。DeepSeek默认Code pass@8（LiveCodeBench、HumanEval+），每题生成8个回答，结果写入 `eval/code_pass8/`；旧 `code_pass4/` 结果保留，不作为 pass@8 缓存复用。Qwen/Gemma默认数学六项Mean@8；训练和评测GPU列表相同，单卡TP=1、四卡TP=4。`--devices`指定所需一张/四张卡，`--task`切换任务。入口不自动跑RQ4 early-stop/reuse或Base基线。
 
 ```bash
 bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
@@ -117,7 +117,7 @@ bash scripts/h200/train_eval_qwen3_4b.sh \
 
 七组 paired-FULL 均在第106步保存最终模型，最多保留1个 checkpoint，保存内容仅为模型，不保存优化器状态。
 
-默认每组完成全部评测后，立即删除该组输出目录内的 `training/checkpoints/` 和 `merged/`，无需等七组全部结束。Code 先完成三项 benchmark 的 CPU 判题再清理；只训练或只生成回答的阶段保留权重，评测失败也保留权重以便重试。
+默认每组完成全部评测后，立即删除该组输出目录内的 `training/checkpoints/` 和 `merged/`，无需等七组全部结束。Code 先完成两项 benchmark 的 CPU 判题再清理；只训练或只生成回答的阶段保留权重，评测失败也保留权重以便重试。
 
 - 保留 `training/replication/`、`training/training_records/`、`eval/`、`logs/` 及其中的统计、表征分析、回答和评分。
 - `model_cleanup.json` 记录删除路径、文件大小与完成状态；`model_artifact_metadata.json` 保留 checkpoint 的配置和步数等文本元数据。两份记录进入结果 ZIP。
