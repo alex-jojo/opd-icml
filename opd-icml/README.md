@@ -30,7 +30,7 @@ huggingface-cli login
 直接执行以下命令设置 W&B，无需创建配置文件或交互输入：
 
 ```bash
-export WANDB_API_KEY='在这里粘贴你的 W&B API key'
+export WANDB_API_KEY='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'
 export WANDB_MODE=online
 export WANDB_PROJECT=opd-icml
 ```
