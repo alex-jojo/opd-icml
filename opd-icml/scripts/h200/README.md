@@ -9,9 +9,6 @@
 ## 整套实验
 
 ```bash
-# 只查看计划，不下载、不写运行目录、不占用 GPU。
-bash scripts/h200/run_all.sh --devices 0,1,2,3 --dry-run
-
 # 新目录：准备数据/模型、训练、合并、生成、判题。
 bash scripts/h200/run_all.sh --devices 0,1,2,3 --output runs/h200-suite/run1
 
@@ -31,7 +28,7 @@ bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/con
 
 `--gradient-cache-total-gib` 默认64，`--ray-object-store-total-gib` 默认16，分别还受可用主存1/8、1/16限制。单卡并行时按槽平分，四卡阶段独享；原有梯度缓存仍执行自己的内存保护。另按每个单卡任务80 GiB起始预留估计限制并行度。它们是缓冲预算和准入估计，**不是模型、优化器、checkpoint合并与判题的全过程硬内存上限**；33B尤其需要充分主存和磁盘。
 
-正式执行时先按CUDA实际设备顺序解析完整UUID，再按UUID加锁；GPU序号、完整UUID和可识别的UUID前缀共用同一把锁。dry-run不查询GPU。不要再手动启动占同一组卡的独立任务。失败或中断只终止本套已启动进程组：即使顶层进程已经退出，也继续检查组内残留进程，宽限期后发送SIGKILL；不执行全局 `ray stop`，不删除结果。总调度不自动续训或覆盖已有目录，已完成数据保留；可用下面的单模型入口重试评测。
+正式执行时先按CUDA实际设备顺序解析完整UUID，再按UUID加锁；GPU序号、完整UUID和可识别的UUID前缀共用同一把锁。不要再手动启动占同一组卡的独立任务。失败或中断只终止本套已启动进程组：即使顶层进程已经退出，也继续检查组内残留进程，宽限期后发送SIGKILL；不执行全局 `ray stop`，不删除结果。总调度不自动续训或覆盖已有目录，已完成数据保留；可用下面的单模型入口重试评测。
 
 ## 按模型的吞吐起始配置
 
@@ -81,7 +78,7 @@ CUDA_VISIBLE_DEVICES="" bash scripts/h200/train_eval_deepseek_coder_33b.sh \
 
 可用 `--student`、`--teacher`、`--cache-dir`、`--model-dir`、`--data`、`--val-data`指定资源。单模型还支持 `--optimizer-offload on|off`、`--teacher-offload on|off`、`--ray-num-cpus`、`--cpu-ids`、`--ray-object-store-gib`、`--gradient-cache-gib`；两个内存上限在独立入口中是该实验预算。
 
-总调度保存 `plan.json`、逐模型状态 `status.json`、`logs/`和各模型目录；模型目录包含`training/`、`merged/`、`eval/`。
+正式启动时自动打印各模型的 GPU 编号与运行顺序，无需单独查看计划。总调度保存 `plan.json`、逐模型状态 `status.json`、`logs/`和各模型目录；模型目录包含`training/`、`merged/`、`eval/`。
 
 ## 实验数据 ZIP
 

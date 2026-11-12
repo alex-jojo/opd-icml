@@ -340,3 +340,25 @@ def test_suite_dry_run_has_no_side_effects(tmp_path, monkeypatch, capsys):
     suite.main()
     assert json.loads(capsys.readouterr().out)['devices'] == ['0', '1', '2', '3']
     assert not dest.exists()
+
+
+def test_execution_summary_shows_actual_gpu_ids_and_queue_order(capsys):
+    args = suite.parser().parse_args(['--devices', '3,1,2,0'])
+    plan = suite.build_suite(args, {}, list(range(64)), 1024)
+    suite.print_execution_schedule(plan)
+    output = capsys.readouterr().out
+    for job in [j for queue in plan['small_queues'] for j in queue] + plan['large']:
+        row = next(line for line in output.splitlines() if line.startswith(job['scale'] + ' '))
+        assert row.split('|')[1].strip() == ','.join(job['devices'])
+    assert 'stage 4, all selected GPUs' in output
+
+
+def test_execution_summary_explains_shared_gpu_queue(capsys):
+    args = suite.parser().parse_args(['--devices', '0,1,2,3', '--max-parallel-small', '1'])
+    plan = suite.build_suite(args, {}, list(range(64)), 1024)
+    suite.print_execution_schedule(plan)
+    output = capsys.readouterr().out
+    for position, job in enumerate(plan['small_queues'][0], 1):
+        row = next(line for line in output.splitlines() if line.startswith(job['scale'] + ' '))
+        assert row.split('|')[1].strip() == '0'
+        assert f'GPU queue position {position}' in row

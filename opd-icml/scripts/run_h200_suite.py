@@ -128,6 +128,23 @@ def build_suite(args, environment, cpus, free_gib):
                 prepare=prepare, small_queues=queues, large=large)
 
 
+def print_execution_schedule(plan):
+    """Show actual selected device IDs, including reduced-parallelism queues."""
+    rows = []
+    for queue in plan['small_queues']:
+        for position, job in enumerate(queue, 1):
+            rows.append((job['scale'], ','.join(job['devices']),
+                         f"stage 1, GPU queue position {position}"))
+    for stage, job in enumerate(plan['large'], 2):
+        rows.append((job['scale'], ','.join(job['devices']),
+                     f"stage {stage}, all selected GPUs"))
+    print("\nModel                    | GPU IDs             | Execution order", flush=True)
+    print("-" * 88, flush=True)
+    for scale, ids, order in rows:
+        print(f"{scale:<24} | {ids:<19} | {order}", flush=True)
+    print(f"Results: {plan['output']}\n", flush=True)
+
+
 def resolve_gpu_uuids(devices, environment):
     """Resolve CUDA's selected device order in a short-lived process, never NVML index order."""
     env = environment.copy()
@@ -303,9 +320,10 @@ def main():
     try:
         cpus, free = available_resources()
         plan = build_suite(args, os.environ, cpus, free)
-        print(json.dumps(plan, indent=2), flush=True)
         if args.dry_run:
+            print(json.dumps(plan, indent=2), flush=True)
             return
+        print_execution_schedule(plan)
         if os.name != 'posix':
             raise ValueError('Execution requires a Linux H200 server')
         import fcntl
