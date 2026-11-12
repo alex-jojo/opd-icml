@@ -59,17 +59,17 @@ bash scripts/h200/run_all.sh \
 
 本命令运行以下七组实验（模型列为学生 → 教师）：
 
-| 模型配对（学生 → 教师） | 训练数据 | 测评 benchmark | 指标 | GPU 数 | 运行顺序 |
+| 模型配对（学生 → 教师） | 训练数据 | 测评 benchmark | 指标 | GPU 编号 | 运行顺序 |
 |---|---|---|---|---|---|
-| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 1 | 第一阶段：可并行 |
+| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 0 | 第一阶段：可并行 |
 | Qwen3-1.7B-Base → Qwen3-1.7B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行 |
-| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行 |
-| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 1 | 第一阶段：可并行 |
-| Qwen3-8B-Base → Qwen3-32B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 4 | 第2阶段：独占四卡 |
-| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 4 | 第3阶段：独占四卡 |
-| DeepSeek-Coder-33B-Base → 33B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 4 | 第4阶段：独占四卡 |
+| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 2 | 第一阶段：可并行 |
+| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 3 | 第一阶段：可并行 |
+| Qwen3-8B-Base → Qwen3-32B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 0,1,2,3 | 第2阶段：独占四卡 |
+| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 0,1,2,3 | 第3阶段：独占四卡 |
+| DeepSeek-Coder-33B-Base → 33B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@8 | 0,1,2,3 | 第4阶段：独占四卡 |
 
-前四组各用单卡，按 CPU/主存预算最多四组并行；后三组每组独占四卡，依次运行。
+表中 GPU 编号对应 `--devices 0,1,2,3` 且允许四组并行时的分配。前四组分别使用 GPU 0、1、2、3；后三组依次使用全部四张卡。若 CPU/主存预算使并行数下降，调度器会复用前面的 GPU 槽位，实际分配以 `--dry-run` 输出为准；更换 `--devices` 时按传入顺序对应。
 
 **不用逐个下载模型、准备数据或启动七个脚本。**总入口会自动完成这些步骤。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘；33B 训练还需要充分主存。
 
