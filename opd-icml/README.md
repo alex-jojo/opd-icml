@@ -27,12 +27,10 @@ bash scripts/setup_h200.sh
 huggingface-cli login
 ```
 
-在终端粘贴 W&B key，输入不回显；无需创建 JSON 配置文件：
+直接执行以下命令设置 W&B，无需创建配置文件或交互输入：
 
 ```bash
-read -rsp "W&B API key: " WANDB_API_KEY
-echo
-export WANDB_API_KEY
+export WANDB_API_KEY='在这里粘贴你的 W&B API key'
 export WANDB_MODE=online
 export WANDB_PROJECT=opd-icml
 ```
@@ -59,12 +57,21 @@ bash scripts/h200/run_all.sh \
   --output runs/h200-suite/run1
 ```
 
-**不用逐个下载模型、准备数据或启动七个脚本。**总入口会自动完成这些步骤。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘；33B 训练还需要充分主存。
+本命令运行以下七组实验（模型列为学生 → 教师）：
 
-| 自动执行顺序 | 实验 |
-|---|---|
-| 单卡任务，按 CPU/主存预算最多四组并行 | DeepSeek 1.3B、Qwen 1.7B、Qwen 4B、DeepSeek 6.7B |
-| 随后每组独占四卡，依次执行 | Qwen 8B → 32B 教师、Gemma 12B、DeepSeek 33B |
+| 模型配对 | 训练数据 | 测评 benchmark | 测评指标 |
+|---|---|---|---|
+| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@4 |
+| Qwen3-1.7B-Base → Qwen3-1.7B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
+| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
+| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@4 |
+| Qwen3-8B-Base → Qwen3-32B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
+| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 |
+| DeepSeek-Coder-33B-Base → 33B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、MBPP+、HumanEval+ | pass@4 |
+
+前四组各用单卡，按 CPU/主存预算最多四组并行；后三组每组独占四卡，依次运行。
+
+**不用逐个下载模型、准备数据或启动七个脚本。**总入口会自动完成这些步骤。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘；33B 训练还需要充分主存。
 
 七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。参数梯度诊断默认每个观测点抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量；hidden 统计同时保留。Code 评测 pass@4，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
 
