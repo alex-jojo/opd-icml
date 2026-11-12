@@ -18,6 +18,7 @@ from run_h200_experiment import ROOT, EXPERIMENTS, select_devices
 from wandb_config import load_wandb_environment
 from project_paths import project_absolute, project_relative
 from package_results import archive_path, package_results
+from cleanup_model_artifacts import print_disk_space
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
 LARGE = ['8b', 'gemma3-12b', 'deepseek-coder-33b']
@@ -51,6 +52,7 @@ def parser():
     p.add_argument('--gradient-cache-total-gib', type=float, default=64)
     p.add_argument('--ray-object-store-total-gib', type=float, default=16)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--keep-model-files', action='store_true', help='Keep all completed checkpoint/merged weights; default cleans each experiment')
     p.add_argument('--no-package', action='store_true', help='Skip the final combined experiment-data ZIP')
     return p
 
@@ -86,6 +88,8 @@ def build_suite(args, environment, cpus, free_gib):
     run = project_absolute(args.output)
     common = ['--profile', args.profile, '--parameter-token-gradients', args.parameter_token_gradients,
               '--parameter-token-samples', str(args.parameter_token_samples), '--no-package']
+    if args.keep_model_files:
+        common.append('--keep-model-files')
     def job(scale, ids, cores, concurrency):
         spec = EXPERIMENTS[scale]
         if len(cores) < spec.gpus + 1:
@@ -324,6 +328,7 @@ def main():
             print(json.dumps(plan, indent=2), flush=True)
             return
         print_execution_schedule(plan)
+        print_disk_space(plan['output'])
         if os.name != 'posix':
             raise ValueError('Execution requires a Linux H200 server')
         import fcntl

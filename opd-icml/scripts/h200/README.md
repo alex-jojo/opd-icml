@@ -78,7 +78,7 @@ CUDA_VISIBLE_DEVICES="" bash scripts/h200/train_eval_deepseek_coder_33b.sh \
 
 可用 `--student`、`--teacher`、`--cache-dir`、`--model-dir`、`--data`、`--val-data`指定资源。单模型还支持 `--optimizer-offload on|off`、`--teacher-offload on|off`、`--ray-num-cpus`、`--cpu-ids`、`--ray-object-store-gib`、`--gradient-cache-gib`；两个内存上限在独立入口中是该实验预算。
 
-正式启动时自动打印各模型的 GPU 编号与运行顺序，无需单独查看计划。总调度保存 `plan.json`、逐模型状态 `status.json`、`logs/`和各模型目录；模型目录包含`training/`、`merged/`、`eval/`。
+正式启动时自动打印各模型的 GPU 编号与运行顺序，无需单独查看计划。总调度保存 `plan.json`、逐模型状态 `status.json`、`logs/`和各模型目录。每组评测成功后默认清理该组的 `training/checkpoints/` 与 `merged/`；保留训练统计、回答、评测结果和日志。
 
 ## 实验数据 ZIP
 
@@ -106,9 +106,26 @@ python scripts/run_h200_experiment.py --help
 已有完整训练 checkpoint 时，使用原输出目录：
 
 ```bash
-bash scripts/h200/train_eval_qwen3_4b.sh \\
+bash scripts/h200/train_eval_qwen3_4b.sh \
   --stage eval --devices 0 --output runs/h200-suite/run1/4b
 ```
 
-此命令复用完整的合并模型与匹配的评测缓存。合并中断且没有完成标记时，先将该实验的 `merged/` 移到另一个位置后重试。训练中断需使用新输出目录重新训练。
+此命令适用于评测失败后保留的 checkpoint，或启动时设置了 `--keep-model-files` 的实验。评测成功并自动清理权重后，不能再通过 `--stage eval` 重新生成回答；已保存的回答和统计仍保留。合并中断且没有完成标记时，先将该实验的 `merged/` 移到另一个位置后重试。训练中断需使用新输出目录重新训练。
 
+
+## 磁盘与自动清理
+
+七组 paired-FULL 均在第106步保存最终模型，最多保留1个 checkpoint，保存内容仅为模型，不保存优化器状态。
+
+默认每组完成全部评测后，立即删除该组输出目录内的 `training/checkpoints/` 和 `merged/`，无需等七组全部结束。Code 先完成三项 benchmark 的 CPU 判题再清理；只训练或只生成回答的阶段保留权重，评测失败也保留权重以便重试。
+
+- 保留 `training/replication/`、`training/training_records/`、`eval/`、`logs/` 及其中的统计、表征分析、回答和评分。
+- `model_cleanup.json` 记录删除路径、文件大小与完成状态；`model_artifact_metadata.json` 保留 checkpoint 的配置和步数等文本元数据。两份记录进入结果 ZIP。
+- 不删除共享 Hugging Face 缓存、原始学生/教师模型、数据集或其他实验目录。
+- 需要保留训练后权重时，在总入口或单模型入口添加 `--keep-model-files`。默认不需要额外参数。
+
+每次启动显示输出文件系统的剩余空间，清理结束显示删除文件的逻辑大小。该值不是硬链接、压缩或文件系统配额下的实际可用空间增量。
+
+按FP32 checkpoint加BF16合并模型估算，两份临时模型约为每参数6字节；33B约198 GB（184 GiB）。实际大小以本次文件记录为准，原始模型下载缓存、数据集、统计与ZIP占用另算。默认逐组清理能避免七组完成后的权重副本长期累积，但不能消除当前正在训练/合并/评测那一组的磁盘峰值。
+
+统计协议和保存频率保持原样。逐token参数梯度诊断保存能量及抽样统计，不把每个token的完整参数梯度向量写入磁盘。
