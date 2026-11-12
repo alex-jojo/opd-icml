@@ -112,12 +112,8 @@ def test_code_cache_relocation_still_checks_model_hashes_and_prompt_protocol():
     assert not evaluate_code.same_identity(saved, relocated)
 
 
-def test_private_relative_config_stays_anchored_in_training_children(tmp_path, monkeypatch):
-    project, child = tmp_path / 'project', tmp_path / 'other cwd'
-    project.mkdir()
-    child.mkdir()
-    (project / 'private.json').write_text(json.dumps({'WANDB_MODE': 'offline', 'WANDB_PROJECT': 'portable-test'}))
-    monkeypatch.setattr(paths, 'ROOT', project)
-    monkeypatch.chdir(child)
-    env = wandb_config.load_wandb_environment({'OPD_WANDB_CONFIG': 'private.json'})
-    assert env['WANDB_PROJECT'] == 'portable-test' and env['WANDB_MODE'] == 'offline'
+def test_wandb_environment_is_independent_of_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    env = wandb_config.load_wandb_environment(
+        {'WANDB_API_KEY': 'test-key', 'WANDB_PROJECT': 'portable-test'})
+    assert env['WANDB_PROJECT'] == 'portable-test' and env['WANDB_MODE'] == 'online'

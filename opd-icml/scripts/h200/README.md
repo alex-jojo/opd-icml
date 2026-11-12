@@ -1,10 +1,10 @@
-# H200 七组训练与评测
+# H200 高级运行参考
 
-环境、模型权限和数据准备见项目主 [README](../../README.md#h200-操作指南)。从项目根目录运行，使用已激活的 Python 3.10 训练环境。
+首次部署和完整七组启动见[快速开始](../../README.md)。以下命令仅在单独运行、调参或恢复评测时使用；均在已激活的 Python 3.10 环境中执行。
 
 所有模型、数据、配置、输出和 ZIP 路径均以项目根目录（含 `train.py` 的目录）为基准；例如 `models/student`、`data/benchmarks.jsonl`、`runs/h200-suite/run1`。入口会自行定位项目根目录，从其他工作目录启动也适用。项目外资源可写为 `../shared/...`，运行计划与新生成的路径标记保存相对路径。
 
-所有入口自动读取项目根目录的私有 `.wandb.local.json`，有凭据时启用 W&B 训练日志。该文件已被 Git 忽略，部署服务器时需另行复制；配置与覆盖方式见主 README 的“W&B 训练日志”。
+所有入口继承当前终端的 `WANDB_API_KEY`、`WANDB_MODE`、`WANDB_PROJECT` 和可选的 `WANDB_ENTITY`。无需配置文件；设置方法见[快速开始](../../README.md#2-登录模型账号设置-wb)。
 
 ## 整套实验
 
@@ -87,7 +87,7 @@ CUDA_VISIBLE_DEVICES="" bash scripts/h200/train_eval_deepseek_coder_33b.sh \
 
 默认自动打包，**只收集实验数据，不包含任何模型权重或 checkpoint**。评测汇总、生成回答与评分、训练/验证记录、诊断 NPZ/NPY、运行配置和日志会保留；模型目录、私有凭据、链接和嵌套 ZIP 会排除。原始结果不删除。
 
-整套 `--output runs/h200-suite/run1` 完成后生成 `runs/h200-suite/run1-results.zip`；单组 Qwen 8B 默认生成 `runs/h200/8b/8b-math-paired-full-results.zip`。终端打印 `[DOWNLOAD ZIP]` 路径，在服务器文件浏览器中选下载，或用本地 `scp` 获取。完整下载说明见主 README 的“自动打包实验数据并下载 ZIP”。
+整套 `--output runs/h200-suite/run1` 完成后生成 `runs/h200-suite/run1-results.zip`；单组 Qwen 8B 默认生成 `runs/h200/8b/8b-math-paired-full-results.zip`。终端打印 `[DOWNLOAD ZIP]` 路径，在服务器文件浏览器中选下载，或用本地 `scp` 获取。下载方法见[快速开始](../../README.md#4-看进度下载结果)。
 
 总调度只在全部 GPU 阶段和 CPU 判题完成后打一次总包，并先释放 GPU 锁；独立脚本每个成功阶段打包，清单会标记阶段。已有实验或中途结果可手动打包，完全不需要加载模型：
 
@@ -103,3 +103,14 @@ python scripts/package_results.py --run-dir runs/h200-suite/run1
 python scripts/run_h200_suite.py --help
 python scripts/run_h200_experiment.py --help
 ```
+
+## 重试最终评测
+
+已有完整训练 checkpoint 时，使用原输出目录：
+
+```bash
+bash scripts/h200/train_eval_qwen3_4b.sh \\
+  --stage eval --devices 0 --output runs/h200-suite/run1/4b
+```
+
+此命令复用完整的合并模型与匹配的评测缓存。合并中断且没有完成标记时，先将该实验的 `merged/` 移到另一个位置后重试。训练中断需使用新输出目录重新训练。
