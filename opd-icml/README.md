@@ -24,8 +24,10 @@ bash scripts/setup_h200.sh
 完整七组包括 Gemma，需要 Hugging Face 账号已取得对应模型访问权限：
 
 ```bash
-huggingface-cli login
+export HF_TOKEN='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'
 ```
+
+在当前终端执行上述命令后，模型下载和训练脚本会自动读取 `HF_TOKEN`。重新登录服务器后需要重新执行。
 
 直接执行以下命令设置 W&B，无需创建配置文件或交互输入：
 
