@@ -45,6 +45,7 @@ class StudyReplication:
 
     def begin(self,train,basis,step):
         self.step=step;self.train=train;self.extra=0.;self.metrics={};self.parts=[];self.moments=None
+        self.pending_gradient = None
         reuse=int(self.cfg.get('reuse',1));self.completed=(step-1)*reuse
         self.measure=(step==1 or any((self.completed+i)%self.interval==0 for i in range(1,reuse+1)) or step==int(self.cfg['rounds']))
         device=next(self.actor.actor_module.parameters()).device
@@ -115,12 +116,16 @@ class StudyReplication:
 
     @contextmanager
     def watch_gradient_scopes(self,inputs,inner,state):
-        if not (self.measure or self.sample_rq1):yield;return
-        if self.measure and self.moments is None:self.moments=HiddenMoments(self.u)
+        if not (self.full or self.measure):yield;return
+        if self.moments is None:
+            self.moments = HiddenMoments(self.u if self.measure else None)
         n=inputs['responses'].shape[1];mask=inputs['response_mask'].bool();total=int(self.train.batch['response_mask'].sum())
         def consume(gradient):
             row,pos=mask.nonzero(as_tuple=True);count=len(row)
-            energy=np.empty(count,dtype=np.float32)
+            energy = np.empty(count, dtype=np.float32) if self.measure or self.sample_rq1 else None
+            if count == 0:
+                # An all-padding local shard contributes a zero Gram to the global reduction.
+                self.moments.add(gradient.new_empty((0, gradient.shape[-1])))
             if self.measure:
                 full=np.empty((count,gradient.shape[-1]),dtype=np.float32)
                 inside=np.empty((count,self.u.shape[1]),dtype=np.float32)
@@ -131,15 +136,17 @@ class StudyReplication:
                 hi=min(count,lo+HiddenMoments.chunk_tokens)
                 g=gradient[row[lo:hi],pos[lo:hi]+start].detach().float()
                 g.mul_(total/dp.size())
-                energy[lo:hi]=g.square().sum(1).cpu().numpy()
+                self.moments.add(g)
+                if energy is not None:
+                    energy[lo:hi]=g.square().sum(1).cpu().numpy()
                 if not self.measure:
                     continue
-                self.moments.add(g)
                 with torch.autocast(device_type=g.device.type,enabled=False):gu=g@self.u.float()
                 full[lo:hi]=g.cpu().numpy();inside[lo:hi]=gu.cpu().numpy()
                 kept[lo:hi]=gu.square().sum(1).cpu().numpy()
                 del g,gu
-            self.current_part['raw_gradient_energy']=energy
+            if energy is not None:
+                self.current_part['raw_gradient_energy']=energy
             if not self.measure:return
             self.current_part.update(g_u=inside,projected_gradient_energy=kept)
             self.current_part['transient_full_gradient']=full
@@ -197,9 +204,21 @@ class StudyReplication:
 
     def before_update(self,inner):
         if self.study.payload is not None and inner==0:self.study.before_update()
+        started = time.perf_counter()
+        moment = None
+        if self.full and self.moments is None:
+            raise ValueError('Missing training hidden gradients for this FULL update')
+        if self.moments is not None:
+            moment = self.moments.finish()
+            self.moments = None
+            if self.full:
+                count = int(moment['count'])
+                if count != int(self.train.batch['response_mask'].sum()):
+                    raise ValueError('Incomplete training hidden-gradient spectrum')
+                if dp.primary():
+                    self.pending_gradient = dict(second=moment['second'], count=count)
         if self.sample_rq1 and not self.measure:
             from .opd_parameter_sampling import rq1_only_report
-            started = time.perf_counter()
             fields = self.gather_token_fields()
             report, metadata, arrays = dp.primary_call(
                 lambda: rq1_only_report(fields, self.parameter_measurement, self.thresholds))
@@ -207,10 +226,9 @@ class StudyReplication:
             self.save_rq1(inner, report, arrays)
             self.record_parameter_metrics(report, metadata)
             self.metrics['token_audit/high_kl_fraction'] = report['groups']['kl_above_step1_p90']['fraction']
+        if not self.measure or moment is None:
             self.extra += time.perf_counter() - started
             return
-        if self.moments is None:return
-        started=time.perf_counter();moment=self.moments.finish();self.moments=None
         atomic_npz(self.output/'gradient_moments'/f'round_{self.step:03d}_inner_{inner+1}.npz',moment)
         # Reuse the established CPU eigensolver on moments; no extra transformer passes.
         def build():
@@ -223,6 +241,8 @@ class StudyReplication:
             return dict(scopes=stats,basis_reference=self.reference,round=self.step,inner=inner+1,optimizer_update=self.completed+inner+1,
                         hidden_moment_saved=True,mean_saved=True),arrays
         report,arrays=dp.primary_call(build)
+        if self.full and dp.primary():
+            self.pending_gradient['eigenvalues'] = arrays['full_eigenvalues']
         atomic_json(self.output/'gradient_scopes'/f'round_{self.step:03d}_inner_{inner+1}.json',report)
         atomic_npz(self.output/'gradient_scopes'/f'round_{self.step:03d}_inner_{inner+1}.npz',arrays)
         self.metrics.update(metric_values(report))
@@ -310,13 +330,24 @@ class StudyReplication:
         stability_due = self.stability is not None and update % self.stability.cfg['interval'] == 0
         legacy_due = (stability_due or update % self.interval == 0 or
                       update == self.freeze or self.step == int(self.cfg['rounds']))
-        metrics, legacy = dp.primary_call(
-            lambda: self.motion.record(update, self.h0, current, legacy_due=legacy_due))
+        def record():
+            gradient_metrics = {}
+            if self.pending_gradient is not None:
+                started_gradient = time.perf_counter()
+                gradient_metrics = self.motion.record_gradient(update, **self.pending_gradient)
+                gradient_metrics['timing/rq2_gradient_archive_seconds'] = time.perf_counter() - started_gradient
+                self.pending_gradient = None
+            metrics, legacy = self.motion.record(update, self.h0, current, legacy_due=legacy_due)
+            metrics.update(gradient_metrics)
+            return metrics, legacy
+        metrics, legacy = dp.primary_call(record)
+        for key in ('rq2/gradient_own_top128_coverage', 'rq2/gradient_fixed_u10_coverage'):
+            self.metrics.pop(key, None)
         self.metrics.update(metrics)
         if legacy_due:
             self.save_legacy_motion(update, stability_due, *legacy)
         elapsed = time.perf_counter() - started
-        self.metrics['timing/rq2_motion_seconds'] = elapsed
+        self.metrics['timing/rq2_motion_seconds'] = elapsed - metrics.get('timing/rq2_gradient_archive_seconds', 0.)
         self.extra += elapsed
 
     def save_legacy_motion(self, update, stability_due, u, second, eigen, record):

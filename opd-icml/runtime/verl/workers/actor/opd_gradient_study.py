@@ -170,27 +170,35 @@ def exact_gram(oracle,layout,count):
 
 class HiddenMoments:
     chunk_tokens=1024
-    def __init__(self,basis):
-        self.basis=basis.detach().cpu().float().numpy();self.gram=None;self.sum=None;self.count=0
+    def __init__(self,basis=None):
+        # Spectrum-only observations need the global uncentered Gram on rank zero.
+        self.basis = basis.detach().cpu().float().numpy() if basis is not None else None
+        self.gram=None;self.sum=None;self.count=0
     @torch.no_grad()
     def add(self,g):
         g=g.detach()
         if self.gram is None:
             self.gram=torch.zeros((g.shape[-1],g.shape[-1]),device=g.device,dtype=torch.float32)
-            self.sum=torch.zeros(g.shape[-1],device=g.device,dtype=torch.float64)
+            if self.basis is not None:
+                self.sum=torch.zeros(g.shape[-1],device=g.device,dtype=torch.float64)
         with torch.autocast(device_type=g.device.type,enabled=False):
             for block in g.split(self.chunk_tokens):
                 part=block.float()
                 self.gram.addmm_(part.T,part)
                 # Reduction accumulates in FP64 without an N x hidden FP64 copy.
-                self.sum.add_(part.sum(0,dtype=torch.float64))
+                if self.sum is not None:
+                    self.sum.add_(part.sum(0,dtype=torch.float64))
         self.count+=len(g)
     def finish(self):
         gram,n=dp.sum_gram(self.gram,self.count)
-        if dp.size()>1:torch.distributed.all_reduce(self.sum)
         if n<=0:raise ValueError('empty hidden observation')
-        return dict(second=(gram.double().cpu()/n).float().numpy(),
-                    mean=(self.sum.cpu()/n).numpy(),basis=self.basis,count=np.asarray(n))
+        result = dict(count=np.asarray(n))
+        if self.basis is not None or dp.primary():
+            result['second'] = gram.cpu().double().div_(n).float().numpy()
+        if self.basis is not None:
+            if dp.size()>1:torch.distributed.all_reduce(self.sum)
+            result.update(mean=(self.sum.cpu()/n).numpy(), basis=self.basis)
+        return result
 
 
 @contextmanager

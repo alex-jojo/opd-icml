@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from test_parameter_tokens import ROOT, make_actor, make_data, optimizer_update, study_module
+from test_parameter_tokens import ROOT, make_actor, make_data, objective, optimizer_update, study_module
 
 sys.path.insert(0, str(ROOT / 'scripts'))
 from package_results import package_results
@@ -111,3 +111,72 @@ def test_legacy_step10_basis_is_used_on_resume(tmp_path):
     obs.after_inner(1)
     with np.load(tmp_path/'training_records/rq2/step_011.npz') as record:
         assert record['fixed_u10_overlap'] == pytest.approx(((early.T @ record['basis'])**2).sum()/2)
+
+
+def test_training_gradients_all_106_updates_use_the_same_u10(tmp_path):
+    torch.manual_seed(25)
+    run = tmp_path/'training'
+    actor, data = make_actor(), make_data()
+    configure(actor, run, rounds=53, reuse=2, adaptive=True)
+    observer = study_module.StudyReplication(actor)
+    directory = run/'training_records/rq2'
+    mask = data.batch['response_mask'].bool()
+    fixed = None
+    for step in range(1, 54):
+        if step == 9:  # resume after adaptive stability installed a newer basis at 15
+            observer = study_module.StudyReplication(actor)
+        observer.begin(data, None, step)
+        for inner in range(2):
+            update = (step-1)*2 + inner+1
+            hidden = []
+            with actor.actor_module.model.norm.register_forward_hook(lambda m, a, h: hidden.append(h)):
+                loss = objective(actor, data)[mask].sum()
+            (grad,) = torch.autograd.grad(loss, hidden[0])
+            g = grad[:, -mask.shape[1]-1:-1][mask].double().numpy()
+            expected = np.linalg.svd(g, compute_uv=False)**2 / len(g)
+            observer.before_inner(inner)
+            for row, part in enumerate(data.split(1)):
+                with observer.watch_gradient_scopes(part.batch, inner, {}), observer.watch_training(part.batch, inner, row):
+                    (objective(actor, part)*part.batch['response_mask']).sum().div(len(g)).backward()
+            observer.before_update(inner)
+            path = directory/f'gradient_{update:03d}.npz'
+            assert not path.exists()
+            actor.actor_optimizer.step()
+            actor.actor_optimizer.zero_grad(set_to_none=True)
+            observer.after_inner(inner+1)
+            with np.load(path) as saved:
+                assert saved['optimizer_update'] == update and saved['checkpoint_before'] == update-1
+                assert saved['valid_tokens'] == len(g)
+                np.testing.assert_allclose(saved['eigenvalues'], expected, rtol=1e-4, atol=1e-8)
+                assert saved['own_top128_coverage'] == pytest.approx(1.)
+                assert bool(saved['fixed_u10_available']) == (update > 10)
+                if update <= 10:
+                    assert 'fixed_u10_coverage' not in saved
+                else:
+                    fraction = np.square(g @ fixed).sum() / np.square(g).sum()
+                    assert saved['fixed_u10_coverage'] == pytest.approx(fraction, abs=4e-6)
+                    assert observer.metrics['rq2/gradient_fixed_u10_coverage'] == saved['fixed_u10_coverage']
+            if update == 10:
+                with np.load(directory/'step_010.npz') as early:
+                    fixed = early['basis'].copy()
+    with ZipFile(package_results(run)) as archive:
+        prefix = 'training/training_records/rq2/gradient_'
+        assert sorted(n for n in archive.namelist() if n.startswith(prefix)) == [
+            prefix+f'{i:03d}.npz' for i in range(1, 107)]
+
+
+def test_gradient_top128_truncation_and_zero_energy(tmp_path):
+    recorder = study_module.MotionRecorder(tmp_path, tmp_path/'legacy', rank=128)
+    eigen = np.arange(1, 131, dtype=np.float32)
+    second = np.diag(eigen)
+    # U10 spans the lowest 128 directions of this step's gradient.
+    recorder.reference = torch.eye(len(eigen))[:, :128]
+    recorder.record_gradient(11, second, 130)
+    with np.load(tmp_path/'gradient_011.npz') as saved:
+        np.testing.assert_array_equal(saved['eigenvalues'], eigen[::-1])
+        assert saved['own_top128_coverage'] == pytest.approx(eigen[-128:].sum()/eigen.sum())
+        assert saved['fixed_u10_coverage'] == pytest.approx(eigen[:128].sum()/eigen.sum())
+    recorder.record_gradient(12, np.zeros_like(second), 130)
+    with np.load(tmp_path/'gradient_012.npz') as saved:
+        assert saved['fixed_u10_available'] and not np.any(saved['eigenvalues'])
+        assert 'fixed_u10_coverage' not in saved and 'own_top128_coverage' not in saved

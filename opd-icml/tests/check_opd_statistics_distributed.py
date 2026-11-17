@@ -53,12 +53,35 @@ def worker(rank, address, output):
                 assert calls == ([1] if rank == 0 else [])
                 for parameter, reference in zip(actor.actor_module.parameters(), gradients):
                     torch.testing.assert_close(parameter.grad, reference, rtol=0, atol=0)
+                actor.actor_optimizer.step()
+                actor.actor_optimizer.zero_grad(set_to_none=True)
+                runtime.after_inner(1)
                 dist.barrier()
                 with np.load(directory/'token_audit/step_001_inner_1.npz') as saved:
                     teacher = data.batch['opd_teacher_top16_logits'][data.batch['response_mask'].bool()]
                     log_q = teacher.double().log_softmax(-1)
                     np.testing.assert_array_equal(saved['teacher_entropy'], (-(log_q.exp()*log_q).sum(-1)).numpy())
                     assert len(saved['row']) == 5
+                # Unequal local token counts on an ordinary (non-legacy) step.
+                runtime.begin(data, None, 2)
+                runtime.before_inner(0)
+                with runtime.watch_gradient_scopes(part.batch, 0, {}), runtime.watch_training(part.batch, 0, rank):
+                    (objective(actor, part)*part.batch['response_mask']).sum().mul(2/5).backward()
+                runtime.before_update(0)
+                with torch.no_grad():
+                    _, logits, _, _ = opd.forward(actor, data.batch, 1., data.batch['opd_top16_ids'], diagnostics=False)
+                logits = logits.detach().requires_grad_()
+                mask = data.batch['response_mask'].bool()
+                losses = opd.reverse_kl(logits, data.batch['opd_teacher_top16_logits'])
+                dz, = torch.autograd.grad(losses[mask].sum(), logits)
+                g = dz[mask].double() @ actor.actor_module.module.lm_head.weight.detach().double()
+                actor.actor_optimizer.step()
+                actor.actor_optimizer.zero_grad(set_to_none=True)
+                runtime.after_inner(1)
+                with np.load(directory.parent/'training_records/rq2/gradient_002.npz') as saved:
+                    assert int(saved['valid_tokens']) == 5
+                    np.testing.assert_allclose(saved['eigenvalues'], torch.linalg.svdvals(g).square()/5,
+                                               rtol=2e-4, atol=1e-8)
                 if rank == 0:
                     print(f'PASS: two-rank {mode}; one shared grouping, identical FP64 entropy and unchanged gradients', flush=True)
             finally:

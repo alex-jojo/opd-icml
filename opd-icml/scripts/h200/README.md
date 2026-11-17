@@ -28,6 +28,10 @@ RQ2 的 `training/training_records/rq2/probe_initial.npz` 保存固定回答的�
 
 第 10 步冻结 RQ2 参考基。从该步起，`fixed_u10_coverage` 记录它对当前位移能量的覆盖率，`fixed_u10_overlap` 记录它与当前前 128 个方向的重合度。若没有可测位移，RMS 和特征值照常记录，方向和累计覆盖率数组为空；参考基不可用时 `fixed_u10_available` 为假。每个 `post_update_XXXX.json` 也记录 RQ2 标量及 `timing/rq2_motion_seconds`。早停按原配置每 5 步检查一次。
 
+同一目录下的 `gradient_001.npz` 至 `gradient_106.npz` 记录产生每次 FULL 更新的 hidden 梯度。`optimizer_update` 是这次更新的编号，`checkpoint_before` 是计算梯度时已完成的更新数。令 G 的每一行是当前训练 batch 中一个有效 token 的 KL 损失对最后一层归一化输出的梯度，N 为跨卡汇总的 `valid_tokens`。`eigenvalues` 是未中心化二阶矩 GᵀG/N 的完整降序谱，`own_top128_coverage` 是前 128 项占全谱之和的比例。
+
+从 `gradient_011.npz` 起，`fixed_u10_coverage` 给出 ‖G U₁₀‖²_F / ‖G‖²_F。U₁₀ 取自同一训练轨迹的 `step_010.npz` 的 `basis`，在第 10 次更新完成后产生。后续更新和断点续跑都沿用这组方向。`fixed_u10_available` 标记参考基是否可用。梯度总能量为零时保留全零谱，省略无定义的占比。非零梯度的占比也会写入训练指标 `rq2/gradient_own_top128_coverage` 和可用时的 `rq2/gradient_fixed_u10_coverage`。
+
 流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
 `--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU线程用于判题，其余按槽分配；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。

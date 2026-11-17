@@ -1,4 +1,4 @@
-"""Portable fixed-probe RQ2 measurements after each actual FULL optimizer update."""
+"""Portable RQ2 measurements of fixed-probe displacement and training hidden gradients."""
 import numpy as np
 import torch
 
@@ -35,6 +35,38 @@ class MotionRecorder:
                     return torch.from_numpy(saved['basis'].copy())
         return None
 
+    def reference_at(self, checkpoint):
+        if checkpoint < self.reference_step:
+            return None
+        if self.reference is None:
+            self.reference = self.load_reference()
+        if self.reference is not None and self.reference.shape[1]:
+            return self.reference
+        return None
+
+    def record_gradient(self, update, second, count, eigenvalues=None):
+        # second = G.T @ G / count, collected during the actual training backward.
+        matrix = torch.from_numpy(second).double()
+        if eigenvalues is None:
+            eigenvalues = torch.linalg.eigvalsh((matrix + matrix.T) * .5).flip(0).clamp_min(0).numpy()
+        checkpoint = update - 1
+        reference = self.reference_at(checkpoint)
+        arrays = dict(optimizer_update=update, checkpoint_before=checkpoint, valid_tokens=count,
+                      eigenvalues=eigenvalues, fixed_u10_available=reference is not None)
+        metrics = {}
+        total = eigenvalues.sum()
+        if total > 0:
+            own = float(eigenvalues[:128].sum() / total)
+            arrays['own_top128_coverage'] = own
+            metrics['rq2/gradient_own_top128_coverage'] = own
+            if reference is not None:
+                u10 = reference.double()
+                fixed = float((((matrix @ u10) * u10).sum() / matrix.trace()).clamp(0, 1))
+                arrays['fixed_u10_coverage'] = fixed
+                metrics['rq2/gradient_fixed_u10_coverage'] = fixed
+        atomic_npz(self.directory / f'gradient_{update:03d}.npz', arrays)
+        return metrics
+
     def record(self, update, initial, current, *, legacy_due):
         basis, second, eigen, summary = _cumulative_basis_local(initial, current, self.rank, allow_zero=True)
         summary['raw_displacement_rms'] = float((current - initial).square().sum(1).mean().sqrt())
@@ -49,16 +81,13 @@ class MotionRecorder:
 
         if update == self.reference_step:
             self.reference = basis
-        elif update > self.reference_step and self.reference is None:
-            self.reference = self.load_reference()
+        reference = self.reference_at(update)
         arrays = dict(step=update, positions=len(current), eigenvalues=eigenvalues,
                       cumulative_energy_coverage=cumulative, basis=basis.numpy(),
                       raw_displacement_rms=summary['raw_displacement_rms'],
                       unit_displacement_rms=summary['unit_displacement_rms'])
-        arrays['fixed_u10_available'] = bool(update >= self.reference_step and
-                                             self.reference is not None and self.reference.shape[1])
-        if basis.shape[1] and arrays['fixed_u10_available']:
-            reference = self.reference
+        arrays['fixed_u10_available'] = reference is not None
+        if basis.shape[1] and reference is not None:
             coverage = float((reference * (second @ reference)).sum() / eigen.sum())
             overlap = float((reference.T @ basis).square().sum() / reference.shape[1])
             arrays.update(fixed_u10_coverage=coverage, fixed_u10_overlap=overlap)
