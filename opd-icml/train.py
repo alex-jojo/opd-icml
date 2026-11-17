@@ -165,10 +165,36 @@ def validate_model_tp(student_path, tp):
         raise ValueError(f'rollout TP={tp} is incompatible with student KV heads={kv}')
 
 
+def paired_rq4_overrides(cfg, strategy):
+    """Keep the paired FULL population, optimizer schedule and diagnostics in every arm."""
+    if strategy != 'reuse' and strategy != 'early-stop':
+        return {}
+    policy = 'actor_rollout_ref.actor.policy_loss.'
+    if strategy == 'early-stop':
+        values = {policy+'replication17.adaptive_stability.enabled': True}
+    else:
+        budget = cfg['trainer']['total_training_steps']
+        if budget % 2:
+            raise ValueError('Two-update rollout reuse needs an even FULL update budget')
+        rounds = budget // 2
+        values = {policy+'jump_reuse_updates': 2, policy+'replication17.reuse': 2,
+                  policy+'replication17.rounds': rounds, 'trainer.total_training_steps': rounds,
+                  'trainer.opd_pause_after_rollout_rounds': rounds, 'trainer.save_freq': rounds}
+    for path, value in values.items():
+        fields = path.split('.')
+        target = cfg
+        for field in fields[:-1]:
+            target = target[field]
+        target[fields[-1]] = value
+    return values
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", choices=model_profiles(), required=True)
     parser.add_argument("--experiment", choices=["paired-full", "original-full", "early-stop", "reuse"])
+    parser.add_argument('--rq4-strategy', choices=['full', 'early-stop', 'reuse'],
+                        help='Run a matched paper RQ4 arm using the paired-full profile')
     parser.add_argument("--task", choices=["math", "code"], default="math")
     parser.add_argument("--data", type=Path)
     parser.add_argument("--val-data", type=Path, help="Code validation parquet; defaults to Eurus code validation split")
@@ -234,9 +260,12 @@ def main():
     if args.experiment is None:
         parser.error("--experiment is required unless --prepare-only is used")
     config_name, cfg = training_config(profile, args.experiment, args.task)
+    if args.rq4_strategy and (args.experiment != 'paired-full' or args.task != 'math' or args.scale not in ('1.7b', '4b')):
+        parser.error('--rq4-strategy uses the 1.7B/4B math paired-full profile')
     try:
         tracking_env = load_wandb_environment(os.environ)
         hardware_overrides = apply_hardware_profile(cfg, args.hardware, args.num_gpus, args.rollout_tp_size)
+        hardware_overrides.update(paired_rq4_overrides(cfg, args.rq4_strategy))
         hardware_overrides.update(apply_batch_overrides(cfg, args))
         hardware_overrides.update(apply_wandb_tracking(cfg, tracking_env))
         for name, key in [('optimizer_offload', 'actor'), ('teacher_offload', 'ref')]:
@@ -293,6 +322,8 @@ def main():
             parser.error('--parameter-token-group-size requires enabled parameter-token diagnostics')
         study['parameter_tokens']['graph_group_size'] = args.parameter_token_group_size
     default_run = ROOT / 'runs' / args.scale / args.experiment if args.task == 'math' else ROOT / 'runs/code' / args.scale / args.experiment
+    if args.rq4_strategy:
+        default_run = default_run.parent / ('rq4-' + args.rq4_strategy)
     output = project_absolute(args.output or default_run)
     data = project_absolute(args.data or Path('data/eurus_code_train.parquet' if args.task == 'code' else 'data/dapo14k_train.parquet'))
     validation = project_absolute(args.val_data or Path('data/eurus_code_validation.parquet')) if args.task == 'code' else data
@@ -303,7 +334,7 @@ def main():
     if args.parameter_token_gradients or args.parameter_token_group_size is not None:
         prefix = '++actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens.'
         command += [prefix + key + '=' + json.dumps(value) for key,value in study['parameter_tokens'].items()]
-    print(json.dumps(dict(experiment=args.experiment, scale=args.scale, task=args.task, gpu_count=cfg["trainer"]["n_gpus_per_node"],
+    print(json.dumps(dict(experiment=args.experiment, rq4_strategy=args.rq4_strategy, scale=args.scale, task=args.task, gpu_count=cfg["trainer"]["n_gpus_per_node"],
                           hardware_profile=args.hardware,
                           explicit_gpu_count=args.num_gpus,
                           micro_batch_size_per_gpu=cfg['actor_rollout_ref']['actor']['ppo_micro_batch_size_per_gpu'],

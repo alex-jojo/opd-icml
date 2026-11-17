@@ -1,8 +1,8 @@
 # opd-icml
 
-四张 H200 上运行七组 OPD FULL 实验：自动准备模型和数据、训练并记录统计、评测、打包结果。
+在四张 H200 上运行 OPD FULL 和 RQ4 策略对照，自动准备模型和数据、训练、评测并打包结果。
 
-**范围：** DeepSeek-Coder 1.3B/6.7B/33B，Qwen3 1.7B/4B/8B，Gemma3 12B。此入口不自动运行 Base 基线、Adaptive early stop 或 Rollout reuse。
+**模型范围**包括 DeepSeek-Coder 1.3B/6.7B/33B、Qwen3 1.7B/4B/8B 和 Gemma3 12B。总入口训练七组 FULL，并在 Qwen3 1.7B、4B 上各训练 Adaptive early stop 和 Rollout reuse，共 11 次独立训练。
 
 ## 1. 下载代码、安装环境（首次执行）
 
@@ -57,7 +57,7 @@ bash scripts/h200/run_all.sh \
   --output runs/h200-suite/run1
 ```
 
-本命令运行以下七组实验（模型列为学生 → 教师）：
+本命令使用下表中的七组学生与教师配对。Qwen3 1.7B、4B 的 GPU 槽还会顺序完成各自的早停和复用对照。
 
 | 模型配对（学生 → 教师） | 训练数据 | 测评 benchmark | 指标 | GPU 编号 | 运行顺序 |
 |---|---|---|---|---|---|
@@ -79,6 +79,8 @@ RQ2 在每次 FULL 参数更新后测量同一组固定 probe。`training/traini
 同目录的 `gradient_XXX.npz` 保存每次更新所用训练 token 的完整 hidden 梯度谱及其自身 top-128 能量占比。第 11 次更新起，同时保存梯度在第 10 次更新后固定的 probe 子空间 U₁₀ 内的能量占比。
 
 RQ3 的 `training/training_records/rq3/checkpoint_XXX.json` 按更新前的检查点编号。0、10、…、100 各存 128 条验证回答在下一次更新前后的配对 KL；10、30、60、100 另存图 7(b、c) 的六对子集明细和均值。
+
+RQ4 比较结果在整个实验 ZIP 的 `rq4_comparison.json`。每个规模的 FULL、早停和复用使用同一训练配置、数据划分及五项数学测评。早停每 5 步记录判定窗口，复用在 53 轮中做 106 次更新，并在 11 个观测轮记录同批回答第二次更新的 KL 降幅。各策略的训练墙钟时间含诊断开销；五项 Mean@8 按 benchmark 等权平均。逐轮文件和单组命令见 [H200 说明](scripts/h200/README.md#rq4-策略对照)。
 
 输出目录必须是新目录；再次从头运行换成 `run2`。当前入口不支持中断后的训练续跑。
 

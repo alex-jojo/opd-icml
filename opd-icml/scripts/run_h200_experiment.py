@@ -1,5 +1,6 @@
 """Run one paired-full experiment, merge its final student, and evaluate on the same GPUs."""
 import argparse
+from contextlib import nullcontext
 import hashlib
 from dataclasses import dataclass
 import json
@@ -17,6 +18,7 @@ from wandb_config import load_wandb_environment
 from project_paths import project_absolute, project_relative, saved_path_matches
 from package_results import archive_path, package_results
 from cleanup_model_artifacts import finish_experiment, print_disk_space
+import rq4_results
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,8 @@ PRESETS = {
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--scale', required=True, choices=EXPERIMENTS)
+    p.add_argument('--rq4-strategy', choices=rq4_results.STRATEGIES,
+                   help='Matched 1.7B/4B math strategy, with training timing and paper Mean@8')
     p.add_argument('--task', choices=['math', 'code'], help='Default: DeepSeek code; Qwen/Gemma math')
     p.add_argument('--stage', choices=['all', 'train', 'eval', 'train-generate', 'generate', 'grade'], default='all')
     p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
@@ -106,6 +110,17 @@ def build_plan(args, environment):
     spec = EXPERIMENTS[args.scale]
     gpus = args.gpus or spec.gpus
     task = args.task or spec.task
+    strategy = args.rq4_strategy
+    if args.output and (args.resume or args.stage in ('eval', 'generate')):
+        marker = project_absolute(args.output)/'rq4_training_time.json'
+        if marker.is_file():
+            record = rq4_results.read(marker)
+            saved = record['strategy']
+            if record['scale'] != args.scale or saved not in rq4_results.STRATEGIES or strategy not in (None, saved):
+                raise ValueError('RQ4 model or strategy differs from the saved training run')
+            strategy = saved
+    if strategy and (args.scale not in rq4_results.SCALES or task != 'math'):
+        raise ValueError('Paper RQ4 strategies use 1.7B or 4B math')
     if args.stage == 'grade' and task != 'code':
         raise ValueError('--stage grade is for code; math uses its existing combined scoring protocol')
     micro, teacher_micro, sequences, offload = (PRESETS[args.scale] if args.profile == 'throughput'
@@ -128,7 +143,8 @@ def build_plan(args, environment):
     if min(args.eval_max_num_seqs, args.eval_batch_size, args.score_workers, args.code_workers) < 1:
         raise ValueError('Evaluation concurrency and worker counts must be positive')
     devices = '' if args.stage == 'grade' else select_devices(gpus, args.devices, environment)
-    run = project_absolute(args.output or Path('runs/h200') / args.scale / f'{task}-paired-full')
+    label = f'rq4-{strategy}' if strategy else 'paired-full'
+    run = project_absolute(args.output or Path('runs/h200') / args.scale / f'{task}-{label}')
     training, merged = run / 'training', run / 'merged'
     artifacts = project_absolute(args.model_artifacts_root) / run.name if args.model_artifacts_root else None
     checkpoints_root = artifacts / 'checkpoints' if artifacts else training / 'checkpoints'
@@ -147,6 +163,8 @@ def build_plan(args, environment):
                '--learning-rate', str(args.learning_rate),
                '--parameter-token-gradients', args.parameter_token_gradients,
                '--code-workers', str(args.code_workers), '--output', project_relative(training)]
+    if strategy:
+        command += ['--rq4-strategy', strategy]
     if args.parameter_token_gradients == 'sampled':
         command += ['--parameter-token-samples', str(args.parameter_token_samples)]
     if args.parameter_token_group_size is not None:
@@ -188,7 +206,7 @@ def build_plan(args, environment):
     checkpoint = checkpoints_root / 'global_step_<latest>/actor'
     merge = [sys.executable, '-m', 'verl.model_merger', 'merge', '--backend', 'fsdp',
              '--local_dir', project_relative(checkpoint), '--target_dir', project_relative(merged), '--use_cpu_initialization']
-    return dict(scale=args.scale, task=task, experiment='paired-full', gpu_count=gpus,
+    return dict(scale=args.scale, task=task, experiment='paired-full', rq4_strategy=strategy, gpu_count=gpus,
         training_gpus=gpus, evaluation_gpus=0 if args.stage == 'grade' else gpus,
         rollout_tp=gpus, evaluation_tp=None if args.stage == 'grade' else gpus,
         stage=args.stage, stage_gpu_count=0 if args.stage == 'grade' else gpus,
@@ -254,6 +272,8 @@ def run_command(command, env, log):
 
 def execute(args, plan, env):
     run = project_absolute(plan['output'])
+    rq4 = run/'training/training_records/rq4'
+    strategy = plan['rq4_strategy']
     if args.stage == 'grade':
         run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
         return
@@ -281,7 +301,9 @@ def execute(args, plan, env):
         elif not project_absolute(args.math_benchmarks).is_file():
             raise ValueError(f'Missing math benchmark file: {args.math_benchmarks}')
     if training_stage:
-        run_command(plan['train'], env, run / 'logs/train.log')
+        timer = rq4_results.training_timer(run, plan['scale'], strategy, args.resume) if strategy else nullcontext()
+        with timer:
+            run_command(plan['train'], env, run / 'logs/train.log')
     if plan.get('model_artifacts'):
         # Convenience links only; the pipeline itself uses the real paths in the plan.
         for link, target in ((run / 'training/checkpoints', plan['checkpoints_dir']), (run / 'merged', plan['merged_dir'])):
@@ -290,7 +312,11 @@ def execute(args, plan, env):
                 link.symlink_to(project_absolute(target), target_is_directory=True)
     if args.stage == 'train':
         return
-    expected = plan['resolved_training']['rounds_cap'] * plan['resolved_training']['updates_per_round']
+    expected = plan['resolved_training']['rounds_cap']
+    if strategy:
+        end = rq4_results.endpoint(project_absolute(plan['checkpoints_dir']), rq4, strategy,
+                                   expected, plan['resolved_training']['updates_per_round'])
+        expected = end['rollout_rounds']
     actor = final_checkpoint(project_absolute(plan['checkpoints_dir']), plan['gpu_count'], expected)
     merged = project_absolute(plan['merged_dir'])
     merge_marker = merged / 'h200_merge.json'
@@ -315,6 +341,8 @@ def execute(args, plan, env):
             run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
     else:
         run_command(plan['evaluate'], env, run / 'logs/evaluate.log')
+        if strategy:
+            rq4_results.save_arm(run, plan['scale'], strategy, end)
     print(f'[DONE] Results: {project_relative(run / "eval")}', flush=True)
 
 

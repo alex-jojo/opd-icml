@@ -43,7 +43,7 @@ def test_parallel_plan_has_disjoint_gpu_cpu_and_aggregate_memory_budgets(tmp_pat
 def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     plan = plan_for(tmp_path, free=180, cpus=24)
     assert plan['small_parallelism'] == 1
-    assert len(plan['small_queues'][0]) == 4
+    assert len(plan['small_queues'][0]) == 8
     assert all(value(j['command'], '--parameter-token-samples') == '256' for j in plan['small_queues'][0])
 
 
@@ -348,7 +348,7 @@ def test_execution_summary_shows_actual_gpu_ids_and_queue_order(capsys):
     suite.print_execution_schedule(plan)
     output = capsys.readouterr().out
     for job in [j for queue in plan['small_queues'] for j in queue] + plan['large']:
-        row = next(line for line in output.splitlines() if line.startswith(job['scale'] + ' '))
+        row = next(line for line in output.splitlines() if line.startswith(job['name'] + ' '))
         assert row.split('|')[1].strip() == ','.join(job['devices'])
     assert 'stage 4, all selected GPUs' in output
 
@@ -359,6 +359,6 @@ def test_execution_summary_explains_shared_gpu_queue(capsys):
     suite.print_execution_schedule(plan)
     output = capsys.readouterr().out
     for position, job in enumerate(plan['small_queues'][0], 1):
-        row = next(line for line in output.splitlines() if line.startswith(job['scale'] + ' '))
+        row = next(line for line in output.splitlines() if line.startswith(job['name'] + ' '))
         assert row.split('|')[1].strip() == '0'
         assert f'GPU queue position {position}' in row

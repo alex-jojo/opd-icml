@@ -26,7 +26,8 @@ def _compare_local(previous,current,second):
     old=torch.trace(previous.double().T@c@previous.double())/den
     new=torch.trace(current.double().T@c@current.double())/den
     return dict(overlap=float(cos2.mean()), min_cos2=float(cos2.min()),
-                p10_cos2=float(torch.quantile(cos2,.1)),energy_gap=max(0.,float(new-old)))
+                p10_cos2=float(torch.quantile(cos2,.1)), earlier_energy_coverage=float(old),
+                current_energy_coverage=float(new), energy_gap=max(0.,float(new-old)))
 
 
 class Stability:
@@ -60,13 +61,15 @@ class Stability:
         anchor=compare(history[0][1],u,second)
         ready=len(history)==self.cfg['window'] and step>=self.cfg['min_step']
         consecutive=all(b[0]-a[0]==self.cfg['interval'] for a,b in zip(history,history[1:]))
-        self.stable=bool(ready and consecutive and
-            all(p['overlap']>=self.cfg['adjacent_overlap'] and p['p10_cos2']>=self.cfg['p10_principal_cos2'] for p in adjacent) and
-            anchor['overlap']>=self.cfg['window_overlap'] and
-            anchor['p10_cos2']>=self.cfg['p10_principal_cos2'] and
-            anchor['energy_gap']<=self.cfg['max_energy_gap'])
+        checks = None
+        if ready and consecutive:
+            checks = dict(adjacent_overlap=all(p['overlap'] >= self.cfg['adjacent_overlap'] for p in adjacent),
+                          window_overlap=anchor['overlap'] >= self.cfg['window_overlap'],
+                          p10_principal_cos2=all(p['p10_cos2'] >= self.cfg['p10_principal_cos2'] for p in [*adjacent, anchor]),
+                          energy_gap=anchor['energy_gap'] <= self.cfg['max_energy_gap'])
+        self.stable = checks is not None and all(checks.values())
         record=dict(step=step,stable=self.stable,config=self.cfg,steps=[s for s,_ in history],
-                    adjacent=adjacent,anchor=anchor,ready=ready,consecutive=consecutive,
+                    adjacent=adjacent,anchor=anchor,ready=ready,consecutive=consecutive,checks=checks,
                     decision='stable' if self.stable else 'continue')
         atomic_npz(self.output/f'basis_{step:03d}.npz',dict(basis=u.cpu().numpy()))
         atomic_json(self.output/f'step_{step:03d}.json',record)

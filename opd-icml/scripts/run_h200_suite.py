@@ -1,4 +1,4 @@
-"""Schedule seven H200 paired-FULL studies with bounded CPU, cache and GPU ownership."""
+"""Schedule the H200 paired-FULL studies and paper RQ4 controls in isolated GPU slots."""
 import argparse
 from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -19,6 +19,7 @@ from wandb_config import load_wandb_environment
 from project_paths import project_absolute, project_relative
 from package_results import archive_path, package_results
 from cleanup_model_artifacts import print_disk_space
+import rq4_results
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
 LARGE = ['8b', 'gemma3-12b', 'deepseek-coder-33b']
@@ -90,11 +91,12 @@ def build_suite(args, environment, cpus, free_gib):
               '--parameter-token-samples', str(args.parameter_token_samples), '--no-package']
     if args.keep_model_files:
         common.append('--keep-model-files')
-    def job(scale, ids, cores, concurrency):
+    def job(scale, ids, cores, concurrency, strategy=None):
         spec = EXPERIMENTS[scale]
         if len(cores) < spec.gpus + 1:
             raise ValueError(f'{scale} requires at least {spec.gpus + 1} training CPUs')
-        output = run / scale
+        name = f'{scale}-{strategy}' if strategy in ('early-stop', 'reuse') else scale
+        output = run / name
         cmd = [sys.executable, 'scripts/run_h200_experiment.py', '--scale', scale,
                '--devices', ','.join(ids), '--output', project_relative(output), *common,
                '--ray-num-cpus', str(len(cores)), '--cpu-ids', ','.join(map(str, cores)),
@@ -105,10 +107,12 @@ def build_suite(args, environment, cpus, free_gib):
                '--data', 'data/eurus_code_train.parquet' if spec.task == 'code' else 'data/dapo14k_train.parquet']
         if spec.task == 'code':
             cmd += ['--val-data', 'data/eurus_code_validation.parquet']
+        if strategy:
+            cmd += ['--rq4-strategy', strategy]
         grade = list(cmd)
         grade[grade.index('--cpu-ids')+1] = ','.join(map(str, grade_cpus))
         grade[grade.index('--score-workers')+1] = str(len(grade_cpus))
-        return dict(scale=scale, devices=ids, cpu_ids=cores, output=project_relative(output),
+        return dict(name=name, scale=scale, rq4_strategy=strategy, devices=ids, cpu_ids=cores, output=project_relative(output),
                     command=cmd+['--stage', 'train-generate'],
                     grade=grade+['--stage', 'grade'] if spec.task == 'code' else None)
     # Fixed slot queues keep each GPU/CPU partition owned by one task at a time.
@@ -116,7 +120,9 @@ def build_suite(args, environment, cpus, free_gib):
     for i, scale in enumerate(selected_small):
         slot = i % slots
         cores = training_cpus[slot::slots]
-        queues[slot].append(job(scale, [devices[slot]], cores, slots))
+        strategies = rq4_results.STRATEGIES if scale in rq4_results.SCALES else (None,)
+        for strategy in strategies:
+            queues[slot].append(job(scale, [devices[slot]], cores, slots, strategy))
     large = [job(s, devices, training_cpus, 1) for s in LARGE if s in args.scales]
     prepare = []
     if any(EXPERIMENTS[s].task == 'math' for s in args.scales):
@@ -137,7 +143,7 @@ def print_execution_schedule(plan):
     rows = []
     for queue in plan['small_queues']:
         for position, job in enumerate(queue, 1):
-            rows.append((job['scale'], ','.join(job['devices']),
+            rows.append((job['name'], ','.join(job['devices']),
                          f"stage 1, GPU queue position {position}"))
     for stage, job in enumerate(plan['large'], 2):
         rows.append((job['scale'], ','.join(job['devices']),
@@ -265,20 +271,20 @@ def schedule(plan, runner):
     grader = ThreadPoolExecutor(max_workers=1)
     grades = {}
     def submit(pool, job, grading=False):
-        record(job['scale'], 'grading' if grading else 'training-and-generating')
+        record(job['name'], 'grading' if grading else 'training-and-generating')
         return pool.submit(runner.run, job['grade'] if grading else job['command'],
-                           root/'logs'/f'{job["scale"]}-{"grade" if grading else "gpu"}.log', grading)
+                           root/'logs'/f'{job["name"]}-{"grade" if grading else "gpu"}.log', grading)
     def collect_grades():
         for future, job in list(grades.items()):
             if future.done():
                 future.result()
-                record(job['scale'], 'complete')
+                record(job['name'], 'complete')
                 del grades[future]
     def gpu_done(job):
         if job['grade']:
             grades[submit(grader, job, True)] = job
         else:
-            record(job['scale'], 'complete')
+            record(job['name'], 'complete')
     try:
         pending = {}
         queues = [list(q) for q in plan['small_queues']]
@@ -353,13 +359,14 @@ def main():
             'print([torch.cuda.get_device_name(i) for i in range(4)])'], root/'logs/devices.log')
         # Preflight all launch plans before expensive preparation.
         for job in [j for q in plan['small_queues'] for j in q] + plan['large']:
-            runner.run(job['command']+['--dry-run'], root/'logs'/f'{job["scale"]}-plan.log')
+            runner.run(job['command']+['--dry-run'], root/'logs'/f'{job["name"]}-plan.log')
         for i, command in enumerate(plan['prepare']):
             runner.run(command, root/'logs'/f'prepare-{i}.log', cpu_only=True)
         (root/'plan.json').write_text(json.dumps(plan, indent=2)+'\n', encoding='utf-8')
         schedule(plan, runner)
         # Compression is CPU-only. Release GPU ownership before creating the ZIP.
         locks.close()
+        rq4_results.save_comparison(plan)
         if plan['results_zip']:
             package_results(root, plan['results_zip'], phase='suite-complete')
     except BaseException:

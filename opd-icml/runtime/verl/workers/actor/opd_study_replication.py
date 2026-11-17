@@ -14,7 +14,7 @@ from .opd_top16 import _final_norm_module,_unwrap_actor_module
 from .opd_plasticity import atomic_json,atomic_npz
 from .opd_token_audit import output_scores,enriched,training_summary,prepare_groups
 from .opd_gradient_scopes import summarize,metric_values
-from .opd_gradient_study import HiddenMoments,GradientStudy,reshard_after_readout
+from .opd_gradient_study import HiddenMoments,GradientStudy,losses as response_losses,reshard_after_readout
 
 
 class StudyReplication:
@@ -70,6 +70,9 @@ class StudyReplication:
                 else:self.u=torch.eye(self.dimension,device=device)[:,:self.rank]
             self.reference=dict(valid_u128=self.completed>=min(self.interval,self.freeze),role='observation_basis',source='training_motion_panel',
                 frozen=self.completed>=self.freeze,cumulative_to=min((self.completed//self.interval)*self.interval,self.freeze))
+            if self.stability is not None:
+                observed = self.completed // self.stability.cfg['interval'] * self.stability.cfg['interval']
+                self.reference.update(valid_u128=observed > 0, frozen=self.stability.stable, cumulative_to=observed)
         else:
             with np.load(self.asset,allow_pickle=False) as f:self.u=torch.from_numpy(f['basis'].copy()).to(device)
             self.reference=dict(valid_u128=True,role='frozen_full_training_motion_basis',sha256=hashlib.sha256(self.asset.read_bytes()).hexdigest())
@@ -86,6 +89,10 @@ class StudyReplication:
         self.study.start(self.train,self.u,payload,self.completed)
 
     def before_inner(self,inner):
+        if int(self.cfg.get('reuse', 1)) > 1:
+            update = self.completed + inner + 1
+            self.measure = (update == 1 or update % self.interval == 0 or
+                            update == int(self.cfg['rounds']) * int(self.cfg['reuse']))
         self.parameter_measurement=None
         if self.parameter_tokens is not None and (self.measure or self.sample_rq1):
             self.parameter_measurement=self.parameter_tokens.measure(self.train,self.step,inner)
@@ -354,12 +361,20 @@ class StudyReplication:
         meta = None
         if u.shape[1] and stability_due:
             decision = self.stability.observe(update, u, second)
+            atomic_json(self.records / 'rq4' / f'early_stop_{update:03d}.json', decision)
             self.u = u.to(next(self.actor.actor_module.parameters()).device)
             install_basis(self.asset, u)
             meta = dict(freeze_step=update if decision['stable'] else None, stable=decision['stable'])
+            self.reference.update(valid_u128=True, cumulative_to=update, frozen=decision['stable'])
+        elif stability_due:
+            self.stability.stable = False
+            atomic_json(self.records / 'rq4' / f'early_stop_{update:03d}.json', dict(
+                step=update, stable=False, decision='continue', reason='zero_probe_displacement',
+                config=self.stability.cfg, ready=False))
         elif u.shape[1] and self.stability is None and update <= self.freeze:
             self.u = u.to(next(self.actor.actor_module.parameters()).device)
             install_basis(self.asset, u)
+            self.reference.update(valid_u128=True, cumulative_to=update, frozen=update == self.freeze)
             if update == self.freeze:
                 meta = dict(freeze_step=self.freeze)
         if meta is not None:
@@ -371,6 +386,21 @@ class StudyReplication:
         atomic_json(self.output/'motion'/f'step_{update:03d}.json', record)
 
     def finish(self,losses,norms):
+        if len(losses) == 2 and int(self.cfg.get('reuse', 1)) == 2 and (
+                self.step % self.interval == 0 or self.step == int(self.cfg['rounds'])):
+            # Both training losses are pre-update. Re-evaluate the identical cached
+            # responses and teacher targets at the parameters committed by update 2.
+            started = time.perf_counter()
+            counts = self.train.batch['response_mask'].sum(1).cpu().numpy()
+            after = float(np.average(response_losses(self.actor, self.train), weights=counts))
+            second_gain = losses[1] - after
+            atomic_json(self.records / 'rq4' / f'reuse_round_{self.step:03d}.json', dict(
+                rollout_round=self.step, optimizer_updates=[self.completed+1, self.completed+2],
+                responses=len(counts), valid_tokens=int(sum(counts)), normalization='mean_over_valid_training_tokens',
+                kl_before_first=losses[0], kl_after_first=losses[1], kl_after_second=after,
+                first_gain=losses[0]-losses[1], second_gain=second_gain))
+            self.metrics['rq4/second_gain'] = second_gain
+            self.extra += time.perf_counter() - started
         atomic_json(self.output/f'round_{self.step:03d}.json',dict(round=self.step,reuse=len(losses),
             optimizer_updates=self.completed+len(losses),preupdate_train_kl=losses,gradient_norms=norms,
             diagnostic_revision='fixed128-gradient-study-v1',old_heldout_fixed_enabled=False))

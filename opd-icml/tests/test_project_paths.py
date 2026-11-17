@@ -60,7 +60,7 @@ def test_suite_children_share_project_relative_paths(tmp_path, monkeypatch):
     assert plan['output'] == 'runs/suite1' and plan['results_zip'] == 'runs/suite1-results.zip'
     jobs = [job for queue in plan['small_queues'] for job in queue] + plan['large']
     for job in jobs:
-        assert job['output'] == 'runs/suite1/' + job['scale']
+        assert job['output'] == 'runs/suite1/' + job['name']
         for command in [job['command'], *([job['grade']] if job['grade'] else [])]:
             assert not any(Path(value).is_absolute() for value in command[1:])
     assert not any(Path(value).is_absolute() for command in plan['prepare'] for value in command[1:])

@@ -212,6 +212,10 @@ def test_suite_suppresses_individual_zips_and_exports_one_archive_after_all_jobs
             assert '--no-package' in job['command']
             if job['grade']:
                 assert '--no-package' in job['grade']
+            if job['rq4_strategy']:
+                summary = dict(scale=job['scale'], strategy=job['rq4_strategy'],
+                               training_wall_seconds=60., five_benchmark_mean_at_8=.5)
+                save(run, job['name']+'/training/training_records/rq4/summary.json', json.dumps(summary).encode())
         save(run, 'status.json', b'{"__suite__":"complete"}')
         save(run, '4b/eval/final_mean8.summary.json', b'{"score":1}')
         save(run, '4b/merged/model.safetensors', b'never include')
@@ -220,6 +224,7 @@ def test_suite_suppresses_individual_zips_and_exports_one_archive_after_all_jobs
     with zipfile.ZipFile(exports.archive_path(run)) as archive:
         assert archive.testzip() is None
         assert 'suite/4b/eval/final_mean8.summary.json' in archive.namelist()
+        assert set(json.loads(archive.read('suite/rq4_comparison.json'))) == {'1.7b', '4b'}
         assert json.loads(archive.read(exports.MANIFEST))['phase'] == 'suite-complete'
         assert not any('model.safetensors' in name for name in archive.namelist())
 

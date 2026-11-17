@@ -20,7 +20,7 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 \
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-七组均为 paired-full，106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。默认每一步抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。总入口还为 Qwen3 1.7B 和 4B 各运行两组 RQ4 对照。默认每一步抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
@@ -72,7 +72,7 @@ bash scripts/h200/train_eval_qwen3_8b.sh
 bash scripts/h200/train_eval_gemma3_12b.sh
 ```
 
-它们仍可单独使用，默认训练后评测。DeepSeek默认Code pass@8（LiveCodeBench、HumanEval+），每题生成8个回答，结果写入 `eval/code_pass8/`；旧 `code_pass4/` 结果保留，不作为 pass@8 缓存复用。Qwen/Gemma默认数学六项Mean@8；训练和评测GPU列表相同，单卡TP=1、四卡TP=4。`--devices`指定所需一张/四张卡，`--task`切换任务。入口不自动跑RQ4 early-stop/reuse或Base基线。
+单组入口默认训练一个 FULL 后评测。DeepSeek 默认 Code pass@8（LiveCodeBench、HumanEval+），每题生成 8 个回答，结果写入 `eval/code_pass8/`。Qwen/Gemma 默认数学六项 Mean@8。训练与评测 GPU 相同，单卡 TP=1、四卡 TP=4。`--devices` 指定 GPU，`--task` 切换任务。单独运行一组 RQ4 可用下文的 `--rq4-strategy`。
 
 ```bash
 bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
@@ -126,6 +126,15 @@ bash scripts/h200/train_eval_qwen3_4b.sh \
 
 此命令适用于评测失败后保留的 checkpoint，或启动时设置了 `--keep-model-files` 的实验。评测成功并自动清理权重后，不能再通过 `--stage eval` 重新生成回答；已保存的回答和统计仍保留。合并中断且没有完成标记时，先将该实验的 `merged/` 移到另一个位置后重试。训练中断需使用新输出目录重新训练。
 
+
+## RQ4 策略对照
+
+总入口会在每个选中的 Qwen3 1.7B、4B 的同一 GPU 槽依次运行 FULL、早停和复用，各自从相同的初始学生模型启动。比较沿用当前 paired-full 的全局 128 条训练样本、独立验证集、学习率、逐步诊断和生成配置。可用 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 单跑这六次训练。单臂可用 `python scripts/run_h200_experiment.py --scale 1.7b --rq4-strategy reuse`，策略可选 `full`、`early-stop` 和 `reuse`。
+
+* **早停**。每 5 次参数更新在固定 probe 上检查一次。从第 15 步起，窗口覆盖 t−10、t−5、t。`training/training_records/rq4/early_stop_XXX.json` 保存相邻与首尾子空间的重合度、主角余弦平方的第 10 百分位、能量覆盖差、阈值以及继续或停止的判定。首次满足条件即保存并评测该步模型；跑满 106 步时从最后一次更新评测。
+* **复用**。每次新 rollout 和教师目标供两次真实 AdamW 更新使用，53 次 rollout 共 106 次更新。在 rollout 第 5、10、…、50、53 轮，`reuse_round_XXX.json` 记录同一训练 batch 按有效 token 平均的 `kl_before_first`、`kl_after_first` 和 `kl_after_second`。最后一项用第二次更新后的学生重新前向计算。`second_gain = kl_after_first - kl_after_second`，正值表示第二步进一步降低了 KL。
+* **时间与评测**。每臂的 `rq4_training_time.json` 记录训练命令的实测墙钟时间，包含训练初始化、诊断和保存 checkpoint，模型合并及最终评测单独执行。续跑时累计有计时记录的训练尝试，无法还原完整时长时汇总值为 `null`。最终 checkpoint 的实际 rollout 轮数、更新数和停止原因写入 `training/training_records/rq4/summary.json`。
+* **对照表**。套件 ZIP 的 `rq4_comparison.json` 按规模和策略汇总上述结果。五项为 MATH500、HMMT25、HMMT26、AIME26 和 Minerva，各项 Mean@8 和算术平均用 0–1 表示，`five_benchmark_change_pp` 给出相对同规模 FULL 的百分点变化，`training_time_saved_fraction` 给出实测时间节省比例。原始六项评测（含 AMC23）均保存在各臂的 `eval/final_mean8.summary.json`。
 
 ## 磁盘与自动清理
 
