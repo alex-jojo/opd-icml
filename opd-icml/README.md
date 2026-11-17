@@ -78,6 +78,8 @@ bash scripts/h200/run_all.sh \
 RQ2 在每次 FULL 参数更新后测量同一组固定 probe。`training/training_records/rq2/` 保存初始化的 hidden 与位置、每步的累计位移 RMS、特征值谱和前 128 个方向。从第 10 步起还记录固定第 10 步子空间的覆盖率和重合度。
 同目录的 `gradient_XXX.npz` 保存每次更新所用训练 token 的完整 hidden 梯度谱及其自身 top-128 能量占比。第 11 次更新起，同时保存梯度在第 10 次更新后固定的 probe 子空间 U₁₀ 内的能量占比。
 
+RQ3 的 `training/training_records/rq3/checkpoint_XXX.json` 按更新前的检查点编号。0、10、…、100 各存 128 条验证回答在下一次更新前后的配对 KL；10、30、60、100 另存图 7(b、c) 的六对子集明细和均值。
+
 输出目录必须是新目录；再次从头运行换成 `run2`。当前入口不支持中断后的训练续跑。
 
 ## 4. 看进度、下载结果

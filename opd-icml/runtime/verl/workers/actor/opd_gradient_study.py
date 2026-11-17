@@ -4,6 +4,7 @@ No trial optimizer steps. Parameter vectors live in bounded CPU buffers, never
 in result files. Exact Gram entries reuse cached gradients when the host-memory
 budget permits; otherwise the original bounded replay path remains in use.
 """
+import hashlib
 import json
 import os
 import pickle
@@ -17,7 +18,7 @@ from . import opd_distributed as dp
 from .opd_top16 import forward,reverse_kl,_final_norm_module
 from .opd_mode_absorption import observe_only
 from .opd_plasticity import atomic_json,atomic_npz
-from .opd_gradient_study_math import gram_summary,scope_geometry,compare_hidden,transfer_report,nested_variance
+from .opd_gradient_study_math import gram_summary,scope_geometry,compare_hidden,subset_alignment,transfer_report,nested_variance
 
 
 def parameter_groups(name):
@@ -299,13 +300,14 @@ def losses(actor,data):
 class GradientStudy:
     def __init__(self,actor,cfg,output):
         self.actor=actor;self.cfg=dict(cfg);self.output=Path(output)/'gradient_study';self.payload=None
+        self.rq3_directory = Path(output).parent / 'training_records' / 'rq3'
         self.calls=0
 
     def start(self,train,basis,payload,checkpoint):
         self.started=time.perf_counter();self.diagnostic_seconds=0.;self.checkpoint=checkpoint;self.train=train;self.basis=basis.float()
         self.payload=payload;self.directory=self.output/f'checkpoint_{checkpoint:03d}'
         self.layout=ParameterLayout(self.actor.actor_module);self.calls=0;self.report={}
-        if payload.get('geometry',False):self.cross_batch()
+        self.subset_alignment = self.cross_batch() if payload.get('geometry',False) else None
         if payload.get('paths') is not None:self.path_variance(payload['paths'])
         self.validation=payload['validation']
         self.val_grad,self.before,val_moments=self.grad(self.validation,normalization='response',capture_hidden=True)
@@ -345,17 +347,41 @@ class GradientStudy:
         if self.actor.config.policy_loss.get('hidden_projection',{}).get('enabled',False):
             eg,_=exact_gram(lambda i:self.grad(batches[i],route='u')[0],self.layout,m)
             effective={key:gram_summary(value) for key,value in eg.items()}
+        groups = {key:gram_summary(k) for key,k in grams.items()}
+        train_rows = indices.reshape(m,size).tolist()
         atomic_json(self.directory/'parameter_cross_batch.json',dict(
-            groups={key:gram_summary(k) for key,k in grams.items()},
+            groups=groups,
             raw_opd_groups=True,effective_r128_groups=effective,
             batches=m,prompts_per_batch=size,normalization='token mean per diagnostic batch',
-            train_indices=indices.reshape(m,size).tolist(),exact_gradient_evaluations=replays,
+            train_indices=train_rows,exact_gradient_evaluations=replays,
             comparison='same checkpoint, different disjoint subsets of current on-policy training rollout'))
         # CPU decompositions once, not once per GPU.
         result=dp.primary_call(lambda:compare_hidden([scope_geometry(hidden[i]['second'],hidden[i]['mean'],hidden[i]['basis']) for i in range(m)]))
         atomic_json(self.directory/'hidden_cross_batch.json',result)
         self.report['cross_batch_gradient_evaluations']=replays
         self.report['cross_batch_complete']=True
+        return subset_alignment(train_rows, groups['all'], result['full'])
+
+    def save_rq3(self, result):
+        tokens = self.validation.batch['responses'].detach().cpu().numpy()
+        mask = self.validation.batch['response_mask'].detach().cpu().bool().numpy()
+        # The row number joins to validation128/checkpoint_XXX.json. The digest
+        # also identifies the exact sampled response if the same prompt is regenerated.
+        rows = zip(self.payload['validation_source_indices'], tokens, mask,
+                   result['kl_before_per_prompt'], result['kl_after_per_prompt'],
+                   result['gain_per_prompt'], strict=True)
+        responses = []
+        for row, (source, ids, valid, before, after, gain) in enumerate(rows):
+            answer = np.asarray(ids[valid], dtype='<i8')
+            responses.append(dict(response_row=row, source_index=int(source), response_tokens=len(answer),
+                                  response_sha256=hashlib.sha256(answer.tobytes()).hexdigest(),
+                                  kl_before=before, kl_after=after, gain=gain))
+        record = dict(checkpoint_before=self.checkpoint, optimizer_update=self.checkpoint+1,
+                      gain_epsilon=result['threshold'], kl_before=result['kl_before'], kl_after=result['kl_after'],
+                      gain=result['gain'], positive_fraction=result['positive_fraction'], responses=responses)
+        if self.subset_alignment is not None:
+            record['subset_alignment'] = self.subset_alignment
+        atomic_json(self.rq3_directory / f'checkpoint_{self.checkpoint:03d}.json', record)
 
     def path_variance(self,data):
         k=int(self.cfg.get('path_repeats',4));p=len(data)//k
@@ -439,6 +465,7 @@ class GradientStudy:
         result.update(self.report,gradient_evaluations=self.calls,diagnostic_seconds=self.diagnostic_seconds,
             actual_optimizer_updates=1,status='complete',schema='fixed128-gradient-study-v1')
         atomic_json(self.directory/'validation_transfer.json',result)
+        dp.primary_call(lambda: self.save_rq3(result))
         self.val_grad=None;self.weights=None;self.payload=None;self.validation=None
         metrics={'validation128/gain':result['gain'],'validation128/predicted_gain':result['predicted_gain'],
                 'validation128/kl_before':result['kl_before'],'validation128/kl_after':result['kl_after'],

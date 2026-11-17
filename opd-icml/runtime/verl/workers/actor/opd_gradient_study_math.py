@@ -65,6 +65,24 @@ def compare_hidden(items):
     return result
 
 
+def subset_alignment(train_rows, parameter, full_hidden):
+    """Figure 7(b,c): the same unordered subset pairs for all three measurements."""
+    matrices = dict(parameter_gradient_cosine=parameter['cosine'],
+                    mean_hidden_gradient_cosine=full_hidden['cosine'],
+                    centered_covariance_top4_overlap=full_hidden['overlap'].get('centered_k4', {}).get('raw'))
+    pairs = []
+    for a in range(len(train_rows)):
+        for b in range(a+1, len(train_rows)):
+            row = {key: matrix[a][b] if matrix is not None else None for key, matrix in matrices.items()}
+            pairs.append(dict(subset_a=a, subset_b=b, **row))
+    means, valid_pairs = {}, {}
+    for key in matrices:
+        values = [row[key] for row in pairs if row[key] is not None]
+        valid_pairs[key] = len(values)
+        means[key] = float(np.mean(values)) if values else None
+    return dict(subset_train_rows=train_rows, pairs=pairs, means=means, valid_pairs=valid_pairs)
+
+
 def transfer_report(before,after,validation_norm2,update_norm2,dot,epsilon=1e-6):
     b=np.asarray(before,float);a=np.asarray(after,float)
     if b.shape!=a.shape or not np.isfinite(b).all() or not np.isfinite(a).all():raise ValueError('invalid paired validation')

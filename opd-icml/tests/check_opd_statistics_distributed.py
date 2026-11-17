@@ -1,5 +1,6 @@
 """Two-rank CPU DDP: shared full/sample groups, entropy and unchanged gradients."""
 from datetime import timedelta
+import json
 from pathlib import Path
 import socket
 import tempfile
@@ -86,6 +87,25 @@ def worker(rank, address, output):
                     print(f'PASS: two-rank {mode}; one shared grouping, identical FP64 entropy and unchanged gradients', flush=True)
             finally:
                 study_module.prepare_groups = original_prepare
+        # The validation array is gathered in rank order; keep source IDs aligned
+        # even when that order differs from the numeric order of prompt IDs.
+        validation = data.select_idxs([1, 0])
+        mask = validation.batch['response_mask']
+        target = Path(output)/'paired'
+        study = study_module.GradientStudy(actor, {}, target/'replication')
+        study.start(data, torch.eye(4)[:, :2], dict(validation=validation, validation_source_indices=[71, 32]), 10)
+        with torch.no_grad():
+            before = (objective(actor, validation)*mask).sum(1)/mask.sum(1)
+        (objective(actor, part)*part.batch['response_mask']).sum().mul(2/5).backward()
+        study.before_update()
+        actor.actor_optimizer.step()
+        study.after_update()
+        with torch.no_grad():
+            after = (objective(actor, validation)*mask).sum(1)/mask.sum(1)
+        saved = json.loads((target/'training_records/rq3/checkpoint_010.json').read_text())
+        assert [row['source_index'] for row in saved['responses']] == [71, 32]
+        np.testing.assert_allclose([row['kl_before'] for row in saved['responses']], before, atol=1e-6)
+        np.testing.assert_allclose([row['kl_after'] for row in saved['responses']], after, atol=1e-6)
     finally:
         dist.destroy_process_group()
 

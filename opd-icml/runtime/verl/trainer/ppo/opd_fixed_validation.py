@@ -101,7 +101,8 @@ def attach(trainer,batch):
     if checkpoint%int(cfg.get('validation_interval',10)):return
     validation=readout(trainer,checkpoint)
     if cfg.get('validation_only',False):return {'timing/validation128_rollout_readout_seconds':time.perf_counter()-started}
-    payload=dict(validation=validation,geometry=checkpoint in cfg.get('geometry_steps',[10,30,60,100]))
+    payload=dict(validation=validation, validation_source_indices=trainer.opd_validation_source_indices,
+                 geometry=checkpoint in cfg.get('geometry_steps',[10,30,60,100]))
     if checkpoint in cfg.get('path_steps',[10,50,100]):
         p=int(cfg.get('path_prompts',4));k=int(cfg.get('path_repeats',4))
         # Training pool, separate from validation. Fixed prompt panel across checkpoints.

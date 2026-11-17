@@ -32,6 +32,10 @@ RQ2 的 `training/training_records/rq2/probe_initial.npz` 保存固定回答的�
 
 从 `gradient_011.npz` 起，`fixed_u10_coverage` 给出 ‖G U₁₀‖²_F / ‖G‖²_F。U₁₀ 取自同一训练轨迹的 `step_010.npz` 的 `basis`，在第 10 次更新完成后产生。后续更新和断点续跑都沿用这组方向。`fixed_u10_available` 标记参考基是否可用。梯度总能量为零时保留全零谱，省略无定义的占比。非零梯度的占比也会写入训练指标 `rq2/gradient_own_top128_coverage` 和可用时的 `rq2/gradient_fixed_u10_coverage`。
 
+RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`。在默认 106 步 FULL 训练中，0、10、…、100 是更新前的检查点，分别对应第 1、11、…、101 次实际更新。每个文件的 `responses` 有 128 行，同一行内的 `kl_before` 和 `kl_after` 使用相同的生成回答和教师目标，`gain = kl_before - kl_after`。`positive_fraction` 是 `gain > gain_epsilon` 的回答比例。`source_index` 标识验证题，`response_row` 可定位同一检查点 `validation128/checkpoint_XXX.json` 中的回答。`response_sha256` 对有效回答 token ID 按小端 int64 顺序求 SHA-256。第 106 步的终点评估保存在 `validation128/checkpoint_106.json`。
+
+在检查点 10、30、60、100，同一文件另存 `subset_alignment`。当前 128 条训练样本随机分为 4 组，每组 32 条；`subset_train_rows` 给出各组在当前 batch 的行号。`pairs` 保存六对不同子集的全模型参数梯度余弦、完整 hidden 空间内的平均 token 梯度余弦，以及**中心化** hidden 梯度协方差的前 4 个方向重合度 ‖VₐᵀVᵦ‖²_F / 4。`means` 是图 7(b、c) 使用的三个均值。`valid_pairs` 给出各指标的有效对子数；零范数的余弦、有效秩不足 4 的重合度记为 `null`，计算均值时跳过。
+
 流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
 `--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU线程用于判题，其余按槽分配；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
