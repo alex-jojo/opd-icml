@@ -249,7 +249,7 @@
       "lora_adapter_path": null,
       "lora_alpha": 16,
       "lora_rank": 0,
-      "override_config": {},
+      "override_config": {"attn_implementation": "sdpa"},
       "path": "${oc.env:OPD_STUDENT}",
       "target_modules": "all-linear",
       "tokenizer_path": null,

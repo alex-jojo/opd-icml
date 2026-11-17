@@ -55,6 +55,10 @@ def parser():
     p.add_argument('--task', choices=['math', 'code'], help='Default: DeepSeek code; Qwen/Gemma math')
     p.add_argument('--stage', choices=['all', 'train', 'eval', 'train-generate', 'generate', 'grade'], default='all')
     p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
+    p.add_argument('--gpus', type=int, choices=[1, 2, 4], help='Override the preset GPU count for this student; TP follows it')
+    p.add_argument('--save-freq', type=int, help='Resumable checkpoint every N rounds (passed to train.py)')
+    p.add_argument('--resume', action='store_true', help='Continue training in an existing --output from its latest checkpoint')
+    p.add_argument('--model-artifacts-root', type=Path, help='Keep the deletable weights (training checkpoints and merged model) under <root>/<run name>/ instead of inside the run; symlinks are left in the run directory')
     p.add_argument('--devices', help='Exactly one/four GPU IDs or UUIDs; otherwise use CUDA_VISIBLE_DEVICES. Ignored for CPU-only grade')
     p.add_argument('--output', type=Path, help='Pipeline root; contains training/, merged/, eval/, logs/')
     for name in ('student', 'teacher', 'cache-dir', 'model-dir', 'data', 'val-data'):
@@ -100,6 +104,7 @@ def select_devices(count, explicit, environment):
 
 def build_plan(args, environment):
     spec = EXPERIMENTS[args.scale]
+    gpus = args.gpus or gpus
     task = args.task or spec.task
     if args.stage == 'grade' and task != 'code':
         raise ValueError('--stage grade is for code; math uses its existing combined scoring protocol')
@@ -113,8 +118,8 @@ def build_plan(args, environment):
     cpus = args.ray_num_cpus or max(1, len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count() or 1)
     if args.ray_num_cpus is not None and args.ray_num_cpus < 1:
         raise ValueError('--ray-num-cpus must be positive')
-    if args.stage in ('all', 'train', 'train-generate') and cpus < spec.gpus + 1:
-        raise ValueError(f'Training on {spec.gpus} GPUs requires at least {spec.gpus + 1} Ray CPUs '
+    if args.stage in ('all', 'train', 'train-generate') and cpus < gpus + 1:
+        raise ValueError(f'Training on {gpus} GPUs requires at least {gpus + 1} Ray CPUs '
                          '(one per GPU worker plus one TaskRunner)')
     if not 0 < args.ray_object_store_gib < float('inf') or not 0 <= args.gradient_cache_gib < float('inf'):
         raise ValueError('Ray memory must be positive and cache memory nonnegative, both finite')
@@ -122,13 +127,17 @@ def build_plan(args, environment):
         raise ValueError('--val-data applies only to code training')
     if min(args.eval_max_num_seqs, args.eval_batch_size, args.score_workers, args.code_workers) < 1:
         raise ValueError('Evaluation concurrency and worker counts must be positive')
-    devices = '' if args.stage == 'grade' else select_devices(spec.gpus, args.devices, environment)
+    devices = '' if args.stage == 'grade' else select_devices(gpus, args.devices, environment)
     run = project_absolute(args.output or Path('runs/h200') / args.scale / f'{task}-paired-full')
     training, merged = run / 'training', run / 'merged'
+    artifacts = project_absolute(args.model_artifacts_root) / run.name if args.model_artifacts_root else None
+    checkpoints_root = artifacts / 'checkpoints' if artifacts else training / 'checkpoints'
+    if artifacts:
+        merged = artifacts / 'merged'
     ray_temp = Path(tempfile.gettempdir()) / ('opd-ray-' + hashlib.sha256(str(run).encode()).hexdigest()[:12])
     command = [sys.executable, 'train.py', '--scale', args.scale, '--task', task,
-               '--experiment', 'paired-full', '--hardware', f'h200x{spec.gpus}',
-               '--num-gpus', str(spec.gpus), '--rollout-tp-size', str(spec.gpus),
+               '--experiment', 'paired-full', '--hardware', 'h200x1' if gpus == 1 else 'h200x4',
+               '--num-gpus', str(gpus), '--rollout-tp-size', str(gpus),
                '--micro-batch-size', str(micro), '--teacher-micro-batch-size', str(teacher_micro),
                '--optimizer-offload', optimizer_offload, '--teacher-offload', teacher_offload,
                '--ray-num-cpus', str(cpus), '--ray-object-store-gib', str(args.ray_object_store_gib),
@@ -142,6 +151,12 @@ def build_plan(args, environment):
         command += ['--parameter-token-samples', str(args.parameter_token_samples)]
     if args.parameter_token_group_size is not None:
         command += ['--parameter-token-group-size', str(args.parameter_token_group_size)]
+    if args.save_freq is not None:
+        command += ['--save-freq', str(args.save_freq)]
+    if args.resume:
+        command += ['--resume']
+    if artifacts:
+        command += ['--checkpoint-dir', project_relative(checkpoints_root)]
     for name in ('student', 'teacher', 'cache_dir', 'model_dir', 'data', 'val_data'):
         value = getattr(args, name)
         if value is not None:
@@ -170,16 +185,18 @@ def build_plan(args, environment):
             '--max_prompt_tokens', '1024', '--max_tokens', '8192',
             '--max_num_seqs', str(args.eval_max_num_seqs), '--score_workers', str(args.score_workers)]
         prepare_eval = None
-    checkpoint = training / 'checkpoints/global_step_<latest>/actor'
+    checkpoint = checkpoints_root / 'global_step_<latest>/actor'
     merge = [sys.executable, '-m', 'verl.model_merger', 'merge', '--backend', 'fsdp',
              '--local_dir', project_relative(checkpoint), '--target_dir', project_relative(merged), '--use_cpu_initialization']
-    return dict(scale=args.scale, task=task, experiment='paired-full', gpu_count=spec.gpus,
-        training_gpus=spec.gpus, evaluation_gpus=0 if args.stage == 'grade' else spec.gpus,
-        rollout_tp=spec.gpus, evaluation_tp=None if args.stage == 'grade' else spec.gpus,
-        stage=args.stage, stage_gpu_count=0 if args.stage == 'grade' else spec.gpus,
+    return dict(scale=args.scale, task=task, experiment='paired-full', gpu_count=gpus,
+        training_gpus=gpus, evaluation_gpus=0 if args.stage == 'grade' else gpus,
+        rollout_tp=gpus, evaluation_tp=None if args.stage == 'grade' else gpus,
+        stage=args.stage, stage_gpu_count=0 if args.stage == 'grade' else gpus,
         keep_model_files=args.keep_model_files,
         results_zip=None if args.no_package else project_relative(archive_path(run, args.scale)),
         path_base='project_root', cuda_visible_devices=devices, output=project_relative(run), models=read_models(args.scale),
+        checkpoints_dir=project_relative(checkpoints_root), merged_dir=project_relative(merged),
+        model_artifacts=project_relative(artifacts) if artifacts else None,
         profile=args.profile, ray_cpus=cpus, gradient_cache_gib=args.gradient_cache_gib,
         prepare_training=prepare, prepare_evaluation=prepare_eval,
         train=command, merge=merge, evaluate=evaluation)
@@ -200,8 +217,7 @@ def child_environment(plan, environment):
     return env
 
 
-def final_checkpoint(training, gpus, expected_step):
-    checkpoints = training / 'checkpoints'
+def final_checkpoint(checkpoints, gpus, expected_step):
     marker = checkpoints / 'latest_checkpointed_iteration.txt'
     step = int(marker.read_text(encoding='utf-8').strip())
     if step != expected_step:
@@ -242,7 +258,7 @@ def execute(args, plan, env):
         run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
         return
     training_stage = args.stage in ('all', 'train', 'train-generate')
-    if training_stage and run.exists() and any(run.iterdir()):
+    if training_stage and not args.resume and run.exists() and any(run.iterdir()):
         raise ValueError(f'Choose an empty --output directory: {run}')
     # Use a fresh process so probing CUDA never initializes it in this orchestrator.
     probe = [sys.executable, '-c',
@@ -266,11 +282,17 @@ def execute(args, plan, env):
             raise ValueError(f'Missing math benchmark file: {args.math_benchmarks}')
     if training_stage:
         run_command(plan['train'], env, run / 'logs/train.log')
+    if plan.get('model_artifacts'):
+        # Convenience links only; the pipeline itself uses the real paths in the plan.
+        for link, target in ((run / 'training/checkpoints', plan['checkpoints_dir']), (run / 'merged', plan['merged_dir'])):
+            if not link.exists() and not link.is_symlink():
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(project_absolute(target), target_is_directory=True)
     if args.stage == 'train':
         return
     expected = plan['resolved_training']['rounds_cap'] * plan['resolved_training']['updates_per_round']
-    actor = final_checkpoint(run / 'training', plan['gpu_count'], expected)
-    merged = run / 'merged'
+    actor = final_checkpoint(project_absolute(plan['checkpoints_dir']), plan['gpu_count'], expected)
+    merged = project_absolute(plan['merged_dir'])
     merge_marker = merged / 'h200_merge.json'
     identity = dict(scale=plan['scale'], task=plan['task'], checkpoint=project_relative(actor), gpu_count=plan['gpu_count'])
     if merged.exists():
@@ -317,7 +339,10 @@ def main():
         if not args.dry_run:
             print_disk_space(plan['output'])
             execute(args, plan, env)
-            finish_experiment(args, plan)
+            if plan.get('model_artifacts'):
+                print(f"[MODEL ARTIFACTS] weights kept under {plan['model_artifacts']} (delete that directory to reclaim space)", flush=True)
+            else:
+                finish_experiment(args, plan)
             if plan['results_zip']:
                 package_results(plan['output'], plan['results_zip'], phase=args.stage)
     except subprocess.CalledProcessError as error:

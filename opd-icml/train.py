@@ -190,6 +190,9 @@ def main():
     parser.add_argument("--hardware", choices=["l40x4", "a100x1", "h200x1", "h200x4"],
                         help="Conservative memory presets for L40, A100, or one/four H200 GPUs")
     parser.add_argument('--num-gpus', type=int, help='GPUs to use; overrides preset count, keeps global batch fixed')
+    parser.add_argument('--save-freq', type=int, help='Save a resumable checkpoint (model + optimizer + data cursor) every N rounds; default only the final model')
+    parser.add_argument('--checkpoint-dir', type=Path, help='Write training checkpoints here instead of <output>/checkpoints; the final path component must be "checkpoints"')
+    parser.add_argument('--resume', action='store_true', help='Continue from the latest checkpoint in --output (trainer.resume_mode=auto); needs the same GPU count')
     parser.add_argument('--rollout-tp-size', type=int, help='Rollout tensor parallel degree; defaults to explicit GPU count')
     parser.add_argument('--rollout-batch-size', type=int, help='Global prompts generated per rollout round')
     parser.add_argument('--mini-batch-size', type=int, help='Global prompts in one OPD update; must equal rollout batch')
@@ -259,6 +262,22 @@ def main():
             hardware_overrides['ray_kwargs.ray_init.address'] = 'local'
             hardware_overrides['ray_kwargs.ray_init.include_dashboard'] = False
         validate_gpu_topology(cfg)
+        if args.save_freq is not None:
+            if args.save_freq < 1:
+                raise ValueError('--save-freq must be positive')
+            hardware_overrides['trainer.save_freq'] = args.save_freq
+            # Periodic checkpoints must carry AdamW + data state to be resumable; the
+            # default final-model-only export is not a resume point. The experiment
+            # files save only the model, so the worker must be told to save all three.
+            hardware_overrides['trainer.opd_final_model_only_checkpoint'] = False
+            hardware_overrides['actor_rollout_ref.actor.checkpoint.save_contents'] = ['model', 'optimizer', 'extra']
+        if args.resume:
+            hardware_overrides['trainer.resume_mode'] = 'auto'
+        if args.checkpoint_dir is not None:
+            checkpoint_dir = project_absolute(args.checkpoint_dir)
+            if checkpoint_dir.name != 'checkpoints':
+                raise ValueError('--checkpoint-dir must end with a directory named "checkpoints"')
+            hardware_overrides['trainer.default_local_dir'] = str(checkpoint_dir)
     except ValueError as error:
         parser.error(str(error))
     study = cfg['actor_rollout_ref']['actor']['policy_loss'].get('gradient_study', {})
@@ -279,7 +298,8 @@ def main():
     validation = project_absolute(args.val_data or Path('data/eurus_code_validation.parquet')) if args.task == 'code' else data
     command = [sys.executable, "-m", "verl.trainer.main_ppo", "--config-dir", Path(os.path.relpath(profile, output)).as_posix(),
                "--config-name", config_name, "hydra.run.dir=hydra"]
-    command += ['++' + key + '=' + json.dumps(value, ensure_ascii=False) for key, value in hardware_overrides.items()]
+    command += ['++' + key + '=' + ('[' + ','.join(map(str, value)) + ']' if isinstance(value, list) else json.dumps(value, ensure_ascii=False))
+                for key, value in hardware_overrides.items()]
     if args.parameter_token_gradients or args.parameter_token_group_size is not None:
         prefix = '++actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens.'
         command += [prefix + key + '=' + json.dumps(value) for key,value in study['parameter_tokens'].items()]
@@ -322,7 +342,7 @@ def main():
             parser.error(str(error))
         if not args.sandbox_url and os.name == 'nt':
             parser.error('The local code judge requires a Linux/Unix training server, or pass --sandbox-url')
-    if output.exists() and any(output.iterdir()):
+    if not args.resume and output.exists() and any(output.iterdir()):
         parser.error(f"Choose an empty output directory: {output}")
     env = tracking_env.copy()
     if args.num_gpus is not None:
@@ -345,6 +365,8 @@ def main():
         env["OPD_" + role.upper()] = path
     output.mkdir(parents=True, exist_ok=True)
     (output / "assets").mkdir(exist_ok=True)
+    if args.checkpoint_dir is not None:
+        project_absolute(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     env.update(OPD_DATA=str(data), OPD_RUN=str(output), OPD_PROJECT_ROOT=str(ROOT),
                OPD_VALIDATION_DATA=str(validation), OPD_CODE_WORKERS=str(args.code_workers),
                OPD_CODE_JUDGE_BACKEND='sandbox' if args.sandbox_url else 'local',
