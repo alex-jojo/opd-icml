@@ -20,7 +20,9 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 \
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-七组均为 paired-full：106轮、每轮一次更新、全局batch/mini-batch=128、学习率1e-5。参数梯度每个观测点抽样256个token（64 high-KL+192 remaining），每个样本仍求完整可训练参数梯度，hidden统计保留。`--parameter-token-gradients exact-all` 可显式切换全量。总调度不减少样本、频率、回答长度、评测次数或精度。
+七组均为 paired-full，106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。默认每一步抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+
+每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
 流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 

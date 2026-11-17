@@ -14,7 +14,8 @@ FIELDS = ["step", "model", "train_kl", "above_initial_kl_threshold_pct", "top_kl
           "above_initial_kl_parameter_energy_pct", "parameter_token_extra_backwards",
           "parameter_token_gradient_seconds", "parameter_token_mode", "parameter_token_sampled",
           "parameter_token_sample_count", "parameter_token_population_count",
-          "top_kl_decile_parameter_energy_ci95_low_pct", "top_kl_decile_parameter_energy_ci95_high_pct"]
+          "top_kl_decile_parameter_energy_ci95_low_pct", "top_kl_decile_parameter_energy_ci95_high_pct",
+          "step1_kl_p90"]
 
 
 def read_run(path, model):
@@ -24,7 +25,9 @@ def read_run(path, model):
     for record in records:
         batch = json.loads(record.read_text(encoding="utf8"))
         step = batch["step"]
-        audit = path / f"replication/token_audit/step_{step:03}_inner_1.json"
+        audit = record.with_name(f"rq1_step_{step:04d}.json")
+        if not audit.is_file():
+            audit = path / f"replication/token_audit/step_{step:03}_inner_1.json"
         frequency = share = ""
         parameter_share = fixed_share = ""
         report = {}
@@ -49,7 +52,8 @@ def read_run(path, model):
                meta.get('mode', ''), meta.get('sampled', ''), meta.get('token_count', ''),
                meta.get('population_token_count', meta.get('token_count', '')),
                100 * interval[0] if interval is not None else '',
-               100 * interval[1] if interval is not None else '']
+               100 * interval[1] if interval is not None else '',
+               report.get('thresholds', {}).get('kl_p90', batch["metrics"].get('token_audit/step1_kl_p90', ''))]
 
 
 if __name__ == "__main__":

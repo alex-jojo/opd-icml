@@ -9,13 +9,15 @@ from .opd_focus_stats import concentration
 from .opd_priority_stats import minmax, spectrum
 
 
-def output_scores(student, teacher, *, include_teacher_entropy=False):
+def output_scores(student, teacher, *, include_teacher_entropy=False, kl_only=False):
     with torch.no_grad():
         lp = student.detach().double().log_softmax(-1)
         lq = teacher.detach().double().log_softmax(-1)
         p, q = lp.exp(), lq.exp()
         ratio = lp-lq
         kl = (p*ratio).sum(-1)
+        if kl_only:
+            return {'kl': kl.clamp_min(0)}
         variance = (p*(ratio-kl[..., None]).square()).sum(-1)
         # p_a L(a) = 1-p_a; no reciprocal of tiny probabilities is needed.
         leverage = 1-p

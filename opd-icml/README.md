@@ -73,7 +73,7 @@ bash scripts/h200/run_all.sh \
 
 **不用逐个下载模型、准备数据或启动七个脚本。**总入口会自动完成这些步骤。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘；33B 训练还需要充分主存。
 
-七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。参数梯度诊断默认每个观测点抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量；hidden 统计同时保留。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
+七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。默认每次更新抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量。每步的 RQ1 汇总、首步 KL 阈值、逐 token 能量和抽样权重随结果 ZIP 保存在 `training/training_records/rq1_step_XXXX.json`。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
 
 输出目录必须是新目录；再次从头运行换成 `run2`。当前入口不支持中断后的训练续跑。
 

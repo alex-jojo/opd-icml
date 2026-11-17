@@ -104,7 +104,7 @@ def select_devices(count, explicit, environment):
 
 def build_plan(args, environment):
     spec = EXPERIMENTS[args.scale]
-    gpus = args.gpus or gpus
+    gpus = args.gpus or spec.gpus
     task = args.task or spec.task
     if args.stage == 'grade' and task != 'code':
         raise ValueError('--stage grade is for code; math uses its existing combined scoring protocol')

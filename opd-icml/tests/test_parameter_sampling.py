@@ -135,7 +135,6 @@ def test_sampled_study_preserves_full_hidden_population_and_saves_identical_pair
         assert report['gradient_frobenius_full'] == pytest.approx(np.sqrt(full['raw_gradient_energy'].sum()))
     assert report['paired_parameter_hidden_sample']['sample_count'] == 4
     records = tmp_path/'training_records'
-    records.mkdir()
     (records/'post_update_0001.json').write_text(json.dumps(dict(step=1,metrics={'actor/opd_top16_kl':.1})))
     spec = importlib.util.spec_from_file_location('sampled_signal_export',ROOT/'analysis/extract_signal.py')
     exporter = importlib.util.module_from_spec(spec)
@@ -144,6 +143,46 @@ def test_sampled_study_preserves_full_hidden_population_and_saves_identical_pair
     assert row['parameter_token_mode'] == 'kl_stratified'
     assert row['parameter_token_sampled'] is True
     assert row['parameter_token_sample_count'] == 4 and row['parameter_token_population_count'] == 5
+    threshold = row['step1_kl_p90']
+    assert threshold == report['thresholds']['kl_p90']
+    saved = json.loads((records/'rq1_step_0001.json').read_text())
+    with np.load(directory/'step_001_inner_1.npz') as full:
+        assert threshold == pytest.approx(np.quantile(full['kl'], .9))
+    assert saved['groups']['kl_top10']['quantities']['parameter_gradient_energy'] == report['groups']['kl_top10']['quantities']['parameter_gradient_energy']
+
+    # A resumed middle step still uses the initial threshold, saves RQ1, and
+    # leaves the five-step hidden geometry schedule alone.
+    actor.actor_optimizer.step()
+    actor.actor_optimizer.zero_grad(set_to_none=True)
+    cache_logits(actor, data)
+    expected = reference_energy(actor, data)
+    replication.threshold_file.unlink()  # Recover from the compact step-1 record.
+    replication = study_module.StudyReplication(actor)
+    replication.begin(data, None, 2)
+    assert not replication.measure
+    replication.before_inner(0)
+    cursor = 0
+    for part in data.split(1):
+        with replication.watch_gradient_scopes(part.batch, 0, {}), replication.watch_training(part.batch, 0, cursor):
+            (objective(actor, part) * part.batch['response_mask']).sum().div(5).backward()
+        cursor += len(part)
+    replication.before_update(0)
+    compact = json.loads((records/'rq1_step_0002.json').read_text())
+    assert compact['thresholds']['kl_p90'] == threshold
+    assert not (directory/'step_002_inner_1.json').exists()
+    sample = {k: np.array(v) for k, v in compact['samples'].items()}
+    assert len(sample['sampling_weight']) == 4
+    np.testing.assert_allclose(sample['parameter_gradient_energy'], expected[
+        [lookup[(int(r), int(p))] for r, p in zip(sample['row'], sample['pos'])]], rtol=2e-5)
+    weighted = sample['sampling_weight'] * sample['parameter_gradient_energy']
+    share = weighted[sample['in_current_kl_top10']].sum() / weighted.sum()
+    assert replication.metrics['token_audit/kl_top10_parameter_energy_share'] == pytest.approx(share)
+    (records/'post_update_0002.json').write_text(json.dumps(dict(step=2, metrics={'actor/opd_top16_kl':.1})))
+    # A training_records-only bundle is sufficient for both heavy and light steps.
+    (directory/'step_001_inner_1.json').unlink()
+    rows = [dict(zip(exporter.FIELDS, r)) for r in exporter.read_run(tmp_path, 'tiny')]
+    assert [r['step1_kl_p90'] for r in rows] == [threshold, threshold]
+    assert rows[1]['top_kl_decile_parameter_energy_pct'] == pytest.approx(100 * share)
 
 
 def test_default_deepseek_code_and_cli_sampling_compose_without_changing_training_budget():

@@ -172,14 +172,15 @@ def test_training_failure_never_merges_or_evaluates(tmp_path, monkeypatch):
 
 def test_checkpoint_rejects_partial_step_wrong_world_and_missing_rank(tmp_path):
     actor = checkpoint_fixture(tmp_path, 4)
-    assert h200.final_checkpoint(tmp_path, 4, 106) == actor
+    checkpoints = tmp_path / 'checkpoints'
+    assert h200.final_checkpoint(checkpoints, 4, 106) == actor
     with pytest.raises(ValueError, match='final step'):
-        h200.final_checkpoint(tmp_path, 4, 105)
+        h200.final_checkpoint(checkpoints, 4, 105)
     with pytest.raises(ValueError, match='GPU count'):
-        h200.final_checkpoint(tmp_path, 1, 106)
+        h200.final_checkpoint(checkpoints, 1, 106)
     (actor / 'model_world_size_4_rank_3.pt').unlink()
     with pytest.raises(ValueError, match='Missing/empty'):
-        h200.final_checkpoint(tmp_path, 4, 106)
+        h200.final_checkpoint(checkpoints, 4, 106)
 
 
 def test_existing_training_output_is_never_overwritten(tmp_path, monkeypatch):

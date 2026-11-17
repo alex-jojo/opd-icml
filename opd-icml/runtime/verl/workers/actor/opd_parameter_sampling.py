@@ -116,8 +116,9 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
             parameter_gradient_sample_count=quantity['sample_count'])
     paired = {}
     quantities = dict(parameter_gradient_energy=energy,
-                      raw_gradient_energy=fields['raw_gradient_energy'][indices],
-                      projected_gradient_energy=fields['projected_gradient_energy'][indices])
+                      raw_gradient_energy=fields['raw_gradient_energy'][indices])
+    if 'projected_gradient_energy' in fields:
+        quantities['projected_gradient_energy'] = fields['projected_gradient_energy'][indices]
     for name, mask in masks.items():
         count = int(mask.sum())
         paired[name] = {key: weighted_energy(value, mask[indices], count, plan)
@@ -132,7 +133,7 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
                     ranking='all valid tokens, pre-update cached conditional student/teacher KL; stable ties',
                     estimator='Horvitz-Thompson totals; ratios of estimated totals (not unbiased ratios)',
                     paired_hidden_population='identical sampled (response row, token position) with identical weights',
-                    full_hidden_statistics_preserved=True,
+                    full_hidden_statistics_preserved='projected_gradient_energy' in fields,
                     extra_backwards=measurement['backwards'], seconds=measurement['seconds'],
                     causal_prefix=measurement.get('causal_prefix',False),
                     forward_calls=measurement.get('forward_calls'),
@@ -151,5 +152,20 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
         population_token_count=len(target), sample_count=len(source))
     arrays = {key: np.asarray(value)[indices] for key, value in fields.items()}
     arrays.update(parameter_gradient_energy=energy, diagnostic_kl=measurement['diagnostic_kl'],
-                  sampling_weight=weights, sampling_stratum=plan['stratum'])
+                  sampling_weight=weights, sampling_stratum=plan['stratum'],
+                  in_current_kl_top10=masks['kl_top10'][indices])
     return metadata, arrays
+
+
+def rq1_only_report(fields, measurement, thresholds):
+    """Two RQ1 populations on updates without the full hidden/spectral readout."""
+    from .opd_token_audit import summarize, top_mask
+    kl = fields['kl']
+    masks = {'kl_top10': top_mask(kl, .1), 'kl_above_step1_p90': kl >= thresholds['kl_p90']}
+    energy = np.asarray(fields['raw_gradient_energy'], dtype=np.float64)
+    report = dict(groups=summarize(fields, masks, {'raw_gradient_energy': energy}),
+                  gradient_rms_full=float(np.sqrt(energy.mean())),
+                  gradient_frobenius_full=float(np.sqrt(energy.sum())))
+    metadata, arrays = add_sampled_report(report, fields, measurement, thresholds,
+                                          grouping={'masks': masks, 'kl_parts': {}})
+    return report, metadata, arrays

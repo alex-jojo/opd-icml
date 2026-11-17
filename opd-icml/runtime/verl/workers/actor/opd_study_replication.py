@@ -30,6 +30,8 @@ class StudyReplication:
             if not self.full:raise ValueError('Full parameter token audit requires ordinary FULL mode')
             from .opd_parameter_tokens import FullParameterTokenAudit
             self.parameter_tokens=FullParameterTokenAudit(actor,parameter_cfg)
+        self.sample_rq1 = self.parameter_tokens is not None and self.parameter_tokens.mode == 'kl_stratified'
+        self.records = self.output.parent / 'training_records'
         self.tokenizer=None;self.labels={}
         if self.cfg.get('tokenizer_path'):
             from transformers import AutoTokenizer
@@ -68,6 +70,11 @@ class StudyReplication:
             self.reference=dict(valid_u128=True,role='frozen_full_training_motion_basis',sha256=hashlib.sha256(self.asset.read_bytes()).hexdigest())
         self.threshold_file=self.output/'training_token_thresholds.json'
         if not hasattr(self,'thresholds') and dp.exists(self.threshold_file):self.thresholds=json.loads(self.threshold_file.read_text())
+        if self.sample_rq1 and step > 1 and not hasattr(self, 'thresholds'):
+            first = self.records / 'rq1_step_0001.json'
+            if not dp.exists(first):
+                raise ValueError('Cannot resume RQ1 without the original step-1 KL thresholds')
+            self.thresholds = dp.primary_call(lambda: json.loads(first.read_text())['thresholds'])
 
     def start_study(self,payload):
         payload['basis_reference']=self.reference
@@ -75,12 +82,12 @@ class StudyReplication:
 
     def before_inner(self,inner):
         self.parameter_measurement=None
-        if self.measure and self.parameter_tokens is not None:
+        if self.parameter_tokens is not None and (self.measure or self.sample_rq1):
             self.parameter_measurement=self.parameter_tokens.measure(self.train,self.step,inner)
 
     @contextmanager
     def watch_training(self,inputs,inner,cursor):
-        if not self.measure:yield;return
+        if not (self.measure or self.sample_rq1):yield;return
         n=inputs['responses'].shape[1];mask=inputs['response_mask'].bool()
         row,pos=mask.nonzero(as_tuple=True);part={}
         def hook(_m,_a,out):
@@ -88,11 +95,13 @@ class StudyReplication:
                 z=out[:,-n-1:-1]
                 if z.shape[-1]!=inputs['opd_top16_ids'].shape[-1]:z=z.gather(-1,inputs['opd_top16_ids'])
                 part.update({k:v.detach().cpu().numpy() for k,v in output_scores(
-                    z[mask],inputs['opd_teacher_top16_logits'][mask],include_teacher_entropy=True).items()})
-                ordinal=mask.long().cumsum(-1)-1
-                part.update(row=(row+cursor).cpu().numpy(),pos=pos.cpu().numpy(),token=inputs['responses'][mask].cpu().numpy(),
-                    boundary=(ordinal==0)[mask].cpu().numpy(),
-                    relative_position=(ordinal.float()/(mask.sum(1,keepdim=True)-1).clamp_min(1))[mask].cpu().numpy())
+                    z[mask],inputs['opd_teacher_top16_logits'][mask],include_teacher_entropy=True,
+                    kl_only=not self.measure).items()})
+                part.update(row=(row+cursor).cpu().numpy(),pos=pos.cpu().numpy(),token=inputs['responses'][mask].cpu().numpy())
+                if self.measure:
+                    ordinal=mask.long().cumsum(-1)-1
+                    part.update(boundary=(ordinal==0)[mask].cpu().numpy(),
+                        relative_position=(ordinal.float()/(mask.sum(1,keepdim=True)-1).clamp_min(1))[mask].cpu().numpy())
         head=_unwrap_actor_module(_unwrap_actor_module(self.actor.actor_module).lm_head)
         handle=head.register_forward_hook(hook)
         self.current_part=part
@@ -102,27 +111,33 @@ class StudyReplication:
 
     @contextmanager
     def watch_gradient_scopes(self,inputs,inner,state):
-        if not self.measure:yield;return
-        if self.moments is None:self.moments=HiddenMoments(self.u)
+        if not (self.measure or self.sample_rq1):yield;return
+        if self.measure and self.moments is None:self.moments=HiddenMoments(self.u)
         n=inputs['responses'].shape[1];mask=inputs['response_mask'].bool();total=int(self.train.batch['response_mask'].sum())
         def consume(gradient):
             row,pos=mask.nonzero(as_tuple=True);count=len(row)
-            full=np.empty((count,gradient.shape[-1]),dtype=np.float32)
-            inside=np.empty((count,self.u.shape[1]),dtype=np.float32)
-            energy=np.empty(count,dtype=np.float32);kept=np.empty(count,dtype=np.float32)
+            energy=np.empty(count,dtype=np.float32)
+            if self.measure:
+                full=np.empty((count,gradient.shape[-1]),dtype=np.float32)
+                inside=np.empty((count,self.u.shape[1]),dtype=np.float32)
+                kept=np.empty(count,dtype=np.float32)
             start=gradient.shape[1]-n-1
             # No full N x hidden CUDA copy at the backward activation peak.
             for lo in range(0,count,HiddenMoments.chunk_tokens):
                 hi=min(count,lo+HiddenMoments.chunk_tokens)
                 g=gradient[row[lo:hi],pos[lo:hi]+start].detach().float()
                 g.mul_(total/dp.size())
+                energy[lo:hi]=g.square().sum(1).cpu().numpy()
+                if not self.measure:
+                    continue
                 self.moments.add(g)
                 with torch.autocast(device_type=g.device.type,enabled=False):gu=g@self.u.float()
                 full[lo:hi]=g.cpu().numpy();inside[lo:hi]=gu.cpu().numpy()
-                energy[lo:hi]=g.square().sum(1).cpu().numpy()
                 kept[lo:hi]=gu.square().sum(1).cpu().numpy()
                 del g,gu
-            self.current_part.update(g_u=inside,raw_gradient_energy=energy,projected_gradient_energy=kept)
+            self.current_part['raw_gradient_energy']=energy
+            if not self.measure:return
+            self.current_part.update(g_u=inside,projected_gradient_energy=kept)
             self.current_part['transient_full_gradient']=full
             # Deterministic bounded full-vector sample, with identifiers retained.
             ix=torch.linspace(0,count-1,min(64,count),device=gradient.device).round().long()
@@ -140,8 +155,56 @@ class StudyReplication:
             if handle is not None:handle.remove()
             state['raw_gradient_observer']=old
 
+    def gather_token_fields(self):
+        local = {key: np.concatenate([part[key] for part in self.parts]) for key in self.parts[0]}
+        self.parts = []
+        return dp.merge_fields(dp.gather(local))
+
+    def save_rq1(self, inner, report, arrays):
+        groups = {}
+        for name in ('kl_top10', 'kl_above_step1_p90'):
+            group = report['groups'][name]
+            quantities = {key: group['quantities'][key] for key in ('raw_gradient_energy', 'parameter_gradient_energy')}
+            groups[name] = dict(count=group['count'], fraction=group['fraction'], quantities=quantities)
+        step = self.completed + inner + 1
+        metadata = report['parameter_gradient_measurement']
+        hidden = groups['kl_top10']['quantities']['raw_gradient_energy']
+        self.metrics.update({'token_audit/step1_kl_p90': self.thresholds['kl_p90'],
+                             'token_audit/kl_top10_hidden_energy_share': hidden['share'] or 0.})
+        if not dp.primary():return
+        sample_keys = ('row', 'pos', 'token', 'kl', 'in_current_kl_top10', 'sampling_stratum',
+                       'sampling_weight', 'raw_gradient_energy', 'parameter_gradient_energy', 'diagnostic_kl')
+        record = dict(step=step, round=self.step, inner=inner+1, thresholds=self.thresholds,
+                      groups=groups, parameter_gradient_measurement=metadata,
+                      samples={key: arrays[key].tolist() for key in sample_keys})
+        for key in ('gradient_rms_full', 'gradient_frobenius_full', 'parameter_gradient_rms',
+                    'parameter_gradient_frobenius'):
+            record[key] = report[key]
+        atomic_json(self.records / f'rq1_step_{step:04d}.json', record)
+
+    def record_parameter_metrics(self, report, metadata):
+        self.metrics['timing/parameter_token_gradient_seconds']=metadata['seconds']
+        self.metrics['token_audit/parameter_gradient_rms']=report['parameter_gradient_rms']
+        self.metrics['token_audit/parameter_gradient_frobenius']=report['parameter_gradient_frobenius']
+        self.metrics['token_audit/kl_top10_parameter_energy_share']=report['groups']['kl_top10']['quantities']['parameter_gradient_energy']['share'] or 0.
+        self.metrics['token_audit/parameter_token_extra_backwards']=metadata['extra_backwards']
+        self.metrics['token_audit/parameter_token_sample_count']=metadata['token_count']
+        self.metrics['token_audit/parameter_token_coverage_fraction']=metadata['coverage_fraction']
+
     def before_update(self,inner):
         if self.study.payload is not None and inner==0:self.study.before_update()
+        if self.sample_rq1 and not self.measure:
+            from .opd_parameter_sampling import rq1_only_report
+            started = time.perf_counter()
+            fields = self.gather_token_fields()
+            report, metadata, arrays = dp.primary_call(
+                lambda: rq1_only_report(fields, self.parameter_measurement, self.thresholds))
+            self.parameter_measurement = None
+            self.save_rq1(inner, report, arrays)
+            self.record_parameter_metrics(report, metadata)
+            self.metrics['token_audit/high_kl_fraction'] = report['groups']['kl_above_step1_p90']['fraction']
+            self.extra += time.perf_counter() - started
+            return
         if self.moments is None:return
         started=time.perf_counter();moment=self.moments.finish();self.moments=None
         atomic_npz(self.output/'gradient_moments'/f'round_{self.step:03d}_inner_{inner+1}.npz',moment)
@@ -164,7 +227,7 @@ class StudyReplication:
             full_parts.append(part.pop('transient_full_gradient'))
             ix=part.pop('sample_local_index');samples.append(part.pop('sample_full_gradient'))
             sample_rows.append(part['row'][ix]);sample_pos.append(part['pos'][ix])
-        merged=dp.merge_fields(dp.gather({k:np.concatenate([p[k] for p in self.parts]) for k in self.parts[0]}));self.parts=[]
+        merged=self.gather_token_fields()
         from .opd_group_scopes import compute
         group_started=time.perf_counter()
         group_report,group_arrays=compute(full_parts,merged['kl'],self.u,self.u.device)
@@ -213,16 +276,11 @@ class StudyReplication:
         if sampled_measurement is not None:
             parameter_metadata=sampled_metadata
             atomic_npz(self.output/'token_audit'/f'parameter_sample_{self.step:03d}_inner_{inner+1}.npz',paired_arrays)
+            self.save_rq1(inner, token_report, paired_arrays)
             self.parameter_measurement=None
         if parameter_metadata is not None:
             token_report['parameter_gradient_measurement']=parameter_metadata
-            self.metrics['timing/parameter_token_gradient_seconds']=parameter_metadata['seconds']
-            self.metrics['token_audit/parameter_gradient_rms']=token_report['parameter_gradient_rms']
-            self.metrics['token_audit/parameter_gradient_frobenius']=token_report['parameter_gradient_frobenius']
-            self.metrics['token_audit/kl_top10_parameter_energy_share']=token_report['groups']['kl_top10']['quantities']['parameter_gradient_energy']['share'] or 0.
-            self.metrics['token_audit/parameter_token_extra_backwards']=parameter_metadata['extra_backwards']
-            self.metrics['token_audit/parameter_token_sample_count']=parameter_metadata['token_count']
-            self.metrics['token_audit/parameter_token_coverage_fraction']=parameter_metadata['coverage_fraction']
+            self.record_parameter_metrics(token_report, parameter_metadata)
         token_report.update(basis_reference=self.reference,old_validation_banks_removed=True)
         token_report['full_u_outside_kl_groups']=group_report
         self.metrics.update({'token_audit/high_kl_fraction':token_report['groups']['kl_above_step1_p90']['fraction'],
