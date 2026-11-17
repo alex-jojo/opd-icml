@@ -25,15 +25,30 @@ def cumulative_basis(initial, current, rank):
     return dp.primary_call(lambda:_cumulative_basis_local(initial,current,rank))
 
 
-def _cumulative_basis_local(initial,current,rank):
+def _cumulative_basis_local(initial,current,rank,*,allow_zero=False):
     delta=F.normalize(current.float(),dim=-1)-F.normalize(initial.float(),dim=-1)
     second=delta.T@delta/max(len(delta),1)
     eigen,vectors=torch.linalg.eigh((second+second.T)*.5)
     eigen=eigen.flip(0).clamp_min(0);u=vectors.flip(1)[:,:rank].contiguous()
     total=float(eigen.sum())
-    if total<=1e-20:raise ValueError('No measurable cumulative hidden displacement; cannot discover U')
+    if total<=1e-20:
+        if not allow_zero:raise ValueError('No measurable cumulative hidden displacement; cannot discover U')
+        return u[:, :0],second,eigen,dict(unit_displacement_rms=total**.5,
+            own_top128_energy=None,positions=len(delta))
     return u,second,eigen,dict(unit_displacement_rms=total**.5,
         own_top128_energy=float(eigen[:rank].sum()/eigen.sum()),positions=len(delta))
+
+
+def panel_positions(mask, per_sequence=256):
+    """Response-position indices, in the order used for the fixed probe rows."""
+    result = []
+    for row in mask:
+        valid = row.nonzero().flatten()
+        if len(valid) > per_sequence:
+            selected = torch.linspace(0, len(valid)-1, per_sequence, device=valid.device).round().long()
+            valid = valid[selected]
+        result.append(valid)
+    return result
 
 
 @torch.no_grad()
@@ -43,14 +58,11 @@ def panel_hidden(actor,data,per_sequence=256):
         local,_=dp.shard(data)
         for part in local.split(actor.config.ppo_micro_batch_size_per_gpu):
             x={k:v.to(device) for k,v in part.batch.items()};n=x['responses'].shape[1]
-            mask=x['response_mask'].bool()
+            positions=panel_positions(x['response_mask'],per_sequence)
             def capture(_m,_a,h):
                 h=h[:,-n-1:-1]
-                for row in range(len(h)):
-                    ix=mask[row].nonzero().flatten()
-                    if len(ix):
-                        chosen=torch.linspace(0,len(ix)-1,min(per_sequence,len(ix)),device=device).round().long()
-                        values.append(h[row,ix[chosen]].float().cpu())
+                for row,ix in enumerate(positions):
+                    if len(ix):values.append(h[row,ix].float().cpu())
             handle=_final_norm_module(actor.actor_module).register_forward_hook(capture)
             try:forward(actor,x,float(data.meta_info['temperature']),x['opd_top16_ids'],diagnostics=False,
                         hidden_only=bool(actor.config.policy_loss.get('replication17',{}).get('reuse_forward',False)))

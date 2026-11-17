@@ -75,6 +75,8 @@ bash scripts/h200/run_all.sh \
 
 七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。默认每次更新抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量。每步的 RQ1 汇总、首步 KL 阈值、逐 token 能量和抽样权重随结果 ZIP 保存在 `training/training_records/rq1_step_XXXX.json`。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
 
+RQ2 在每次 FULL 参数更新后测量同一组固定 probe。`training/training_records/rq2/` 保存初始化的 hidden 与位置、每步的累计位移 RMS、特征值谱和前 128 个方向。从第 10 步起还记录固定第 10 步子空间的覆盖率和重合度。
+
 输出目录必须是新目录；再次从头运行换成 `run2`。当前入口不支持中断后的训练续跑。
 
 ## 4. 看进度、下载结果

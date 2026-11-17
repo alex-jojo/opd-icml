@@ -8,7 +8,8 @@ from contextlib import contextmanager
 import numpy as np
 import torch
 from . import opd_distributed as dp
-from .opd_replication17 import cumulative_basis,panel_hidden,install_basis
+from .opd_replication17 import panel_hidden,install_basis
+from .opd_rq2_motion import MotionRecorder
 from .opd_top16 import _final_norm_module,_unwrap_actor_module
 from .opd_plasticity import atomic_json,atomic_npz
 from .opd_token_audit import output_scores,enriched,training_summary,prepare_groups
@@ -32,6 +33,8 @@ class StudyReplication:
             self.parameter_tokens=FullParameterTokenAudit(actor,parameter_cfg)
         self.sample_rq1 = self.parameter_tokens is not None and self.parameter_tokens.mode == 'kl_stratified'
         self.records = self.output.parent / 'training_records'
+        if self.full:
+            self.motion = MotionRecorder(self.records / 'rq2', self.output / 'motion', self.rank)
         self.tokenizer=None;self.labels={}
         if self.cfg.get('tokenizer_path'):
             from transformers import AutoTokenizer
@@ -59,6 +62,7 @@ class StudyReplication:
                         cache.parent.mkdir(parents=True,exist_ok=True);tmp=cache.with_suffix('.tmp')
                         torch.save(dict(panel=self.panel,h0=self.h0,role='training_motion_only_not_validation'),tmp);tmp.replace(cache)
                     dp.barrier()
+                dp.primary_call(lambda: self.motion.save_initial(self.panel, self.h0, device))
             if not hasattr(self,'u'):
                 if self.asset.is_file() and step>1:
                     with np.load(self.asset,allow_pickle=False) as f:self.u=torch.from_numpy(f['basis'].copy()).to(device)
@@ -298,26 +302,42 @@ class StudyReplication:
 
     def after_inner(self,inner):
         if self.study.payload is not None and inner==1:self.metrics.update(self.study.after_update())
-        update=self.completed+inner
-        if self.full and (update%self.interval==0 or update==self.freeze or self.step==int(self.cfg['rounds'])):
-            started=time.perf_counter();current=panel_hidden(self.actor,self.panel)
-            reshard_after_readout(self.actor)
-            u,second,eigen,record=cumulative_basis(self.h0,current,self.rank)
-            if self.stability is not None:
-                decision=self.stability.observe(update,u,second);self.u=u.to(next(self.actor.actor_module.parameters()).device)
-                install_basis(self.asset,u)
-                meta=dict(freeze_step=update if decision['stable'] else None,stable=decision['stable'])
-            else:
-                meta=dict(freeze_step=self.freeze)
-                if update<=self.freeze:
-                    self.u=u.to(next(self.actor.actor_module.parameters()).device);install_basis(self.asset,u)
-            if update==self.freeze or self.stability is not None:
-                atomic_json(self.asset.with_suffix('.json'),dict(**meta,rank=self.rank,hidden_size=self.dimension,
-                    basis_sha256=hashlib.sha256(self.asset.read_bytes()).hexdigest(),source='training_motion_panel',**record))
-            record.update(step=update,raw_displacement_rms=float((current-self.h0).square().sum(1).mean().sqrt()),
-                observation_basis_energy=float(torch.trace(self.u.cpu().T@second@self.u.cpu())/eigen.sum()))
-            atomic_npz(self.output/'motion'/f'step_{update:03d}.npz',dict(second=second.numpy(),eigenvalues=eigen.numpy(),basis=u.numpy()))
-            atomic_json(self.output/'motion'/f'step_{update:03d}.json',record);self.extra+=time.perf_counter()-started
+        if not self.full:return
+        update = self.completed + inner
+        started = time.perf_counter()
+        current = panel_hidden(self.actor, self.panel)
+        reshard_after_readout(self.actor)
+        stability_due = self.stability is not None and update % self.stability.cfg['interval'] == 0
+        legacy_due = (stability_due or update % self.interval == 0 or
+                      update == self.freeze or self.step == int(self.cfg['rounds']))
+        metrics, legacy = dp.primary_call(
+            lambda: self.motion.record(update, self.h0, current, legacy_due=legacy_due))
+        self.metrics.update(metrics)
+        if legacy_due:
+            self.save_legacy_motion(update, stability_due, *legacy)
+        elapsed = time.perf_counter() - started
+        self.metrics['timing/rq2_motion_seconds'] = elapsed
+        self.extra += elapsed
+
+    def save_legacy_motion(self, update, stability_due, u, second, eigen, record):
+        meta = None
+        if u.shape[1] and stability_due:
+            decision = self.stability.observe(update, u, second)
+            self.u = u.to(next(self.actor.actor_module.parameters()).device)
+            install_basis(self.asset, u)
+            meta = dict(freeze_step=update if decision['stable'] else None, stable=decision['stable'])
+        elif u.shape[1] and self.stability is None and update <= self.freeze:
+            self.u = u.to(next(self.actor.actor_module.parameters()).device)
+            install_basis(self.asset, u)
+            if update == self.freeze:
+                meta = dict(freeze_step=self.freeze)
+        if meta is not None:
+            atomic_json(self.asset.with_suffix('.json'), dict(**meta, rank=self.rank, hidden_size=self.dimension,
+                basis_sha256=hashlib.sha256(self.asset.read_bytes()).hexdigest(), source='training_motion_panel', **record))
+        record.update(step=update, observation_basis_energy=(
+            float(torch.trace(self.u.cpu().T @ second @ self.u.cpu()) / eigen.sum()) if u.shape[1] else None))
+        atomic_npz(self.output/'motion'/f'step_{update:03d}.npz', dict(second=second.numpy(),eigenvalues=eigen.numpy(),basis=u.numpy()))
+        atomic_json(self.output/'motion'/f'step_{update:03d}.json', record)
 
     def finish(self,losses,norms):
         atomic_json(self.output/f'round_{self.step:03d}.json',dict(round=self.step,reuse=len(losses),

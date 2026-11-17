@@ -24,6 +24,10 @@ bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/con
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
+RQ2 的 `training/training_records/rq2/probe_initial.npz` 保存固定回答的输入、掩码、位置及初始化 hidden。`row` 和 `response_position` 标识每行 hidden 所预测的回答 token。FULL 每次实际更新后生成 `step_001.npz` 至 `step_106.npz`。各步基于同一 probe，`raw_displacement_rms` 和 `unit_displacement_rms` 均以初始化为参照。归一化位移的二阶矩按降序保存 `eigenvalues`；`cumulative_energy_coverage[r-1]` 给出前 r 个方向的能量占比。`basis` 的列是当前前 128 个方向，任意两个检查点的重合度可用 `np.linalg.norm(Ua.T @ Ub, 'fro')**2 / Ua.shape[1]` 复算。
+
+第 10 步冻结 RQ2 参考基。从该步起，`fixed_u10_coverage` 记录它对当前位移能量的覆盖率，`fixed_u10_overlap` 记录它与当前前 128 个方向的重合度。若没有可测位移，RMS 和特征值照常记录，方向和累计覆盖率数组为空；参考基不可用时 `fixed_u10_available` 为假。每个 `post_update_XXXX.json` 也记录 RQ2 标量及 `timing/rq2_motion_seconds`。早停按原配置每 5 步检查一次。
+
 流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
 `--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU线程用于判题，其余按槽分配；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
