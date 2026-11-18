@@ -1,6 +1,7 @@
 """Fixed disjoint prompt split; fresh on-policy responses, one set per checkpoint."""
 import hashlib
 import json
+import os
 import pickle
 import time
 from pathlib import Path
@@ -34,7 +35,7 @@ def install(trainer,dataset):
     manifest=dict(seed=int(cfg.get('seed',42)),validation_indices=val,validation_prompt_sha256=[hashes[i] for i in val],
                   train_indices=train,source_prompt_sha256=hashlib.sha256(''.join(hashes).encode()).hexdigest(),
                   validation_count=128,train_count=len(train),old_heldout_fixed_enabled=False)
-    out=Path(trainer.config.trainer.default_local_dir).parent/'validation128';out.mkdir(parents=True,exist_ok=True)
+    out=validation_directory(trainer.config);out.mkdir(parents=True,exist_ok=True)
     path=out/'split.json'
     if path.exists() and json.loads(path.read_text())!=manifest:raise ValueError('Validation split changed on resume')
     path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -42,6 +43,17 @@ def install(trainer,dataset):
     trainer.opd_validation_source_indices=val
     print(f'[FIXED128] {len(train)} training prompts; 128 fixed validation prompts excluded including duplicates.',flush=True)
     return Subset(dataset,train)
+
+
+def validation_directory(config):
+    """Validation belongs to the portable run, independently of weight storage."""
+    root = os.environ.get('OPD_RUN')
+    records = config.trainer.get('rollout_data_dir')
+    if root:
+        return Path(root) / 'validation128'
+    if records:
+        return Path(records).parent / 'validation128'
+    return Path(config.trainer.default_local_dir).parent / 'validation128'
 
 
 def generate(trainer,rows):

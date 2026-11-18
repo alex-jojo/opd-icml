@@ -1,6 +1,8 @@
 """Portable RQ2 measurements of fixed-probe displacement and training hidden gradients."""
 import numpy as np
 import torch
+import time
+import torch.nn.functional as F
 
 from .opd_plasticity import atomic_npz
 from .opd_replication17 import _cumulative_basis_local, panel_positions
@@ -14,6 +16,51 @@ class MotionRecorder:
         self.legacy_directory = legacy_directory
         self.rank = rank
         self.reference = None
+        self.early_hidden = None
+        self.early_projected = None
+        self.previous_hidden = None
+        self.previous_projected = None
+        self.previous_step = None
+
+    def incremental_change(self, update, initial, current, reference):
+        """Summarize already computed probe states, without a model pass or SVD."""
+        unit = F.normalize(current.float(), dim=-1)
+        if self.previous_step is None and update == 1:
+            self.previous_step = 0
+            self.previous_hidden = F.normalize(initial.float(), dim=-1)
+        early_path = self.directory / 'reference_010.npz'
+        if self.early_hidden is None and early_path.is_file():
+            with np.load(early_path, allow_pickle=False) as saved:
+                self.early_hidden = torch.from_numpy(saved['unit_hidden'].copy())
+                self.early_projected = torch.from_numpy(saved['projected_hidden'].copy())
+        projected = unit @ reference if reference is not None else None
+        if update == self.reference_step and reference is not None:
+            self.early_hidden, self.early_projected = unit, projected
+            atomic_npz(early_path, dict(unit_hidden=unit.numpy(), projected_hidden=projected.numpy()))
+        result = dict(increment_normalization='unit hidden per probe position',
+                      since_step10_available=self.early_hidden is not None and update >= self.reference_step,
+                      previous_step_available=self.previous_step == update-1)
+
+        def summarize(prefix, old, old_projection):
+            delta = unit - old
+            energy = float(delta.double().square().sum())
+            result[prefix+'_energy'] = energy
+            result[prefix+'_frobenius_norm'] = energy**.5
+            result[prefix+'_rms'] = (energy / max(len(unit), 1))**.5
+            if projected is not None and energy > 1e-20:
+                if old_projection is None:
+                    old_projection = old @ reference
+                inside = float((projected-old_projection).double().square().sum())
+                result[prefix+'_fixed_u10_coverage'] = min(max(inside / energy, 0.), 1.)
+
+        if result['since_step10_available']:
+            summarize('since_step10', self.early_hidden, self.early_projected)
+        if result['previous_step_available']:
+            result['previous_checkpoint'] = self.previous_step
+            summarize('previous_step', self.previous_hidden, self.previous_projected)
+        self.previous_step = update
+        self.previous_hidden, self.previous_projected = unit, projected
+        return result
 
     def save_initial(self, panel, hidden, device):
         positions = panel_positions(panel.batch['response_mask'].to(device))
@@ -92,6 +139,14 @@ class MotionRecorder:
             overlap = float((reference.T @ basis).square().sum() / reference.shape[1])
             arrays.update(fixed_u10_coverage=coverage, fixed_u10_overlap=overlap)
             metrics.update({'rq2/fixed_u10_coverage': coverage, 'rq2/fixed_u10_overlap': overlap})
+        increment_started = time.perf_counter()
+        increments = self.incremental_change(update, initial, current, reference)
+        arrays.update(increments)
+        metrics['timing/rq2_increment_summary_seconds'] = time.perf_counter() - increment_started
+        for key in ('since_step10_fixed_u10_coverage', 'previous_step_fixed_u10_coverage',
+                    'since_step10_rms', 'previous_step_rms'):
+            if key in increments:
+                metrics['rq2/'+key] = increments[key]
         atomic_npz(self.directory / f'step_{update:03d}.npz', arrays)
         # Only legacy observation steps need these dense matrices on other ranks.
         return metrics, (basis, second, eigen, summary) if legacy_due else None

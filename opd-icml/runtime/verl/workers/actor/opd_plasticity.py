@@ -35,6 +35,12 @@ def atomic_json(path, value):
     temporary.replace(path)
 
 
+def atomic_moment(path, arrays):
+    if torch.distributed.is_initialized() and torch.distributed.get_rank()!=0:return
+    from .opd_diagnostic_storage import write_moment
+    write_moment(path, arrays)
+
+
 def sampled_positions(count, maximum=32):
     if count < 1:
         raise ValueError('empty response in diagnostic panel')

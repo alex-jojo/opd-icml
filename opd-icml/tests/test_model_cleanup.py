@@ -64,7 +64,7 @@ def test_cleanup_keeps_all_statistics_and_shared_model_cache(task, tmp_path):
     assert all((run / path).read_bytes() == b'data' for path in retained)
     assert cache.read_bytes() == b'shared'
     assert not (run / 'merged').exists() and not (run / 'training/checkpoints').exists()
-    receipt = json.loads((run / 'model_cleanup.json').read_text())
+    receipt = json.loads((run / 'model_cleanup.json').read_text(encoding='utf-8'))
     assert receipt['status'] == 'complete' and receipt['model_file_bytes'] > 0
     metadata = json.loads((run / 'model_artifact_metadata.json').read_text())
     assert metadata['training/checkpoints/latest_checkpointed_iteration.txt'] == '106'

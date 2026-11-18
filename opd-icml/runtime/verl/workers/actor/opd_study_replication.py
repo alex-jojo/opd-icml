@@ -11,7 +11,7 @@ from . import opd_distributed as dp
 from .opd_replication17 import panel_hidden,install_basis
 from .opd_rq2_motion import MotionRecorder
 from .opd_top16 import _final_norm_module,_unwrap_actor_module
-from .opd_plasticity import atomic_json,atomic_npz
+from .opd_plasticity import atomic_json,atomic_npz,atomic_moment
 from .opd_token_audit import output_scores,enriched,training_summary,prepare_groups
 from .opd_gradient_scopes import summarize,metric_values
 from .opd_gradient_study import HiddenMoments,GradientStudy,losses as response_losses,reshard_after_readout
@@ -33,6 +33,7 @@ class StudyReplication:
             from .opd_parameter_tokens import FullParameterTokenAudit
             self.parameter_tokens=FullParameterTokenAudit(actor,parameter_cfg)
         self.sample_rq1 = self.parameter_tokens is not None and self.parameter_tokens.mode == 'kl_stratified'
+        self.save_hidden_samples = bool(self.cfg.get('save_hidden_gradient_samples', False))
         self.records = self.output.parent / 'training_records'
         if self.full:
             self.motion = MotionRecorder(self.records / 'rq2', self.output / 'motion', self.rank)
@@ -162,9 +163,10 @@ class StudyReplication:
             self.current_part.update(g_u=inside,projected_gradient_energy=kept)
             self.current_part['transient_full_gradient']=full
             # Deterministic bounded full-vector sample, with identifiers retained.
-            ix=torch.linspace(0,count-1,min(64,count),device=gradient.device).round().long()
-            self.current_part['sample_full_gradient']=full[ix.cpu().numpy()]
-            self.current_part['sample_local_index']=ix.cpu().numpy()
+            if self.save_hidden_samples:
+                ix=torch.linspace(0,count-1,min(64,count),device=gradient.device).round().long()
+                self.current_part['sample_full_gradient']=full[ix.cpu().numpy()]
+                self.current_part['sample_local_index']=ix.cpu().numpy()
         old=state.get('raw_gradient_observer');handle=None
         if self.cfg['mode']=='r128':state['raw_gradient_observer']=consume
         else:
@@ -240,7 +242,7 @@ class StudyReplication:
         if not self.measure or moment is None:
             self.extra += time.perf_counter() - started
             return
-        atomic_npz(self.output/'gradient_moments'/f'round_{self.step:03d}_inner_{inner+1}.npz',moment)
+        atomic_moment(self.output/'gradient_moments'/f'round_{self.step:03d}_inner_{inner+1}.npz',moment)
         # Reuse the established CPU eigensolver on moments; no extra transformer passes.
         def build():
             c=torch.from_numpy(moment['second']).double();u=torch.linalg.qr(torch.from_numpy(moment['basis']).double()).Q
@@ -260,8 +262,9 @@ class StudyReplication:
         samples=[];sample_rows=[];sample_pos=[];full_parts=[]
         for part in self.parts:
             full_parts.append(part.pop('transient_full_gradient'))
-            ix=part.pop('sample_local_index');samples.append(part.pop('sample_full_gradient'))
-            sample_rows.append(part['row'][ix]);sample_pos.append(part['pos'][ix])
+            if self.save_hidden_samples:
+                ix=part.pop('sample_local_index');samples.append(part.pop('sample_full_gradient'))
+                sample_rows.append(part['row'][ix]);sample_pos.append(part['pos'][ix])
         merged=self.gather_token_fields()
         from .opd_group_scopes import compute
         group_started=time.perf_counter()
@@ -272,8 +275,9 @@ class StudyReplication:
         atomic_json(self.output/'token_group_scopes'/f'round_{self.step:03d}_inner_{inner+1}.json',group_report)
         atomic_npz(self.output/'token_group_scopes'/f'round_{self.step:03d}_inner_{inner+1}.npz',group_arrays)
         self.metrics['timing/token_group_scopes_seconds']=group_report['seconds']
-        sample=dp.merge_fields(dp.gather(dict(g=np.concatenate(samples),row=np.concatenate(sample_rows),pos=np.concatenate(sample_pos))))
-        atomic_npz(self.output/'gradient_moments'/f'token_sample_{self.step:03d}_{inner+1}.npz',sample)
+        if self.save_hidden_samples:
+            sample=dp.merge_fields(dp.gather(dict(g=np.concatenate(samples),row=np.concatenate(sample_rows),pos=np.concatenate(sample_pos))))
+            atomic_npz(self.output/'gradient_moments'/f'token_sample_{self.step:03d}_{inner+1}.npz',sample)
         if not hasattr(self,'thresholds'):
             self.thresholds=dict(kl_p90=float(np.quantile(merged['kl'],.9)),kl_median=float(np.median(merged['kl'])),
                                  entropy_median=float(np.median(merged['entropy'])))
@@ -388,7 +392,7 @@ class StudyReplication:
                 basis_sha256=hashlib.sha256(self.asset.read_bytes()).hexdigest(), source='training_motion_panel', **record))
         record.update(step=update, observation_basis_energy=(
             float(torch.trace(self.u.cpu().T @ second @ self.u.cpu()) / eigen.sum()) if u.shape[1] else None))
-        atomic_npz(self.output/'motion'/f'step_{update:03d}.npz', dict(second=second.numpy(),eigenvalues=eigen.numpy(),basis=u.numpy()))
+        atomic_moment(self.output/'motion'/f'step_{update:03d}.npz', dict(second=second.numpy(),eigenvalues=eigen.numpy(),basis=u.numpy()))
         atomic_json(self.output/'motion'/f'step_{update:03d}.json', record)
 
     def finish(self,losses,norms):

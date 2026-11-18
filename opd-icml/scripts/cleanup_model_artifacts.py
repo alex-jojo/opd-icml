@@ -135,14 +135,51 @@ def verify_completed_evaluation(run, task):
     return proofs
 
 
-def cleanup_completed_models(output, task):
+def register_external_models(plan):
+    """Claim a fresh per-run weight directory, never an existing shared model tree."""
+    run = project_absolute(plan['output']).resolve()
+    candidate = project_absolute(plan['model_artifacts'])
+    root = candidate.resolve()
+    if root == run or root.is_relative_to(run) or run.is_relative_to(root):
+        raise ValueError('External model directory must be separate from the experiment output')
+    current = candidate
+    while current != current.parent:
+        if (current.exists() or current.is_symlink()) and _linked(current):
+            raise ValueError('External model directory must not use links/junctions')
+        current = current.parent
+    owner = root/'.opd-model-owner.json'
+    identity = dict(protocol='opd-owned-models-v1', output=str(run), model_root=str(root))
+    if owner.is_file():
+        if _read(owner) != identity:
+            raise ValueError('External model directory belongs to another run')
+    elif root.exists() and any(root.iterdir()):
+        raise ValueError('Choose an empty external model directory; existing unowned files are preserved')
+    else:
+        save_json(owner, identity)
+
+
+def cleanup_completed_models(output, task, external_root=None):
     candidate = project_absolute(output)
     if _linked(candidate):
         raise ValueError('Refusing a linked experiment root')
     run = candidate.resolve()
+    storage = run
+    targets = TARGETS
+    if external_root is not None:
+        external = project_absolute(external_root)
+        if _linked(external):
+            raise ValueError('Refusing a linked external model root')
+        storage = external.resolve()
+        owner = storage/'.opd-model-owner.json'
+        expected = dict(protocol='opd-owned-models-v1', output=str(run), model_root=str(storage))
+        if not owner.is_file() or _read(owner) != expected:
+            raise ValueError('Keep external weights: no matching ownership record')
+        if storage == run or storage.is_relative_to(run) or run.is_relative_to(storage):
+            raise ValueError('External model directory overlaps experiment output')
+        targets = ('checkpoints', 'merged')
     # Validate every target before deleting either one.
-    inventories = {relative: _checked_files(run, relative) for relative in TARGETS}
-    if not any((run / relative).exists() for relative in TARGETS):
+    inventories = {relative: _checked_files(storage, relative) for relative in targets}
+    if not any((storage / relative).exists() for relative in targets):
         return
     proofs = verify_completed_evaluation(run, task)
     receipt_path = run / 'model_cleanup.json'
@@ -151,7 +188,7 @@ def cleanup_completed_models(output, task):
     records = []
     for relative, files in inventories.items():
         for path in files:
-            name = path.relative_to(run).as_posix()
+            name = path.relative_to(storage).as_posix()
             size = path.stat().st_size
             records.append(dict(path=name, bytes=size))
             if path.suffix in {'.json', '.yaml', '.yml', '.txt'} and size <= 4 * 1024**2:
@@ -159,13 +196,14 @@ def cleanup_completed_models(output, task):
     # Keep checkpoint/config provenance even though weights are discarded.
     save_json(metadata_path, metadata)
     receipt = dict(protocol='completed-model-cleanup-v1', task=task, status='pending',
+                   model_storage_root=str(storage),
                    evaluation_proofs=[p.relative_to(run).as_posix() for p in proofs],
                    removed_directories=[], files=records, model_file_bytes=sum(r['bytes'] for r in records))
     save_json(receipt_path, receipt)
-    for relative in TARGETS:
-        target = run / relative
+    for relative in targets:
+        target = storage / relative
         # Revalidate immediately before removal. No shared cache is ever a target.
-        _checked_files(run, relative)
+        _checked_files(storage, relative)
         if target.exists():
             shutil.rmtree(target)
             receipt['removed_directories'].append(relative)
@@ -182,7 +220,7 @@ def finish_experiment(args, plan):
     completed = args.stage in ('all', 'eval', 'grade') or (
         plan['task'] == 'math' and args.stage in ('train-generate', 'generate'))
     if completed:
-        cleanup_completed_models(plan['output'], plan['task'])
+        cleanup_completed_models(plan['output'], plan['task'], plan.get('model_artifacts'))
 
 
 def print_disk_space(output):

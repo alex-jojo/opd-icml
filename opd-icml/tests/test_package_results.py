@@ -54,7 +54,7 @@ def test_archive_preserves_all_experiment_data_and_excludes_models_and_credentia
     with zipfile.ZipFile(output) as archive:
         assert archive.testzip() is None
         expected = {f'{run.name}/{name}' for name in data}
-        assert set(archive.namelist()) == expected | {exports.MANIFEST, 'EXPORT_README.txt'}
+        assert set(archive.namelist()) == expected | {exports.MANIFEST, 'EXPORT_README.txt', 'READ_MOMENTS.py'}
         for relative, content in data.items():
             assert archive.read(f'{run.name}/{relative}') == content
         manifest = json.loads(archive.read(exports.MANIFEST))
@@ -249,4 +249,3 @@ def test_suite_suppresses_individual_zips_and_exports_one_archive_after_all_jobs
         assert set(json.loads(archive.read('suite/rq4_comparison.json'))) == {'1.7b', '4b'}
         assert json.loads(archive.read(exports.MANIFEST))['phase'] == 'suite-complete'
         assert not any('model.safetensors' in name for name in archive.namelist())
-

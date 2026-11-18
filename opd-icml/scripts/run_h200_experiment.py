@@ -17,7 +17,7 @@ from model_assets import read_models
 from wandb_config import load_wandb_environment
 from project_paths import project_absolute, project_relative, saved_path_matches
 from package_results import archive_path, package_results
-from cleanup_model_artifacts import finish_experiment, print_disk_space, temporary_early_export
+from cleanup_model_artifacts import finish_experiment, print_disk_space, temporary_early_export, register_external_models
 import rq4_results
 
 
@@ -320,6 +320,8 @@ def execute(args, plan, env):
     training_stage = args.stage in ('all', 'train', 'train-generate')
     if training_stage and not args.resume and run.exists() and any(run.iterdir()):
         raise ValueError(f'Choose an empty --output directory: {run}')
+    if training_stage and plan.get('model_artifacts'):
+        register_external_models(plan)
     # Use a fresh process so probing CUDA never initializes it in this orchestrator.
     probe = [sys.executable, '-c',
         'import torch; n=torch.cuda.device_count(); '
@@ -418,10 +420,7 @@ def main():
         if not args.dry_run:
             print_disk_space(plan['output'])
             execute(args, plan, env)
-            if plan.get('model_artifacts'):
-                print(f"[MODEL ARTIFACTS] weights kept under {plan['model_artifacts']} (delete that directory to reclaim space)", flush=True)
-            else:
-                finish_experiment(args, plan)
+            finish_experiment(args, plan)
             if plan['results_zip']:
                 package_results(plan['output'], plan['results_zip'], phase=args.stage)
     except subprocess.CalledProcessError as error:
@@ -434,4 +433,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

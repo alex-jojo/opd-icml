@@ -17,7 +17,7 @@ import torch
 from . import opd_distributed as dp
 from .opd_top16 import forward,reverse_kl,_final_norm_module
 from .opd_mode_absorption import observe_only
-from .opd_plasticity import atomic_json,atomic_npz
+from .opd_plasticity import atomic_json,atomic_npz,atomic_moment
 from .opd_gradient_study_math import gram_summary,scope_geometry,compare_hidden,subset_alignment,transfer_report,nested_variance
 
 
@@ -85,6 +85,46 @@ class ParameterLayout:
 
     def delta(self,before):
         return [p.detach().reshape(-1).cpu().float()-b.float() for p,b in zip(self.params,before)]
+
+    def update_summary(self, before, delta, norms):
+        """Bounded CPU reductions on buffers already captured for validation gain."""
+        values = {}
+        for i, start, n, groups in self.slices:
+            local = dict(count=n, changed=0, positive=0, negative=0, weight_energy=0., l1=0., max_abs=0.)
+            for offset in range(start, start+n, 262144):
+                end = min(offset+262144, start+n)
+                change = delta[i][offset:end]
+                weights = before[i][offset:end].double()
+                positive = int((change > 0).sum())
+                negative = int((change < 0).sum())
+                local['positive'] += positive
+                local['negative'] += negative
+                local['changed'] += positive + negative
+                local['weight_energy'] += float(torch.dot(weights, weights))
+                local['l1'] += float(change.abs().double().sum())
+                local['max_abs'] = max(local['max_abs'], float(change.abs().max()))
+            for group in groups:
+                total = values.setdefault(group, {key: 0 for key in local})
+                for key, value in local.items():
+                    total[key] = max(total[key], value) if key == 'max_abs' else total[key] + value
+        ranks = dp.gather(values)
+        divisor = dp.size() if self.replicated_adapter is not None else 1
+        result = {}
+        for group in set().union(*(rank.keys() for rank in ranks)):
+            entries = [rank[group] for rank in ranks if group in rank]
+            entry = {key: (max(item[key] for item in entries) if key == 'max_abs' else
+                           sum(item[key] for item in entries)/divisor) for key in entries[0]}
+            count, changed = int(entry['count']), int(entry['changed'])
+            entry.update(count=count, changed=changed,
+                         positive=int(entry['positive']), negative=int(entry['negative']),
+                         changed_fraction=changed/count if count else None,
+                         zero_fraction=1-changed/count if count else None,
+                         update_norm=norms[group]**.5,
+                         update_rms=(norms[group]/count)**.5 if count else None,
+                         relative_update_norm=(norms[group]/entry['weight_energy'])**.5 if entry['weight_energy'] > 0 else None,
+                         update_energy_share=norms[group]/norms['all'] if norms['all'] > 0 else None)
+            result[group] = entry
+        return result
 
     @torch.no_grad()
     def restore_weights(self,values):
@@ -311,7 +351,7 @@ class GradientStudy:
         if payload.get('paths') is not None:self.path_variance(payload['paths'])
         self.validation=payload['validation']
         self.val_grad,self.before,val_moments=self.grad(self.validation,normalization='response',capture_hidden=True)
-        atomic_npz(self.directory/'validation_hidden_moments.npz',val_moments)
+        atomic_moment(self.directory/'validation_hidden_moments.npz',val_moments)
         self.val_norm=self.layout.dot(self.val_grad,self.val_grad)
         self.report.update(checkpoint_optimizer_updates=checkpoint,validation_prompts=len(self.validation),
             validation_normalization='mean of per-response token-mean KL',
@@ -340,7 +380,7 @@ class GradientStudy:
             v,_,mom=self.grad(batches[i],capture_hidden=i not in hidden)
             if mom is not None:
                 hidden[i]=mom
-                atomic_npz(self.directory/f'train_batch_{i}_hidden_moments.npz',mom)
+                atomic_moment(self.directory/f'train_batch_{i}_hidden_moments.npz',mom)
             return v
         grams,replays=exact_gram(oracle,self.layout,m)
         effective=None
@@ -441,6 +481,20 @@ class GradientStudy:
             if self.train_norm[g]*norm[g]>1e-30 else None,
             train_validation_cosine=self.train_val[g]/np.sqrt(self.train_norm[g]*self.val_norm[g])
             if self.train_norm[g]*self.val_norm[g]>1e-30 else None) for g in self.val_norm}
+        summary_started = time.perf_counter()
+        updates = self.layout.update_summary(self.weights, delta, norm)
+        for group, entry in updates.items():
+            entry.update(train_descent_update_cosine=result['groups'][group]['train_descent_update_cosine'],
+                         validation_descent_update_cosine=-dot[group]/np.sqrt(self.val_norm[group]*norm[group])
+                         if self.val_norm[group]*norm[group] > 1e-30 else None)
+        result['parameter_update_summary_seconds'] = time.perf_counter() - summary_started
+        atomic_json(self.output.parent.parent / 'training_records' / 'parameters' / f'update_{self.checkpoint+1:03d}.json', dict(
+            checkpoint_before=self.checkpoint, optimizer_update=self.checkpoint+1, groups=updates,
+            schema='observed-parameter-update-v1',
+            definition='actual stored parameter after minus before; exact zero, no magnitude threshold',
+            scope='trainable coordinates, sharding padding excluded, tied weights counted once',
+            aggregation='groups overlap; all is the total, not the sum of every group',
+            seconds=result['parameter_update_summary_seconds']))
         if self.payload.get('geometry',False) and hasattr(self.actor,'fixed_u_adapter'):
             # dL/dA = U^T g h^T. Projecting g into the SAME fixed U leaves
             # this gradient unchanged; outside and frozen-head routes are zero.

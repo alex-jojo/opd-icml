@@ -112,6 +112,8 @@ def package_results(run, output=None, *, phase='manual'):
                 file_count=len(entries), original_bytes=sum(item['bytes'] for item in entries), files=entries,
                 excluded_directories=sorted(EXCLUDED_DIRS), excluded_model_suffixes=sorted(MODEL_SUFFIXES))
             archive.writestr(MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+            reader = Path(__file__).resolve().parents[1]/'runtime/verl/workers/actor/opd_diagnostic_storage.py'
+            archive.writestr('READ_MOMENTS.py', reader.read_text(encoding='utf-8'))
             archive.writestr('EXPORT_README.txt',
                 'Experiment data export\n'
                 f'Phase: {phase}\n'
@@ -119,7 +121,11 @@ def package_results(run, output=None, *, phase='manual'):
                 'training/validation records, diagnostic arrays, configs and logs are included.\n'
                 'Models, checkpoint weights, credentials, links and nested archives are excluded.\n'
                 'See EXPORT_MANIFEST.json for the exact file list, sizes and ZIP CRC32 values.\n'
-                'Exports from train/generate phases may not yet include final evaluation scores.\n')
+                'Exports from train/generate phases may not yet include final evaluation scores.\n'
+                'Symmetric second moments use lossless upper-triangle storage. Read dense or packed files with:\n'
+                'from READ_MOMENTS import load_moment\n'
+                'arrays = load_moment("path/to/moments.npz"); matrix = arrays["second"]\n'
+                'READ_MOMENTS.py requires only NumPy and is included with this export.\n')
         temporary.replace(output)
     finally:
         if temporary.exists():
