@@ -130,6 +130,25 @@ def test_exact_all_matches_full_token_jacobian_and_preserves_training(tied, comp
         torch.testing.assert_close(actual, ordinary, rtol=0, atol=0)
 
 
+def test_energy_batches_keep_token_order_across_partial_tail(monkeypatch):
+    torch.manual_seed(12)
+    actor, data = make_actor(), make_data()
+    expected = reference_energy(actor, data)
+    batch = data.select_idxs([0, 1]*52)  # 260 valid tokens
+    shapes = []
+    collect = audit_module.GradientEnergy.collect
+    def observe(self, values):
+        shapes.append(tuple(values.shape))
+        return collect(self, values)
+    monkeypatch.setattr(audit_module.GradientEnergy, 'collect', observe)
+    result = audit_module.FullParameterTokenAudit(actor, {'mode': 'exact_all'}).measure(batch, 1, 0)
+    assert shapes == [(2, 256), (2, 4)]
+    np.testing.assert_allclose(result['energy'], np.tile(expected, 52), rtol=2e-5, atol=1e-7)
+    with torch.no_grad():
+        kl = objective(actor, data)[data.batch['response_mask'].bool()].numpy()
+    np.testing.assert_allclose(result['diagnostic_kl'], np.tile(kl, 52), rtol=2e-5, atol=1e-7)
+
+
 def test_parameter_energy_is_not_head_only():
     torch.manual_seed(4)
     actor, data = make_actor(), make_data()

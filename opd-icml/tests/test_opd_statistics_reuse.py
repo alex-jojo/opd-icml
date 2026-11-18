@@ -8,6 +8,33 @@ import torch
 
 from test_parameter_tokens import audit_module, make_actor, make_data, opd, study_module
 
+
+def test_group_grams_visit_each_row_once_and_preserve_spectra(monkeypatch):
+    scopes = importlib.import_module(audit_module.__package__ + '.opd_group_scopes')
+    rng = np.random.default_rng(24)
+    gradients = rng.standard_normal((150, 7)).astype(np.float32)
+    kl = rng.integers(0, 18, len(gradients))
+    basis = torch.eye(7)[:, :2]
+    visits = np.zeros(len(kl), dtype=int)
+    original = scopes.group_gram
+
+    def observed(parts, mask, *args):
+        visits[mask] += 1
+        return original(parts, mask, *args)
+
+    monkeypatch.setattr(scopes, 'group_gram', observed)
+    _, arrays = scopes.compute(np.split(gradients, [59, 110]), kl, basis, 'cpu')
+    np.testing.assert_array_equal(visits, np.ones_like(visits))
+    groups = scopes.partitions(kl)
+    k = min(map(len, groups.values()))
+    for name, rows in groups.items():
+        picks = rows[np.linspace(0, len(rows)-1, k).round().astype(int)]
+        for kind, selected in [('all', rows), ('matched', picks)]:
+            g = gradients[selected].astype(np.float64)
+            for scope, x in [('full', g), ('u', g[:, :2]), ('outside', g[:, 2:])]:
+                expected = np.linalg.svd(x, compute_uv=False)**2 / len(g)
+                np.testing.assert_allclose(arrays[f'{name}_{kind}_{scope}_eigenvalues'], expected, rtol=2e-5)
+
 audit = importlib.import_module(audit_module.__package__ + '.opd_token_audit')
 sampling = importlib.import_module(audit_module.__package__ + '.opd_parameter_sampling')
 SCORES = ('kl', 'tv', 'entropy', 'tip', 'logratio_variance', 'ier', 'alignment', 'priority')

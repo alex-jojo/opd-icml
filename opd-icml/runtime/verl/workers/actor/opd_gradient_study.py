@@ -447,7 +447,7 @@ class GradientStudy:
             # No reason to replay two extra Adapter backwards to obtain zeros.
             result['parameter_path_gain']=dict(u=-dot['all'],outside=0.,direct=0.,
                 definition='exact chain-rule identity for h+UA h with frozen Backbone/head and the same orthonormal U')
-        elif self.payload.get('geometry',False):
+        elif self.payload.get('geometry',False) and self.cfg.get('parameter_path_gain',False):
             # Diagnostics at BEFORE parameters, with the ACTUAL committed displacement.
             current=self.layout.capture(gradient=False)
             try:

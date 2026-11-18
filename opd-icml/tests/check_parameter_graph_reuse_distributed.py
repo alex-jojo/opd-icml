@@ -64,18 +64,18 @@ def worker(rank, address, options):
         optimizer_update(baseline, data)
         state = copy.deepcopy(actor.actor_optimizer.state_dict())
         captures = []
-        original_norm = audit_module.GradientEnergy.squared_norm
+        original_norm = audit_module.GradientEnergy.local_squared_norm
 
-        def capture(layout):
+        def capture(layout, device):
             gradients = []
             for parameter in layout.layout.params:
                 assert parameter.grad is not None
                 assert parameter.grad.shape == parameter.shape  # reduced shards, not full gradients
                 gradients.append(parameter.grad.detach().cpu().clone())
             captures.append(gradients)
-            return original_norm(layout)
+            return original_norm(layout, device)
 
-        audit_module.GradientEnergy.squared_norm = capture
+        audit_module.GradientEnergy.local_squared_norm = capture
         sequential = audit_module.FullParameterTokenAudit(actor, dict(graph_group_size=1)).measure(data, 1, 0)
         references = captures[:]
         captures.clear()

@@ -97,7 +97,9 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch):
         actor.actor_optimizer.step()
         if not payload_bytes:
             continue
+        calls_before_readout = study.calls
         study.after_update()
+        assert study.calls == calls_before_readout
         after = response_kl(actor, validation)
         record = json.loads((directory/f'checkpoint_{checkpoint:03d}.json').read_text())
         assert (record['checkpoint_before'], record['optimizer_update']) == (checkpoint, update)

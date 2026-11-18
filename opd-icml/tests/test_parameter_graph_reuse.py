@@ -27,13 +27,13 @@ def test_grouped_graphs_match_every_token_gradient_and_preserve_training(monkeyp
     options = dict(mode=mode, sample_size=4, causal_prefix=prefix)
     rng = torch.random.get_rng_state().clone()
     snapshots = []
-    original_norm = audit_module.GradientEnergy.squared_norm
+    original_norm = audit_module.GradientEnergy.local_squared_norm
 
-    def norm(layout):
+    def norm(layout, device):
         snapshots.append([p.grad.clone() for p in layout.layout.params])
-        return original_norm(layout)
+        return original_norm(layout, device)
 
-    monkeypatch.setattr(audit_module.GradientEnergy, 'squared_norm', norm)
+    monkeypatch.setattr(audit_module.GradientEnergy, 'local_squared_norm', norm)
     sequential = audit_module.FullParameterTokenAudit(actor, dict(options, graph_group_size=1)).measure(data, 1, 0)
     reference_gradients = snapshots[:]
     snapshots.clear()
@@ -93,15 +93,15 @@ def test_group_backward_failure_still_clears_gradients_and_restores_modes(monkey
     actor, data = wide_actor()
     rng = torch.random.get_rng_state().clone()
     calls = []
-    original_norm = audit_module.GradientEnergy.squared_norm
+    original_norm = audit_module.GradientEnergy.local_squared_norm
 
-    def fail_on_second(layout):
+    def fail_on_second(layout, device):
         calls.append(1)
         if len(calls) == 2:
             raise RuntimeError('injected diagnostic failure')
-        return original_norm(layout)
+        return original_norm(layout, device)
 
-    monkeypatch.setattr(audit_module.GradientEnergy, 'squared_norm', fail_on_second)
+    monkeypatch.setattr(audit_module.GradientEnergy, 'local_squared_norm', fail_on_second)
     with pytest.raises(RuntimeError, match='injected'):
         audit_module.FullParameterTokenAudit(actor, {}).measure(data, 1, 0)
     assert all(p.grad is None for p in actor.actor_module.parameters())

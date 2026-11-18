@@ -28,36 +28,55 @@ def moment_scopes(second,basis,count):
     return report,arrays
 
 
+def group_gram(parts, local_mask, dimension, device, expected):
+    """Return the global unnormalized Gram on rank zero, with one live device Gram."""
+    from .opd_gradient_study import HiddenMoments
+    moment = HiddenMoments()
+    moment.add(torch.empty((0, dimension), device=device))
+    cursor = 0
+    for part in parts:
+        for start in range(0, len(part), 4096):
+            block = part[start:start+4096]
+            mask = local_mask[cursor+start:cursor+start+len(block)]
+            if mask.any():
+                moment.add(torch.from_numpy(block[mask]).to(device))
+        cursor += len(part)
+    gram, count = dp.sum_gram(moment.gram, moment.count)
+    if count != expected:
+        raise ValueError('Incomplete KL group')
+    return gram.cpu().double() if dp.primary() else None
+
+
 def compute(local_gradient_parts,global_kl,basis,device):
     """Local parts retain original rank/part order, matching merged token fields."""
-    from .opd_gradient_study import HiddenMoments
     n=sum(len(x) for x in local_gradient_parts);counts=dp.gather(n);offset=sum(counts[:dp.rank()])
     if sum(counts)!=len(global_kl):raise ValueError('Group gradient/token alignment mismatch')
     groups=partitions(global_kl);matched=min(map(len,groups.values()));report={};arrays={}
+    cpu_basis = basis.detach().cpu() if dp.primary() else None
+    local_rows = slice(offset, offset + n)
     for name,indices in groups.items():
         picks=indices[np.linspace(0,len(indices)-1,matched).round().astype(int)]
         entry=dict(count=len(indices),fraction=len(indices)/len(global_kl),
             kl_min=float(np.min(global_kl[indices])),kl_max=float(np.max(global_kl[indices])),matched_count=matched)
-        for kind,selected in [('all',indices),('matched',picks)]:
-            if kind=='matched' and len(indices)==matched:
-                entry[kind]=entry['all']
-                for scope in ('full','u','outside'):
-                    arrays[f'{name}_{kind}_{scope}_eigenvalues']=arrays[f'{name}_all_{scope}_eigenvalues']
-                continue
-            chosen=np.zeros(len(global_kl),bool);chosen[selected]=True;local=chosen[offset:offset+n]
-            moment=HiddenMoments(basis);moment.add(torch.empty((0,basis.shape[0]),device=device))
-            cursor=0
-            for part in local_gradient_parts:
-                # Bounded H2D copies; no second large CPU concatenation.
-                for start in range(0,len(part),4096):
-                    block=part[start:start+4096];mask=local[cursor+start:cursor+start+len(block)]
-                    if mask.any():moment.add(torch.from_numpy(block[mask]).to(device))
-                cursor+=len(part)
-            saved=moment.finish()
-            if int(saved['count'])!=len(selected):raise ValueError('Incomplete KL group')
-            stats,spectra=dp.primary_call(lambda:moment_scopes(saved['second'],saved['basis'],len(selected)))
-            entry[kind]=stats
-            arrays.update({f'{name}_{kind}_{k}':v for k,v in spectra.items()})
+        chosen = np.zeros(len(global_kl), dtype=bool)
+        chosen[picks] = True
+        gram = group_gram(local_gradient_parts, chosen[local_rows], basis.shape[0], device, matched)
+        stats, spectra = dp.primary_call(lambda: moment_scopes((gram/matched).float(), cpu_basis, matched))
+        entry['matched'] = stats
+        arrays.update({f'{name}_matched_{k}': v for k,v in spectra.items()})
+        if len(indices) > matched:
+            # G_all.T @ G_all is the sum of the two disjoint row-set Grams.
+            # Transfer only the remaining rows and keep the matched Gram on the host.
+            chosen[indices] = True
+            chosen[picks] = False
+            rest = group_gram(local_gradient_parts, chosen[local_rows], basis.shape[0], device, len(indices)-matched)
+            if dp.primary():
+                gram.add_(rest)
+            del rest
+            stats, spectra = dp.primary_call(lambda: moment_scopes((gram/len(indices)).float(), cpu_basis, len(indices)))
+        entry['all'] = stats
+        arrays.update({f'{name}_all_{k}': v for k,v in spectra.items()})
+        del gram
         report[name]=entry
     return dict(definition='global current-batch KL bottom10%, middle80%, top10%; stable tie breaking',
         normalization='per-token original hidden loss gradients; G^T G/N_group',

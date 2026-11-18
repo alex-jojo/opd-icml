@@ -55,7 +55,7 @@ class GradientEnergy:
                 raise ValueError('Exact token audit currently supports FSDP1, not DTensor/FSDP2')
 
     @torch.no_grad()
-    def squared_norm(self):
+    def local_squared_norm(self, device):
         # Keep reductions on their device; scalar conversion per tiny block
         # otherwise forces thousands of CUDA/host synchronizations per token.
         subtotals = {}
@@ -71,11 +71,28 @@ class GradientEnergy:
             for offset in range(start, start + count, 262144):
                 block = flat[offset:min(offset + 262144, start + count)].double()
                 subtotals[flat.device].add_(block.square().sum())
-        value = sum(float(subtotal) for subtotal in subtotals.values())
-        result = dp.total(value / self.divisor)
-        if not np.isfinite(result):
+        if not subtotals:
+            return torch.zeros((), device=device, dtype=torch.float64)
+        parts = iter(subtotals.values())
+        value = next(parts).to(device)
+        for subtotal in parts:
+            value.add_(subtotal.to(device))
+        return value if self.divisor == 1 else value / self.divisor
+
+    def collect(self, values):
+        # Row 0 is sharded energy; row 1 is a rank-local loss on the same token.
+        if dp.size() > 1:
+            device = torch.device('cuda', torch.cuda.current_device()) if torch.distributed.get_backend() == 'nccl' else 'cpu'
+            values = values.to(device)
+            torch.distributed.all_reduce(values[0])
+        result = values.cpu().numpy()
+        if not np.isfinite(result[0]).all():
             raise FloatingPointError('Nonfinite per-token parameter gradient energy')
         return result
+
+    def squared_norm(self):
+        energy = self.local_squared_norm(self.layout.params[0].device)
+        return float(self.collect(energy.reshape(1, 1))[0, 0])
 
 
 class FullParameterTokenAudit:
@@ -142,8 +159,7 @@ class FullParameterTokenAudit:
             # Every FSDP rank differentiates the exact same sampled token loss.
             sampling = dp.primary_call(choose)
             rows, positions = rows[sampling['index']], positions[sampling['index']]
-        energy = np.empty(len(rows), dtype=np.float64)
-        losses = np.empty(len(rows), dtype=np.float64)
+        measurements = np.empty((2, len(rows)), dtype=np.float64)
         if not len(rows):
             raise ValueError('Cannot audit an empty token population')
         if dp.primary():
@@ -153,6 +169,8 @@ class FullParameterTokenAudit:
             print(f'[parameter tokens] graph group size={self.group_size}' +
                   (f'; fallback: {self.reuse_fallback}' if self.reuse_fallback else ''), flush=True)
         cursor = 0
+        capacity = min(len(rows), 256)
+        values = torch.empty((2, capacity), dtype=torch.float64, device=device)
         full_forward_tokens = actual_forward_tokens = forward_calls = 0
         with gradient_observation(self.actor):
             for row in np.unique(rows):
@@ -177,11 +195,15 @@ class FullParameterTokenAudit:
                             graph.prepare_next_backward()
                         token_loss = token_losses[index]
                         token_loss.backward(retain_graph=index+1 < len(group))
-                        energy[cursor] = layout.squared_norm()
-                        losses[cursor] = float(token_loss.detach())
+                        slot = cursor % capacity
+                        values[0, slot] = layout.local_squared_norm(device)
+                        values[1, slot] = token_loss.detach()
                         self.actor.actor_optimizer.zero_grad(set_to_none=True)
                         del token_loss
                         cursor += 1
+                        if slot+1 == capacity or cursor == len(rows):
+                            batch_start = cursor - (slot + 1)
+                            measurements[:, batch_start:cursor] = layout.collect(values[:, :slot+1])
                         if dp.primary() and (cursor % (16 if sampling is not None else 256) == 0 or cursor == len(rows)):
                             print(f'[parameter tokens] {cursor}/{len(rows)}; '
                                   f'{time.perf_counter()-started:.1f}s', flush=True)
@@ -189,7 +211,7 @@ class FullParameterTokenAudit:
         if dp.primary():
             print(f'[parameter tokens] completed: {forward_calls} forwards, {len(rows)} backwards '
                   '(checkpoint recomputations excluded)', flush=True)
-        result = dict(row=rows, pos=positions, energy=energy, diagnostic_kl=losses,
+        result = dict(row=rows, pos=positions, energy=measurements[0], diagnostic_kl=measurements[1],
                       seconds=time.perf_counter()-started, backwards=len(rows),
                       causal_prefix=self.prefix, forward_input_tokens=actual_forward_tokens,
                       forward_calls=forward_calls, graph_group_size=self.group_size,
