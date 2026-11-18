@@ -17,13 +17,18 @@ def read(path):
 
 
 @contextmanager
-def training_timer(run, scale, strategy, resume):
+def training_timer(run, scale, strategy, resume, shared_early_stop=False):
     # train.py requires its training/ directory to be empty at first launch.
     path = run/'rq4_training_time.json'
-    record = read(path) if path.exists() else dict(scale=scale, strategy=strategy, attempts=[], complete_history=not resume)
+    if path.exists():
+        record = read(path)
+    else:
+        record = dict(scale=scale, strategy=strategy, attempts=[], complete_history=not resume)
+        if shared_early_stop:
+            record['shared_early_stop'] = True
     if (record['scale'], record['strategy']) != (scale, strategy):
         raise ValueError('RQ4 model or strategy differs from the saved run')
-    attempt = dict(status='running')
+    attempt = dict(status='running', started_at_unix=time.time())
     record['attempts'].append(attempt)
     save_json(path, record)
     started = time.perf_counter()
@@ -36,6 +41,7 @@ def training_timer(run, scale, strategy, resume):
         attempt['status'] = 'complete'
     finally:
         attempt['seconds'] = time.perf_counter() - started
+        attempt['ended_at_unix'] = time.time()
         save_json(path, record)
 
 
@@ -77,6 +83,57 @@ def save_arm(run, scale, strategy, end):
     summary = dict(scale=scale, strategy=strategy, **end, training_wall_seconds=wall,
                    **five_benchmark_scores(scores))
     save_json(run/'training/training_records/rq4/summary.json', summary)
+    return summary
+
+
+def shared_selection(checkpoints, decisions, final_step):
+    selected = read(checkpoints/'early_stop/selection.json')
+    step = selected['step']
+    if not 1 <= step <= final_step or selected['optimizer_updates'] != step or selected['uses_full_endpoint'] != (step == final_step):
+        raise ValueError('Early-stop checkpoint does not match the FULL trajectory')
+    # Ignore uncommitted future windows left by a rolled-back attempt. Check
+    # every scheduled observation through the selection (or through the cap).
+    first_stable = None
+    interval = selected['interval']
+    for update in range(interval, step + 1, interval):
+        decision = read(decisions/f'early_stop_{update:03d}.json')
+        if decision['step'] != update:
+            raise ValueError('Early-stop decision has the wrong update number')
+        if decision['stable']:
+            first_stable = update
+            break
+    reason = selected['stop_reason']
+    if not ((reason == 'stable' and first_stable == step) or
+            (reason == 'budget' and first_stable is None and step == final_step)):
+        raise ValueError('Early-stop selection disagrees with the first stable window')
+    return selected
+
+
+def prefix_wall_seconds(timing, selected_at):
+    if not timing['complete_history']:
+        return None
+    elapsed = 0.
+    for attempt in timing['attempts']:
+        if 'seconds' not in attempt:
+            return None
+        if attempt.get('started_at_unix', float('inf')) <= selected_at <= attempt.get('ended_at_unix', 0):
+            return elapsed + (selected_at - attempt['started_at_unix'])
+        elapsed += attempt['seconds']
+    return None
+
+
+def save_shared_arm(run, full, selection):
+    at_budget = selection['uses_full_endpoint']
+    evaluation = 'eval/final_mean8' if at_budget else 'eval/early-stop/final_mean8'
+    scores = five_benchmark_scores(read(run/(evaluation + '.summary.json')))
+    wall = (full['training_wall_seconds'] if at_budget else
+            prefix_wall_seconds(read(run/'rq4_training_time.json'), selection['selected_at_unix']))
+    summary = dict(scale=full['scale'], strategy='early-stop', source_strategy='full',
+                   rollout_rounds=selection['step'], optimizer_updates=selection['optimizer_updates'],
+                   stop_reason=selection['stop_reason'], training_wall_seconds=wall, uses_full_endpoint=at_budget,
+                   timing_basis='full_endpoint' if at_budget else 'full_prefix_through_checkpoint_save',
+                   responses_file=evaluation + '.jsonl', **scores)
+    save_json(run/'training/training_records/rq4/early_stop_summary.json', summary)
 
 
 def save_comparison(plan):
@@ -91,6 +148,11 @@ def save_comparison(plan):
                     raise ValueError('RQ4 summary does not match its scheduled experiment')
                 arms = groups.setdefault(job['scale'], {})
                 arms[strategy] = row
+                if job.get('shared_early_stop'):
+                    shared = read(folder/'early_stop_summary.json')
+                    if (shared['scale'], shared['strategy'], shared['source_strategy']) != (job['scale'], 'early-stop', 'full'):
+                        raise ValueError('Shared early-stop result does not match its FULL run')
+                    arms['early-stop'] = shared
                 if job['scale'] == '4b' and strategy == 'full':
                     base = project_absolute(job['output'])/'eval/base/summary.json'
                     if base.is_file():  # Older completed suites predate the Base evaluation.

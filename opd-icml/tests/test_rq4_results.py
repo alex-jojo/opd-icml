@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 from zipfile import ZipFile
@@ -17,6 +19,8 @@ import run_h200_experiment as h200
 import run_h200_suite as suite
 from package_results import package_results
 from test_h200_experiments import checkpoint_fixture
+sys.path.insert(0, str(ROOT/'runtime/verl/trainer/ppo'))
+from opd_replication_checkpoint import SharedEarlyStop
 
 
 def cached_loss(actor, data):
@@ -92,14 +96,15 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                              {}, list(range(64)), 512)
     paths = []
     base_runs = []
+    early_evals = []
     for queue in plan['small_queues']:
-        assert [job['rq4_strategy'] for job in queue] == list(rq4.STRATEGIES)
+        assert [job['rq4_strategy'] for job in queue] == ['full', 'reuse']
         for job in queue:
             args = h200.parser().parse_args(job['command'][2:])
             strategy = args.rq4_strategy
             run = h200.project_absolute(job['output'])
             q = h200.build_plan(args, {})
-            cap, split, final = (53, 2, 53) if strategy == 'reuse' else (106, 1, 40 if strategy == 'early-stop' else 106)
+            cap, split, final = (53, 2, 53) if strategy == 'reuse' else (106, 1, 106)
             q['resolved_training'] = dict(rounds_cap=cap, updates_per_round=split)
             window = run/'training/training_records/rq4'
 
@@ -108,19 +113,30 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                     assert not (run/'training').exists()
                     actor = checkpoint_fixture(run/'training', 1, final)
                     rq4.save_json(actor.parent/'opd_optimizer_updates.json', dict(rollout_round=final, optimizer_updates_done=final*split))
-                    if strategy == 'early-stop':
-                        rq4.save_json(window/'early_stop_040.json', dict(step=40, stable=True))
+                    if strategy == 'full':
+                        observer = SharedEarlyStop(actor.parent.parent, 0, 5)
+                        for step in range(1, final + 1):
+                            stable = args.scale == '4b' and step == 40
+                            if step % 5 == 0:
+                                rq4.save_json(window/f'early_stop_{step:03d}.json', dict(step=step, stable=stable))
+                            observer.observe(step, step, stable, step == final, lambda path, _: shutil.copytree(actor, path))
                 elif 'verl.model_merger' in command:
-                    assert f'global_step_{final}/actor' in command[command.index('--local_dir')+1]
-                    merged = h200.project_absolute(q['merged_dir'])
+                    source = command[command.index('--local_dir')+1]
+                    assert source.endswith((f'global_step_{final}/actor', 'early_stop/actor'))
+                    merged = h200.project_absolute(command[command.index('--target_dir')+1])
                     merged.mkdir(parents=True)
                     (merged/'config.json').write_text('{}')
                     (merged/'weights.safetensors').touch()
-                elif command == q['evaluate']:
+                elif 'scripts/evaluate.py' in command:
                     values = dict(zip(rq4.BENCHMARKS, (.5, .2, .1, .3, .4)))
                     values['amc23'] = 1.
-                    rq4.save_json(run/'eval/final_mean8.summary.json', {
+                    output = h200.project_absolute(command[command.index('--output_file')+1])
+                    if output.parent.name == 'early-stop':
+                        early_evals.append((args.scale, strategy))
+                        values['math500'] = .25
+                    rq4.save_json(output.with_suffix('.summary.json'), {
                         k: dict(problems=i+1, samples=8*(i+1), mean_at_8=v) for i,(k,v) in enumerate(values.items())})
+                    output.write_text('{}\n')
                 elif command == q['evaluate_base']:
                     assert '--no-package' in command
                     base_runs.append((args.scale, strategy))
@@ -135,11 +151,20 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
             assert saved['five_benchmark_mean_at_8'] == pytest.approx(.3)
             assert saved['training_wall_seconds'] > 0
             paths.append(run)
-    assert len(set(paths)) == 6
+    assert len(set(paths)) == 4
+    assert early_evals == [('4b', 'full')]
     assert base_runs == [('4b', 'full')]
     rq4.save_comparison(plan)
     root = h200.project_absolute(plan['output'])
     combined = rq4.read(root/'rq4_comparison.json')
+    early = combined['4b']['early-stop']
+    assert early['source_strategy'] == 'full' and early['rollout_rounds'] == early['optimizer_updates'] == 40
+    assert early['stop_reason'] == 'stable' and early['five_benchmark_change_pp'] == pytest.approx(-5)
+    assert 0 < early['training_wall_seconds'] <= combined['4b']['full']['training_wall_seconds']
+    budget = combined['1.7b']['early-stop']
+    assert budget['stop_reason'] == 'budget' and budget['uses_full_endpoint']
+    assert budget['five_benchmark_change_pp'] == budget['training_time_saved_fraction'] == 0
+    assert budget['responses_file'] == 'eval/final_mean8.jsonl'
     for arms in combined.values():
         for strategy in rq4.STRATEGIES:
             row = arms[strategy]
@@ -150,8 +175,91 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
     assert 'base' not in combined['1.7b']
     with ZipFile(package_results(root)) as archive:
         assert 'suite/rq4_comparison.json' in archive.namelist()
-        assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 6
+        assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 4
+        assert sum(n.endswith('/rq4/early_stop_summary.json') for n in archive.namelist()) == 2
+        assert 'suite/4b/eval/early-stop/final_mean8.jsonl' in archive.namelist()
         assert sum(n.endswith('/eval/base/summary.json') for n in archive.namelist()) == 1
+
+
+def test_shared_checkpoint_is_first_committed_model_and_full_keeps_its_basis(tmp_path):
+    states = {}
+    saved_steps = []
+    for mode in ('ordinary', 'shared'):
+        torch.manual_seed(15)
+        actor, data = make_actor(), make_data()
+        run = tmp_path/mode
+        configure(actor, run, rounds=20, adaptive=mode == 'shared')
+        cfg = actor.config.policy_loss['replication17']['adaptive_stability']
+        cfg.update(snapshot_only=mode == 'shared', adjacent_overlap=.01, window_overlap=.01,
+                   p10_principal_cos2=.001, max_energy_gap=1.)
+        observer = study_module.StudyReplication(actor)
+        selection = SharedEarlyStop(run/'checkpoints', 0, 5)
+        def save(path, step):
+            saved_steps.append(step)
+            Path(path).mkdir()
+            torch.save(actor.actor_module.state_dict(), Path(path)/'model.pt')
+        for step in range(1, 21):
+            if mode == 'shared' and step == 16:
+                observer = study_module.StudyReplication(actor)
+                data.meta_info['opd_early_stop_selected'] = True
+            observer.begin(data, None, step)
+            optimizer_update(actor, data)
+            observer.after_inner(1)
+            metrics = observer.finish([0.], [0.])
+            if step >= 10:
+                assert observer.reference['frozen'] and observer.reference['cumulative_to'] == 10
+            if mode == 'shared':
+                selection.observe(step, step, metrics['replication/adaptive_stop'], step == 20, save)
+            if step in (15, 20):
+                states[mode, step] = {k:v.detach().clone() for k,v in actor.actor_module.state_dict().items()}
+    assert saved_steps == [15]
+    assert not (tmp_path/'shared/training_records/rq4/early_stop_020.json').exists()
+    saved = torch.load(tmp_path/'shared/checkpoints/early_stop/actor/model.pt', weights_only=True)
+    for key in saved:
+        assert torch.equal(saved[key], states['ordinary', 15][key])
+        assert torch.equal(states['shared', 20][key], states['ordinary', 20][key])
+    assert any(not torch.equal(saved[key], states['shared', 20][key]) for key in saved)
+
+
+def test_shared_snapshot_resume_and_failed_save(tmp_path):
+    def fail(*args):
+        raise RuntimeError('save failed')
+    selection = SharedEarlyStop(tmp_path, 0, 5)
+    with pytest.raises(RuntimeError, match='save failed'):
+        selection.observe(15, 15, True, False, fail)
+    assert not selection.marker.exists()
+    selection.observe(15, 15, True, False, lambda *_: None)
+    restored = SharedEarlyStop(tmp_path, 15, 5)
+    restored.observe(20, 20, True, False, fail)
+    assert rq4.read(restored.marker)['step'] == 15
+    replay = SharedEarlyStop(tmp_path, 10, 5)
+    assert not replay.marker.exists()
+    replay.observe(20, 20, True, True, fail)
+    assert rq4.read(replay.marker)['uses_full_endpoint']
+
+
+def test_prefix_timing_handles_retries_and_missing_history():
+    timing = dict(complete_history=True, attempts=[
+        dict(started_at_unix=100, ended_at_unix=120, seconds=20),
+        dict(started_at_unix=500, ended_at_unix=560, seconds=60)])
+    assert rq4.prefix_wall_seconds(timing, 510) == 30
+    assert rq4.prefix_wall_seconds(timing, 110) == 10
+    assert rq4.prefix_wall_seconds(timing, 300) is None
+    assert rq4.prefix_wall_seconds(dict(timing, complete_history=False), 110) is None
+
+
+def test_eval_preserves_old_full_runs_and_reads_new_shared_run(tmp_path):
+    args = h200.parser().parse_args(['--scale', '4b', '--output', str(tmp_path)])
+    assert h200.build_plan(args, {})['shared_early_stop']
+    args.stage = 'eval'
+    for shared in (False, True):
+        timing = dict(scale='4b', strategy='full')
+        if shared:
+            timing['shared_early_stop'] = True
+        rq4.save_json(tmp_path/'rq4_training_time.json', timing)
+        plan = h200.build_plan(args, {})
+        assert plan['shared_early_stop'] == shared
+        assert ('--rq4-strategy' in plan['train']) == shared
 
 
 def test_early_stop_rejects_unconfirmed_partial_checkpoint(tmp_path):
@@ -178,7 +286,8 @@ def test_matched_real_hydra_config(scale, strategy):
     assert cfg.trainer.total_training_steps*policy.jump_reuse_updates == 106
     assert cfg.data.train_batch_size == cfg.actor_rollout_ref.actor.ppo_mini_batch_size == 128
     assert policy.gradient_study.parameter_tokens.sample_size == 256 and policy.fixed_heldout_probe_size == 0
-    assert policy.replication17.adaptive_stability.enabled == (strategy == 'early-stop')
+    assert policy.replication17.adaptive_stability.enabled == (strategy != 'reuse')
+    assert policy.replication17.adaptive_stability.get('snapshot_only', False) == (strategy == 'full')
 
 
 def test_timing_tracks_failed_and_resumed_attempts(tmp_path):

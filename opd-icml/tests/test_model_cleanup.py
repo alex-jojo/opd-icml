@@ -109,6 +109,41 @@ def test_linked_paths_are_rejected_before_any_deletion(tmp_path, location):
     assert target.is_symlink()
 
 
+def test_shared_weights_survive_until_early_evaluation_is_complete(tmp_path):
+    run = tmp_path/'run'
+    models(run)
+    math_results(run)
+    early = write(run, 'training/checkpoints/early_stop/actor/model.pt')
+    save_json(run/'rq4_training_time.json', dict(shared_early_stop=True))
+    save_json(early.parent.parent/'selection.json', dict(step=25, uses_full_endpoint=False))
+    summary = run/'training/training_records/rq4/early_stop_summary.json'
+    save_json(summary, dict(source_strategy='full', rollout_rounds=25, uses_full_endpoint=False))
+    with pytest.raises(ValueError, match='missing evaluation artifact'):
+        cleanup.cleanup_completed_models(run, 'math')
+    assert early.is_file() and (run/'merged/model.safetensors').is_file()
+    for path in (run/'eval').glob('final_mean8.*'):
+        write(run/'eval/early-stop', path.name, path.read_bytes())
+    cleanup.cleanup_completed_models(run, 'math')
+    assert not early.exists() and summary.is_file() and (run/'eval/early-stop/final_mean8.jsonl').is_file()
+
+
+def test_interrupted_early_merge_reclaims_its_only_owned_workdir(tmp_path):
+    actor = write(tmp_path, 'actor/model.pt')
+    write(tmp_path, 'eval-merge-tmp/.opd-early-eval')
+    stale = write(tmp_path, 'eval-merge-tmp/merged/old-shard')
+    with pytest.raises(RuntimeError):
+        with cleanup.temporary_early_export(tmp_path) as merged:
+            assert not stale.exists()
+            write(merged, 'new-shard')
+            raise RuntimeError('evaluation interrupted')
+    assert actor.is_file() and not merged.parent.exists()
+    foreign = write(tmp_path, 'eval-merge-tmp/unrecognized')
+    with pytest.raises(ValueError, match='Unrecognized'):
+        with cleanup.temporary_early_export(tmp_path):
+            pytest.fail('replaced unrecognized directory')
+    assert foreign.is_file()
+
+
 @pytest.mark.parametrize('task,stage,expected', [
     ('math', 'all', True), ('math', 'eval', True), ('math', 'train-generate', True),
     ('math', 'generate', True), ('math', 'train', False),

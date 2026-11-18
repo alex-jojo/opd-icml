@@ -43,7 +43,7 @@ def test_parallel_plan_has_disjoint_gpu_cpu_and_aggregate_memory_budgets(tmp_pat
 def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     plan = plan_for(tmp_path, free=180, cpus=24)
     assert plan['small_parallelism'] == 1
-    assert len(plan['small_queues'][0]) == 8
+    assert len(plan['small_queues'][0]) == 6
     assert all(value(j['command'], '--parameter-token-samples') == '256' for j in plan['small_queues'][0])
 
 

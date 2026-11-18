@@ -8,6 +8,41 @@ import os
 from pathlib import Path
 import re
 import shutil
+import time
+
+
+class SharedEarlyStop:
+    """Pin the first qualifying FULL update without moving the resume pointer."""
+
+    def __init__(self, checkpoints, restored_step, interval):
+        self.interval = interval
+        self.directory = Path(checkpoints) / 'early_stop'
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.marker = self.directory / 'selection.json'
+        self.selection = None
+        if self.marker.is_file():
+            saved = json.loads(self.marker.read_text(encoding='utf-8'))
+            if saved['step'] <= restored_step:
+                self.selection = saved
+            else:
+                # Replay from before this decision. Old weights are ineligible until
+                # a fresh save succeeds and publishes its receipt.
+                self.marker.unlink()
+
+    def observe(self, step, updates, stable, at_budget, save_weights):
+        if self.selection is not None or not (stable or at_budget):
+            return
+        if not at_budget:
+            save_weights(str(self.directory / 'actor'), step)
+        record = dict(step=step, optimizer_updates=updates, interval=self.interval, stop_reason='stable' if stable else 'budget',
+                      uses_full_endpoint=at_budget, selected_at_unix=time.time())
+        tmp = self.marker.with_suffix('.tmp')
+        with tmp.open('w', encoding='utf-8') as stream:
+            json.dump(record, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        tmp.replace(self.marker)
+        self.selection = record
 
 
 def publish_and_rotate(directory, step, reuse, keep=1, final_model_only=False):

@@ -113,7 +113,8 @@ def build_suite(args, environment, cpus, free_gib):
         grade = list(cmd)
         grade[grade.index('--cpu-ids')+1] = ','.join(map(str, grade_cpus))
         grade[grade.index('--score-workers')+1] = str(len(grade_cpus))
-        return dict(name=name, scale=scale, rq4_strategy=strategy, devices=ids, cpu_ids=cores, output=project_relative(output),
+        return dict(name=name, scale=scale, rq4_strategy=strategy, shared_early_stop=strategy == 'full',
+                    devices=ids, cpu_ids=cores, output=project_relative(output),
                     command=cmd+['--stage', 'train-generate'],
                     grade=grade+['--stage', 'grade'] if spec.task == 'code' else None)
     # Fixed slot queues keep each GPU/CPU partition owned by one task at a time.
@@ -121,7 +122,7 @@ def build_suite(args, environment, cpus, free_gib):
     for i, scale in enumerate(selected_small):
         slot = i % slots
         cores = training_cpus[slot::slots]
-        strategies = rq4_results.STRATEGIES if scale in rq4_results.SCALES else (None,)
+        strategies = ('full', 'reuse') if scale in rq4_results.SCALES else (None,)
         for strategy in strategies:
             queues[slot].append(job(scale, [devices[slot]], cores, slots, strategy))
     large = [job(s, devices, training_cpus, 1) for s in LARGE if s in args.scales]

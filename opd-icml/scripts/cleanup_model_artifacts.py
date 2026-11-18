@@ -1,4 +1,5 @@
 """Remove completed experiment model copies while preserving all measurements."""
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -47,22 +48,65 @@ def _read(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+@contextmanager
+def temporary_early_export(snapshot):
+    """Keep at most one temporary HF export, including after an interrupted evaluation."""
+    from filelock import FileLock
+    snapshot = snapshot.resolve()
+    work = snapshot/'eval-merge-tmp'
+    owner = work/'.opd-early-eval'
+    def clear():
+        _checked_files(snapshot, work.name)
+        if work.exists():
+            if any(work.iterdir()) and not owner.is_file():
+                raise ValueError(f'Unrecognized temporary merge directory: {work}')
+            shutil.rmtree(work)
+
+    with FileLock(str(snapshot/'eval-merge.lock')):
+        clear()
+        work.mkdir()
+        owner.touch()
+        try:
+            yield work/'merged'
+        finally:
+            clear()
+
+
 def _present(path):
     if not path.is_file() or path.stat().st_size == 0:
         raise ValueError(f'Keep model files: missing evaluation artifact {path}')
 
 
+def verify_math_evaluation(directory):
+    summary_path = directory / 'final_mean8.summary.json'
+    _present(directory / 'final_mean8.jsonl')
+    summary = _read(summary_path)
+    if not summary or not all(
+            row.get('problems', 0) > 0 and row.get('samples') == 8 * row['problems']
+            and 0 <= row.get('mean_at_8', -1) <= 1 for row in summary.values()):
+        raise ValueError('Keep model files: incomplete math evaluation summary')
+    return summary_path
+
+
 def verify_completed_evaluation(run, task):
     """Check small completion metadata, without rehashing large response files."""
     if task == 'math':
-        summary_path = run / 'eval/final_mean8.summary.json'
-        _present(run / 'eval/final_mean8.jsonl')
-        summary = _read(summary_path)
-        if not summary or not all(
-                row.get('problems', 0) > 0 and row.get('samples') == 8 * row['problems']
-                and 0 <= row.get('mean_at_8', -1) <= 1 for row in summary.values()):
-            raise ValueError('Keep model files: incomplete math evaluation summary')
-        return [summary_path]
+        proofs = [verify_math_evaluation(run/'eval')]
+        timing = run/'rq4_training_time.json'
+        if timing.is_file() and _read(timing).get('shared_early_stop'):
+            result = run/'training/training_records/rq4/early_stop_summary.json'
+            early = _read(result)
+            if early.get('source_strategy') != 'full':
+                raise ValueError('Keep model files: missing shared early-stop evaluation')
+            checkpoints = run/'training/checkpoints'
+            if checkpoints.exists():  # A cleanup retry may already have removed the checkpoint tree.
+                selection = _read(checkpoints/'early_stop/selection.json')
+                if (early['rollout_rounds'], early['uses_full_endpoint']) != (selection['step'], selection['uses_full_endpoint']):
+                    raise ValueError('Keep model files: early-stop evaluation does not match its checkpoint')
+            proofs.append(result)
+            if not early['uses_full_endpoint']:
+                proofs.append(verify_math_evaluation(run/'eval/early-stop'))
+        return proofs
     if task != 'code':
         raise ValueError('Unknown evaluation task')
     root = run / 'eval/code_pass8'

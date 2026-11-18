@@ -167,11 +167,13 @@ def validate_model_tp(student_path, tp):
 
 def paired_rq4_overrides(cfg, strategy):
     """Keep the paired FULL population, optimizer schedule and diagnostics in every arm."""
-    if strategy != 'reuse' and strategy != 'early-stop':
+    if strategy is None:
         return {}
     policy = 'actor_rollout_ref.actor.policy_loss.'
-    if strategy == 'early-stop':
+    if strategy in ('full', 'early-stop'):
         values = {policy+'replication17.adaptive_stability.enabled': True}
+        if strategy == 'full':
+            values[policy+'replication17.adaptive_stability.snapshot_only'] = True
     else:
         budget = cfg['trainer']['total_training_steps']
         if budget % 2:

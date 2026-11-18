@@ -1212,6 +1212,12 @@ class RayPPOTrainer:
 
         # load checkpoint before doing anything
         self._load_checkpoint()
+        adaptive_cfg = self.config.actor_rollout_ref.actor.policy_loss.get(
+            "replication17", {}).get("adaptive_stability", {})
+        shared_stop = None
+        if adaptive_cfg.get("snapshot_only", False):
+            from verl.trainer.ppo.opd_replication_checkpoint import SharedEarlyStop
+            shared_stop = SharedEarlyStop(self.config.trainer.default_local_dir, self.global_steps, adaptive_cfg["interval"])
         if (self.opd_pause_after_optimizer_updates is not None
                 and self.opd_optimizer_updates_done >= self.opd_pause_after_optimizer_updates):
             raise ValueError("OPD pause point was already reached in the resumed checkpoint")
@@ -1652,6 +1658,8 @@ class RayPPOTrainer:
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             if self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode") == "opd_top16":
                                 batch.meta_info["global_steps"] = self.global_steps
+                                if shared_stop is not None:
+                                    batch.meta_info["opd_early_stop_selected"] = shared_stop.selection is not None
                                 if self.opd_target_optimizer_updates is not None:
                                     from verl.trainer.ppo.opd_budget import inner_update_limit
 
@@ -1695,12 +1703,12 @@ class RayPPOTrainer:
                             is_last_step = is_last_step or (
                                 self.global_steps == self.opd_pause_after_rollout_rounds)
 
-                        # Opt-in observer decision: save the CURRENT committed
-                        # model through the normal last-step path, then stop.
-                        adaptive_cfg = self.config.actor_rollout_ref.actor.policy_loss.get(
-                            "replication17", {}).get("adaptive_stability", {})
-                        if adaptive_cfg.get("enabled", False) and actor_output_metrics.get(
-                                "replication/adaptive_stop", 0.0) >= 1.0:
+                        stable = actor_output_metrics.get("replication/adaptive_stop", 0.0) >= 1.0
+                        if shared_stop is not None:
+                            shared_stop.observe(self.global_steps, self.opd_optimizer_updates_done,
+                                                stable, self.global_steps == self.opd_pause_after_rollout_rounds,
+                                                self.actor_rollout_wg.save_evaluation_checkpoint)
+                        elif adaptive_cfg.get("enabled", False) and stable:
                             is_last_step = True
                             metrics["monitor/adaptive_stability_stop"] = 1.0
 

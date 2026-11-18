@@ -235,6 +235,9 @@ def test_suite_suppresses_individual_zips_and_exports_one_archive_after_all_jobs
                 summary = dict(scale=job['scale'], strategy=job['rq4_strategy'],
                                training_wall_seconds=60., five_benchmark_mean_at_8=.5)
                 save(run, job['name']+'/training/training_records/rq4/summary.json', json.dumps(summary).encode())
+                if job['shared_early_stop']:
+                    shared = dict(summary, strategy='early-stop', source_strategy='full')
+                    save(run, job['name']+'/training/training_records/rq4/early_stop_summary.json', json.dumps(shared).encode())
         save(run, 'status.json', b'{"__suite__":"complete"}')
         save(run, '4b/eval/final_mean8.summary.json', b'{"score":1}')
         save(run, '4b/merged/model.safetensors', b'never include')

@@ -1362,6 +1362,23 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         return self._has_base_model and self._has_base_ref_model
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def save_evaluation_checkpoint(self, local_path, global_step):
+        """Export just the committed FULL weights, outside the resume checkpoint rotation."""
+        from copy import copy
+
+        assert self._is_actor
+        manager = copy(self.checkpoint_manager)
+        manager.checkpoint_save_contents = ["model"]
+        manager.previous_saved_paths = []
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        try:
+            manager.save_checkpoint(local_path, global_step=global_step)
+        finally:
+            if self._is_offload_param:
+                offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
         from verl.utils.logger import log_with_rank
 

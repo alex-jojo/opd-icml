@@ -25,6 +25,7 @@ class StudyReplication:
         self.dimension=int(_final_norm_module(actor.actor_module).weight.numel());self.rank=int(self.cfg.get('rank',128))
         self.full=self.cfg['mode']=='full';self.freeze=int(self.cfg.get('freeze_step',10));self.interval=int(self.cfg.get('interval',5))
         self.study=GradientStudy(actor,self.study_cfg,self.output);self.stability=None
+        self.snapshot_only = self.cfg.get('adaptive_stability', {}).get('snapshot_only', False)
         self.parameter_tokens=None;self.parameter_measurement=None
         parameter_cfg=self.study_cfg.get('parameter_tokens',{})
         if parameter_cfg.get('enabled',False):
@@ -45,6 +46,9 @@ class StudyReplication:
 
     def begin(self,train,basis,step):
         self.step=step;self.train=train;self.extra=0.;self.metrics={};self.parts=[];self.moments=None
+        if self.snapshot_only and train.meta_info.get('opd_early_stop_selected', False):
+            # A resumed FULL run already has its committed early checkpoint.
+            self.stability.stable = True
         self.pending_gradient = None
         reuse=int(self.cfg.get('reuse',1));self.completed=(step-1)*reuse
         self.measure=(step==1 or any((self.completed+i)%self.interval==0 for i in range(1,reuse+1)) or step==int(self.cfg['rounds']))
@@ -70,7 +74,7 @@ class StudyReplication:
                 else:self.u=torch.eye(self.dimension,device=device)[:,:self.rank]
             self.reference=dict(valid_u128=self.completed>=min(self.interval,self.freeze),role='observation_basis',source='training_motion_panel',
                 frozen=self.completed>=self.freeze,cumulative_to=min((self.completed//self.interval)*self.interval,self.freeze))
-            if self.stability is not None:
+            if self.stability is not None and not self.snapshot_only:
                 observed = self.completed // self.stability.cfg['interval'] * self.stability.cfg['interval']
                 self.reference.update(valid_u128=observed > 0, frozen=self.stability.stable, cumulative_to=observed)
         else:
@@ -334,7 +338,8 @@ class StudyReplication:
         started = time.perf_counter()
         current = panel_hidden(self.actor, self.panel)
         reshard_after_readout(self.actor)
-        stability_due = self.stability is not None and update % self.stability.cfg['interval'] == 0
+        stability_due = (self.stability is not None and not (self.snapshot_only and self.stability.stable)
+                         and update % self.stability.cfg['interval'] == 0)
         legacy_due = (stability_due or update % self.interval == 0 or
                       update == self.freeze or self.step == int(self.cfg['rounds']))
         def record():
@@ -362,16 +367,17 @@ class StudyReplication:
         if u.shape[1] and stability_due:
             decision = self.stability.observe(update, u, second)
             atomic_json(self.records / 'rq4' / f'early_stop_{update:03d}.json', decision)
-            self.u = u.to(next(self.actor.actor_module.parameters()).device)
-            install_basis(self.asset, u)
-            meta = dict(freeze_step=update if decision['stable'] else None, stable=decision['stable'])
-            self.reference.update(valid_u128=True, cumulative_to=update, frozen=decision['stable'])
+            if not self.snapshot_only:
+                self.u = u.to(next(self.actor.actor_module.parameters()).device)
+                install_basis(self.asset, u)
+                meta = dict(freeze_step=update if decision['stable'] else None, stable=decision['stable'])
+                self.reference.update(valid_u128=True, cumulative_to=update, frozen=decision['stable'])
         elif stability_due:
             self.stability.stable = False
             atomic_json(self.records / 'rq4' / f'early_stop_{update:03d}.json', dict(
                 step=update, stable=False, decision='continue', reason='zero_probe_displacement',
                 config=self.stability.cfg, ready=False))
-        elif u.shape[1] and self.stability is None and update <= self.freeze:
+        if u.shape[1] and (self.stability is None or self.snapshot_only) and update <= self.freeze:
             self.u = u.to(next(self.actor.actor_module.parameters()).device)
             install_basis(self.asset, u)
             self.reference.update(valid_u128=True, cumulative_to=update, frozen=update == self.freeze)

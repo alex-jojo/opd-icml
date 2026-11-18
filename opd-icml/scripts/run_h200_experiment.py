@@ -17,7 +17,7 @@ from model_assets import read_models
 from wandb_config import load_wandb_environment
 from project_paths import project_absolute, project_relative, saved_path_matches
 from package_results import archive_path, package_results
-from cleanup_model_artifacts import finish_experiment, print_disk_space
+from cleanup_model_artifacts import finish_experiment, print_disk_space, temporary_early_export
 import rq4_results
 
 
@@ -111,14 +111,24 @@ def build_plan(args, environment):
     gpus = args.gpus or spec.gpus
     task = args.task or spec.task
     strategy = args.rq4_strategy
-    if args.output and (args.resume or args.stage in ('eval', 'generate')):
-        marker = project_absolute(args.output)/'rq4_training_time.json'
+    label = f'rq4-{strategy}' if strategy else 'paired-full'
+    run = project_absolute(args.output or Path('runs/h200') / args.scale / f'{task}-{label}')
+    legacy_full = False
+    if args.resume or args.stage in ('eval', 'generate'):
+        marker = run/'rq4_training_time.json'
         if marker.is_file():
             record = rq4_results.read(marker)
             saved = record['strategy']
             if record['scale'] != args.scale or saved not in rq4_results.STRATEGIES or strategy not in (None, saved):
                 raise ValueError('RQ4 model or strategy differs from the saved training run')
             strategy = saved
+            legacy_full = strategy == 'full' and not record.get('shared_early_stop', False)
+        elif strategy == 'full':
+            # Runs predating the timing record cannot supply a first-stable checkpoint.
+            legacy_full = True
+    elif (strategy is None and args.scale in rq4_results.SCALES and task == 'math'
+          and project_absolute(args.math_benchmarks) == ROOT/'data/benchmarks.jsonl'):
+        strategy = 'full'
     if strategy and (args.scale not in rq4_results.SCALES or task != 'math'):
         raise ValueError('Paper RQ4 strategies use 1.7B or 4B math')
     if args.stage == 'grade' and task != 'code':
@@ -143,8 +153,6 @@ def build_plan(args, environment):
     if min(args.eval_max_num_seqs, args.eval_batch_size, args.score_workers, args.code_workers) < 1:
         raise ValueError('Evaluation concurrency and worker counts must be positive')
     devices = '' if args.stage == 'grade' else select_devices(gpus, args.devices, environment)
-    label = f'rq4-{strategy}' if strategy else 'paired-full'
-    run = project_absolute(args.output or Path('runs/h200') / args.scale / f'{task}-{label}')
     training, merged = run / 'training', run / 'merged'
     artifacts = project_absolute(args.model_artifacts_root) / run.name if args.model_artifacts_root else None
     checkpoints_root = artifacts / 'checkpoints' if artifacts else training / 'checkpoints'
@@ -163,7 +171,7 @@ def build_plan(args, environment):
                '--learning-rate', str(args.learning_rate),
                '--parameter-token-gradients', args.parameter_token_gradients,
                '--code-workers', str(args.code_workers), '--output', project_relative(training)]
-    if strategy:
+    if strategy and not legacy_full:
         command += ['--rq4-strategy', strategy]
     if args.parameter_token_gradients == 'sampled':
         command += ['--parameter-token-samples', str(args.parameter_token_samples)]
@@ -217,7 +225,8 @@ def build_plan(args, environment):
     checkpoint = checkpoints_root / 'global_step_<latest>/actor'
     merge = [sys.executable, '-m', 'verl.model_merger', 'merge', '--backend', 'fsdp',
              '--local_dir', project_relative(checkpoint), '--target_dir', project_relative(merged), '--use_cpu_initialization']
-    return dict(scale=args.scale, task=task, experiment='paired-full', rq4_strategy=strategy, gpu_count=gpus,
+    return dict(scale=args.scale, task=task, experiment='paired-full', rq4_strategy=strategy,
+        shared_early_stop=strategy == 'full' and not legacy_full, gpu_count=gpus,
         training_gpus=gpus, evaluation_gpus=0 if args.stage == 'grade' else gpus,
         rollout_tp=gpus, evaluation_tp=None if args.stage == 'grade' else gpus,
         stage=args.stage, stage_gpu_count=0 if args.stage == 'grade' else gpus,
@@ -251,7 +260,10 @@ def final_checkpoint(checkpoints, gpus, expected_step):
     step = int(marker.read_text(encoding='utf-8').strip())
     if step != expected_step:
         raise ValueError(f'Expected the final step {expected_step}, found {step}; refusing partial-run evaluation')
-    actor = checkpoints / f'global_step_{step}/actor'
+    return checked_actor(checkpoints / f'global_step_{step}/actor', gpus)
+
+
+def checked_actor(actor, gpus):
     config = json.loads((actor / 'fsdp_config.json').read_text(encoding='utf-8'))
     if config.get('world_size') != gpus:
         raise ValueError('Checkpoint GPU count differs from this experiment')
@@ -262,6 +274,23 @@ def final_checkpoint(checkpoints, gpus, expected_step):
     if not (actor / 'huggingface/config.json').is_file():
         raise ValueError('Final checkpoint has no Hugging Face metadata')
     return actor
+
+
+def evaluate_early_checkpoint(plan, run, checkpoints, env):
+    snapshot = checkpoints/'early_stop'
+    actor = checked_actor(snapshot/'actor', plan['gpu_count'])
+    # The model shards remain available for retries. Release the temporary HF
+    # export before merging the final FULL model.
+    with temporary_early_export(snapshot) as export:
+        merged = project_relative(export)
+        merge = list(plan['merge'])
+        merge[merge.index('--local_dir') + 1] = project_relative(actor)
+        merge[merge.index('--target_dir') + 1] = merged
+        run_command(merge, env, run/'logs/merge_early_stop.log')
+        evaluation = list(plan['evaluate'])
+        evaluation[evaluation.index('--model_path') + 1] = merged
+        evaluation[evaluation.index('--output_file') + 1] = project_relative(run/'eval/early-stop/final_mean8.jsonl')
+        run_command(evaluation, env, run/'logs/evaluate_early_stop.log')
 
 
 def run_command(command, env, log):
@@ -312,7 +341,8 @@ def execute(args, plan, env):
         elif not project_absolute(args.math_benchmarks).is_file():
             raise ValueError(f'Missing math benchmark file: {args.math_benchmarks}')
     if training_stage:
-        timer = rq4_results.training_timer(run, plan['scale'], strategy, args.resume) if strategy else nullcontext()
+        timer = (rq4_results.training_timer(run, plan['scale'], strategy, args.resume, plan['shared_early_stop'])
+                 if strategy else nullcontext())
         with timer:
             run_command(plan['train'], env, run / 'logs/train.log')
     if plan.get('model_artifacts'):
@@ -329,6 +359,12 @@ def execute(args, plan, env):
                                    expected, plan['resolved_training']['updates_per_round'])
         expected = end['rollout_rounds']
     actor = final_checkpoint(project_absolute(plan['checkpoints_dir']), plan['gpu_count'], expected)
+    selection = None
+    if plan['shared_early_stop']:
+        checkpoints = project_absolute(plan['checkpoints_dir'])
+        selection = rq4_results.shared_selection(checkpoints, rq4, expected)
+        if not selection['uses_full_endpoint']:
+            evaluate_early_checkpoint(plan, run, checkpoints, env)
     merged = project_absolute(plan['merged_dir'])
     merge_marker = merged / 'h200_merge.json'
     identity = dict(scale=plan['scale'], task=plan['task'], checkpoint=project_relative(actor), gpu_count=plan['gpu_count'])
@@ -355,7 +391,9 @@ def execute(args, plan, env):
         if plan['evaluate_base']:
             run_command(plan['evaluate_base'], env, run / 'logs/evaluate_base.log')
         if strategy:
-            rq4_results.save_arm(run, plan['scale'], strategy, end)
+            full_or_independent = rq4_results.save_arm(run, plan['scale'], strategy, end)
+            if selection is not None:
+                rq4_results.save_shared_arm(run, full_or_independent, selection)
     print(f'[DONE] Results: {project_relative(run / "eval")}', flush=True)
 
 
