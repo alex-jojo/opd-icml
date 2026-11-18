@@ -51,11 +51,15 @@ It also records their energy coverage by the fixed step-10 basis when that basis
 nonzero incremental energy are available. Only existing probe forward outputs are used;
 no additional model pass or eigendecomposition is performed. `since_step10_*` and
 `previous_step_*` identify the two comparisons. Zero-energy coverage is left undefined.
+Changes are subtracted before projection, in bounded CPU blocks, to avoid cancellation
+when late-training changes are much smaller than the individual hidden states.
 
 The previous hidden state is held in CPU memory, not written every step. After a process
 restart the first adjacent-step comparison has `previous_step_available=false`; subsequent
 steps are available. Step-10-relative comparisons resume from the single saved reference.
 Old runs without this reference cannot retrospectively supply it.
+When rolling back to a checkpoint before step 10, the observation basis is restored from
+that committed history. A later basis left by the interrupted attempt is never used.
 
 At existing validation diagnostics, parameter summaries reuse before/after buffers and
 record exact nonzero-coordinate counts, positive/negative counts, L1/L2 sizes, RMS, maximum
@@ -68,6 +72,10 @@ are not claimed by these records.
 
 Small extra CPU reductions are timed (`timing/rq2_increment_summary_seconds` and
 `parameter_update_summary_seconds`). Zero wall-clock overhead is not guaranteed.
+Parameter dot products share FP64 block conversions and combine their distributed
+exchange. Individual dot products retain the original chunk and rank reduction order;
+no tokens, layers, diagnostic steps or precision are removed. Before/after-update dot
+exchanges decrease from five to two per validation diagnostic.
 
 ## Model cleanup
 
@@ -76,8 +84,25 @@ new owned `--model-artifacts-root` directories. A per-run ownership marker and c
 evaluation are required. Unknown pre-existing external directories are not adopted or
 deleted. Shared caches, diagnostics and answers are never cleanup targets. Failures and
 `--keep-model-files` preserve weights. Default checkpoint frequency is unchanged.
+Older external runs can resume after checkpoint validation; without ownership metadata,
+automatic cleanup is skipped and result packaging continues. Early-stop evaluation is
+checked against the actual weight directory, even if convenience links are absent.
 
 Original result files remain alongside the ZIP; no automatic deletion of the only source
 statistics is performed. An earlier ZIP and its replacement can coexist during atomic
 packaging. Updating this code affects future records and does not regenerate missing
 historical measurements.
+
+## Resume and verification
+
+Default final-model exports cannot resume AdamW training. To support recovery, explicitly
+use `--save-freq N`; resume with the same experiment, output, GPU count and save settings.
+The launcher requires the committed checkpoint pointer, all model/optimizer/extra-state
+shards, data cursor and consistent rollout/update counters. Missing checkpoints fail
+instead of starting a fresh model against existing statistics.
+
+`tests/check_storage_four_rank.py` runs four real CPU/Gloo FSDP processes. It checks
+shard padding, tied weights, exact equality to the legacy dot reductions, agreement
+between ranks, lossless archives and propagation of writer failures to every rank.
+The primary rank writes moment archives and reports success/failure before the next
+collective. GPU/NCCL throughput still requires measurement on the training server.

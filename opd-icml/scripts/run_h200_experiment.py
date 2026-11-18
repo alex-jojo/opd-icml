@@ -321,7 +321,7 @@ def execute(args, plan, env):
     if training_stage and not args.resume and run.exists() and any(run.iterdir()):
         raise ValueError(f'Choose an empty --output directory: {run}')
     if training_stage and plan.get('model_artifacts'):
-        register_external_models(plan)
+        register_external_models(plan, allow_unowned_resume=args.resume)
     # Use a fresh process so probing CUDA never initializes it in this orchestrator.
     probe = [sys.executable, '-c',
         'import torch; n=torch.cuda.device_count(); '

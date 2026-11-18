@@ -88,7 +88,7 @@ def verify_math_evaluation(directory):
     return summary_path
 
 
-def verify_completed_evaluation(run, task):
+def verify_completed_evaluation(run, task, checkpoints=None):
     """Check small completion metadata, without rehashing large response files."""
     if task == 'math':
         proofs = [verify_math_evaluation(run/'eval')]
@@ -98,7 +98,7 @@ def verify_completed_evaluation(run, task):
             early = _read(result)
             if early.get('source_strategy') != 'full':
                 raise ValueError('Keep model files: missing shared early-stop evaluation')
-            checkpoints = run/'training/checkpoints'
+            checkpoints = checkpoints if checkpoints is not None else run/'training/checkpoints'
             if checkpoints.exists():  # A cleanup retry may already have removed the checkpoint tree.
                 selection = _read(checkpoints/'early_stop/selection.json')
                 if (early['rollout_rounds'], early['uses_full_endpoint']) != (selection['step'], selection['uses_full_endpoint']):
@@ -135,7 +135,7 @@ def verify_completed_evaluation(run, task):
     return proofs
 
 
-def register_external_models(plan):
+def register_external_models(plan, allow_unowned_resume=False):
     """Claim a fresh per-run weight directory, never an existing shared model tree."""
     run = project_absolute(plan['output']).resolve()
     candidate = project_absolute(plan['model_artifacts'])
@@ -153,6 +153,10 @@ def register_external_models(plan):
         if _read(owner) != identity:
             raise ValueError('External model directory belongs to another run')
     elif root.exists() and any(root.iterdir()):
+        if allow_unowned_resume:
+            print('[MODEL ARTIFACTS] Existing external weights remain unowned; '
+                  'resume validation still applies and automatic deletion is disabled.', flush=True)
+            return
         raise ValueError('Choose an empty external model directory; existing unowned files are preserved')
     else:
         save_json(owner, identity)
@@ -181,7 +185,7 @@ def cleanup_completed_models(output, task, external_root=None):
     inventories = {relative: _checked_files(storage, relative) for relative in targets}
     if not any((storage / relative).exists() for relative in targets):
         return
-    proofs = verify_completed_evaluation(run, task)
+    proofs = verify_completed_evaluation(run, task, storage/targets[0])
     receipt_path = run / 'model_cleanup.json'
     metadata_path = run / 'model_artifact_metadata.json'
     metadata = _read(metadata_path) if metadata_path.exists() else {}
@@ -220,6 +224,16 @@ def finish_experiment(args, plan):
     completed = args.stage in ('all', 'eval', 'grade') or (
         plan['task'] == 'math' and args.stage in ('train-generate', 'generate'))
     if completed:
+        external = plan.get('model_artifacts')
+        if external and not (project_absolute(external)/'.opd-model-owner.json').exists():
+            # Older runs have no ownership receipt. Preserve their weights while
+            # still exporting completed measurements, rather than failing packaging.
+            save_json(project_absolute(plan['output'])/'model_cleanup.json', dict(
+                protocol='completed-model-cleanup-v1', status='skipped', task=plan['task'],
+                reason='external directory has no ownership record; weights preserved',
+                removed_directories=[]))
+            print('[CLEANUP] Preserved unowned external weights; results will still be packaged.', flush=True)
+            return
         cleanup_completed_models(plan['output'], plan['task'], plan.get('model_artifacts'))
 
 

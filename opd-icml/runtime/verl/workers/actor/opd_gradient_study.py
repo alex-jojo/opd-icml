@@ -72,16 +72,31 @@ class ParameterLayout:
                 if gradient else p.detach().reshape(-1).cpu().clone() for p in self.params]
 
     def dot(self,a,b):
-        values={}
+        return self.dot_many([(a, b)])[0]
+
+    def dot_many(self, pairs):
+        """Same FP64 dot/reduction order; share conversions and one collective."""
+        values = [{} for _ in pairs]
         for i,start,n,groups in self.slices:
-            value=0.
+            totals = [0. for _ in pairs]
             for offset in range(start,start+n,262144):
                 end=min(offset+262144,start+n)
-                value+=float(torch.dot(a[i][offset:end].double(),b[i][offset:end].double()))
-            for group in groups:values[group]=values.get(group,0.)+value
+                converted = {}
+                def block(vector):
+                    key = id(vector)
+                    if key not in converted:
+                        converted[key] = vector[i][offset:end].double()
+                    return converted[key]
+                for j, (a, b) in enumerate(pairs):
+                    totals[j] += float(torch.dot(block(a), block(b)))
+            for result, total in zip(values, totals):
+                for group in groups:
+                    result[group] = result.get(group, 0.) + total
         all_values=dp.gather(values)
         divisor=dp.size() if self.replicated_adapter is not None else 1
-        return {key:sum(v.get(key,0.) for v in all_values)/divisor for key in set().union(*(v.keys() for v in all_values))}
+        return [{key: sum(rank[j].get(key, 0.) for rank in all_values)/divisor
+                 for key in set().union(*(rank[j].keys() for rank in all_values))}
+                for j in range(len(pairs))]
 
     def delta(self,before):
         return [p.detach().reshape(-1).cpu().float()-b.float() for p,b in zip(self.params,before)]
@@ -101,8 +116,9 @@ class ParameterLayout:
                 local['negative'] += negative
                 local['changed'] += positive + negative
                 local['weight_energy'] += float(torch.dot(weights, weights))
-                local['l1'] += float(change.abs().double().sum())
-                local['max_abs'] = max(local['max_abs'], float(change.abs().max()))
+                absolute = change.abs()
+                local['l1'] += float(absolute.double().sum())
+                local['max_abs'] = max(local['max_abs'], float(absolute.max()))
             for group in groups:
                 total = values.setdefault(group, {key: 0 for key in local})
                 for key, value in local.items():
@@ -463,15 +479,17 @@ class GradientStudy:
 
     def before_update(self):
         started=time.perf_counter()
-        train=self.layout.capture();self.train_norm=self.layout.dot(train,train)
-        self.train_val=self.layout.dot(train,self.val_grad);self.train_gradient=train
+        train=self.layout.capture()
+        self.train_norm,self.train_val=self.layout.dot_many([(train,train),(train,self.val_grad)])
+        self.train_gradient=train
         self.weights=self.layout.capture(gradient=False)
         self.diagnostic_seconds+=time.perf_counter()-started
 
     def after_update(self):
         started=time.perf_counter()
-        delta=self.layout.delta(self.weights);norm=self.layout.dot(delta,delta);dot=self.layout.dot(self.val_grad,delta)
-        train_delta=self.layout.dot(self.train_gradient,delta);self.train_gradient=None
+        delta=self.layout.delta(self.weights)
+        norm,dot,train_delta=self.layout.dot_many([(delta,delta),(self.val_grad,delta),(self.train_gradient,delta)])
+        self.train_gradient=None
         after=losses(self.actor,self.validation)
         result=transfer_report(self.before,after,self.val_norm['all'],norm['all'],dot['all'],
             float(self.cfg.get('gain_epsilon',1e-6)))

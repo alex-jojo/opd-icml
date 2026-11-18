@@ -377,6 +377,15 @@ def main():
             parser.error('The local code judge requires a Linux/Unix training server, or pass --sandbox-url')
     if not args.resume and output.exists() and any(output.iterdir()):
         parser.error(f"Choose an empty output directory: {output}")
+    if args.resume:
+        from resume_state import validate_resume_checkpoint
+        try:
+            validate_resume_checkpoint(
+                project_absolute(args.checkpoint_dir) if args.checkpoint_dir else output/'checkpoints',
+                int(cfg['trainer']['n_gpus_per_node'])*int(cfg['trainer'].get('nnodes', 1)),
+                int(cfg['actor_rollout_ref']['actor']['policy_loss']['jump_reuse_updates']))
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
     env = tracking_env.copy()
     if args.num_gpus is not None:
         # Ray must see the same GPU subset requested by the launcher. Preserve

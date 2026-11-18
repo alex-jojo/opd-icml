@@ -36,9 +36,11 @@ def atomic_json(path, value):
 
 
 def atomic_moment(path, arrays):
-    if torch.distributed.is_initialized() and torch.distributed.get_rank()!=0:return
     from .opd_diagnostic_storage import write_moment
-    write_moment(path, arrays)
+    from .opd_distributed import primary_call
+    # Every caller participates; a rank-zero I/O failure must reach all ranks
+    # before any of them enters the next statistics/training collective.
+    return primary_call(lambda: write_moment(path, arrays))
 
 
 def sampled_positions(count, maximum=32):

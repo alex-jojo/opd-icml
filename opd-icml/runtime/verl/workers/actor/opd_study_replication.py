@@ -70,9 +70,7 @@ class StudyReplication:
                     dp.barrier()
                 dp.primary_call(lambda: self.motion.save_initial(self.panel, self.h0, device))
             if not hasattr(self,'u'):
-                if self.asset.is_file() and step>1:
-                    with np.load(self.asset,allow_pickle=False) as f:self.u=torch.from_numpy(f['basis'].copy()).to(device)
-                else:self.u=torch.eye(self.dimension,device=device)[:,:self.rank]
+                self.u = dp.primary_call(self.resume_basis).to(device)
             self.reference=dict(valid_u128=self.completed>=min(self.interval,self.freeze),role='observation_basis',source='training_motion_panel',
                 frozen=self.completed>=self.freeze,cumulative_to=min((self.completed//self.interval)*self.interval,self.freeze))
             if self.stability is not None and not self.snapshot_only:
@@ -88,6 +86,37 @@ class StudyReplication:
             if not dp.exists(first):
                 raise ValueError('Cannot resume RQ1 without the original step-1 KL thresholds')
             self.thresholds = dp.primary_call(lambda: json.loads(first.read_text())['thresholds'])
+
+    def resume_basis(self):
+        """Restore the observation basis at the committed update, not a future asset."""
+        expected = (self.completed // self.interval) * self.interval
+        if self.stability is None or self.snapshot_only:
+            expected = self.freeze if self.completed >= self.freeze else expected
+        if expected == 0:
+            return torch.eye(self.dimension)[:, :self.rank]
+        for checkpoint in sorted({expected, *range(self.interval, expected+1, self.interval)}, reverse=True):
+            candidates = [self.records/'rq2'/f'step_{checkpoint:03d}.npz',
+                          self.output/'motion'/f'step_{checkpoint:03d}.npz',
+                          self.output/'stability'/f'basis_{checkpoint:03d}.npz']
+            found = False
+            for path in candidates:
+                if path.is_file():
+                    with np.load(path, allow_pickle=False) as saved:
+                        basis = torch.from_numpy(saved['basis'].copy())
+                    if basis.shape[1]:
+                        return basis
+                    found = True
+                    break  # zero motion kept the previous observation basis
+            if found:
+                continue
+            metadata = self.asset.with_suffix('.json')
+            if self.asset.is_file() and metadata.is_file():
+                info = json.loads(metadata.read_text(encoding='utf-8'))
+                if info.get('cumulative_to', info.get('freeze_step')) == checkpoint:
+                    with np.load(self.asset, allow_pickle=False) as saved:
+                        return torch.from_numpy(saved['basis'].copy())
+            raise ValueError(f'Missing observation basis for committed update {checkpoint}; refusing a later asset')
+        return torch.eye(self.dimension)[:, :self.rank]
 
     def start_study(self,payload):
         payload['basis_reference']=self.reference

@@ -17,9 +17,7 @@ class MotionRecorder:
         self.rank = rank
         self.reference = None
         self.early_hidden = None
-        self.early_projected = None
         self.previous_hidden = None
-        self.previous_projected = None
         self.previous_step = None
 
     def incremental_change(self, update, initial, current, reference):
@@ -29,37 +27,40 @@ class MotionRecorder:
             self.previous_step = 0
             self.previous_hidden = F.normalize(initial.float(), dim=-1)
         early_path = self.directory / 'reference_010.npz'
-        if self.early_hidden is None and early_path.is_file():
+        if update > self.reference_step and self.early_hidden is None and early_path.is_file():
             with np.load(early_path, allow_pickle=False) as saved:
                 self.early_hidden = torch.from_numpy(saved['unit_hidden'].copy())
-                self.early_projected = torch.from_numpy(saved['projected_hidden'].copy())
-        projected = unit @ reference if reference is not None else None
         if update == self.reference_step and reference is not None:
-            self.early_hidden, self.early_projected = unit, projected
-            atomic_npz(early_path, dict(unit_hidden=unit.numpy(), projected_hidden=projected.numpy()))
+            self.early_hidden = unit
+            atomic_npz(early_path, dict(unit_hidden=unit.numpy()))
         result = dict(increment_normalization='unit hidden per probe position',
                       since_step10_available=self.early_hidden is not None and update >= self.reference_step,
                       previous_step_available=self.previous_step == update-1)
 
-        def summarize(prefix, old, old_projection):
-            delta = unit - old
-            energy = float(delta.double().square().sum())
+        def summarize(prefix, old):
+            if old.shape != unit.shape:
+                raise ValueError('Fixed probe shape changed across representation observations')
+            energy = inside = 0.
+            # Subtract first: subtracting two O(1) projected states erases tiny
+            # late-training increments in FP32. Bound the CPU scratch buffers.
+            for start in range(0, len(unit), 256):
+                delta = unit[start:start+256] - old[start:start+256]
+                energy += float(delta.double().square().sum())
+                if reference is not None:
+                    inside += float((delta @ reference).double().square().sum())
             result[prefix+'_energy'] = energy
             result[prefix+'_frobenius_norm'] = energy**.5
             result[prefix+'_rms'] = (energy / max(len(unit), 1))**.5
-            if projected is not None and energy > 1e-20:
-                if old_projection is None:
-                    old_projection = old @ reference
-                inside = float((projected-old_projection).double().square().sum())
+            if reference is not None and energy > 1e-20:
                 result[prefix+'_fixed_u10_coverage'] = min(max(inside / energy, 0.), 1.)
 
         if result['since_step10_available']:
-            summarize('since_step10', self.early_hidden, self.early_projected)
+            summarize('since_step10', self.early_hidden)
         if result['previous_step_available']:
             result['previous_checkpoint'] = self.previous_step
-            summarize('previous_step', self.previous_hidden, self.previous_projected)
+            summarize('previous_step', self.previous_hidden)
         self.previous_step = update
-        self.previous_hidden, self.previous_projected = unit, projected
+        self.previous_hidden = unit
         return result
 
     def save_initial(self, panel, hidden, device):
