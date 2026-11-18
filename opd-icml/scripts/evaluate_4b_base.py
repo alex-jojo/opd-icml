@@ -12,6 +12,7 @@ import evaluate
 from disk_space import require_space, SpaceCheckedWriter
 from filelock import FileLock
 from model_assets import read_models
+from package_results import archive_path, package_results
 from project_paths import ROOT, project_absolute
 from rq4_results import five_benchmark_scores, read
 
@@ -181,6 +182,7 @@ def main(argv=None):
     parser.add_argument('--cache-dir', type=Path, help='Hugging Face cache containing the pinned Base snapshot')
     parser.add_argument('--eval-max-num-seqs', type=int, default=64)
     parser.add_argument('--score-workers', type=int, default=evaluate.automatic_workers())
+    parser.add_argument('--no-package', action='store_true', help='Skip the standalone results ZIP')
     args = parser.parse_args(argv)
     if min(args.eval_max_num_seqs, args.score_workers) < 1:
         parser.error('Evaluation concurrency and score workers must be positive')
@@ -190,6 +192,8 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=True)
     with FileLock(str(output/'.base-evaluation.lock'), timeout=0):
         run(args, output)
+        if not args.no_package:
+            package_results(output, archive_path(output, '4b'), phase='base-eval')
 
 
 if __name__ == '__main__':

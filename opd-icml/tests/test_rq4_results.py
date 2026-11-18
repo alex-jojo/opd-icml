@@ -122,6 +122,7 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                     rq4.save_json(run/'eval/final_mean8.summary.json', {
                         k: dict(problems=i+1, samples=8*(i+1), mean_at_8=v) for i,(k,v) in enumerate(values.items())})
                 elif command == q['evaluate_base']:
+                    assert '--no-package' in command
                     base_runs.append((args.scale, strategy))
                     scores = dict(mean_at_8=dict.fromkeys(rq4.BENCHMARKS, .1), five_benchmark_mean_at_8=.1)
                     rq4.save_json(run/'eval/base/summary.json', dict(scale='4b', strategy='base', model=q['models']['student'],

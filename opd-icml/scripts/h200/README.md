@@ -146,9 +146,11 @@ CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_4b_base.py
 | `scores.jsonl` | 每完成一道题追加一行。用 `index`（从 0 开始）关联原文，以 `generation_sha256` 核对来源。`row.acc_list` 和 `row.strict_last_box_acc_list` 分别是这 8 个回答的宽松和严格判分，顺序和原文相同。多进程判分的写入顺序可以与题序不同。 |
 | `summary.json` | 五项成绩、等权平均、题数、样本数以及原文和判分文件的实际字节数。表 3 取 `lenient_answers_v1.mean_at_8` 和 `lenient_answers_v1.five_benchmark_mean_at_8`，乘 100 得到百分数。 |
 
-原文整批写完并校验后，同目录重试可直接接着判题。生成或压缩中断且原文尚未写完时，需要重新生成。`.base-evaluation.lock` 防止两个评测同时写同一目录。旧格式的完整生成缓存通过校验后原地复用，已有的旧文件保留。Base 独立入口只生成评测结果，模型权重位于共享 Hugging Face 缓存，可用 `--cache-dir` 指定已有缓存。独立运行不创建 ZIP。
+原文整批写完并校验后，同目录重试可直接接着判题。生成或压缩中断且原文尚未写完时，需要重新生成。`.base-evaluation.lock` 防止两个评测同时写同一目录。旧格式的完整生成缓存通过校验后原地复用，已有的旧文件保留。模型权重位于共享 Hugging Face 缓存，可用 `--cache-dir` 指定已有缓存。
 
-H200 套件使用默认模型和数学题集时，在 4B FULL 的数学评测后自动补测一次 Base，写入 `4b/eval/base/`。套件的 `rq4_comparison.json` 使用严格判分与本次 FULL 对齐。Base 评测用时单独于 FULL 训练计时。
+独立评测成功后，默认在其他 4B 实验 ZIP 所在目录生成 `runs/h200/4b/4b-math-base-results.zip`。自定义 `--output` 时，ZIP 保存在该输出目录旁。终端的 `[DOWNLOAD ZIP]` 会打印实际路径。`--no-package` 可关闭打包。
+
+H200 套件使用默认模型和数学题集时，在 4B FULL 的数学评测后自动补测一次 Base。最终只生成一个总 ZIP，Base 的原文、判分和汇总在包内的 `<套件目录名>/4b/eval/base/`，与训练结果一起下载。套件的 `rq4_comparison.json` 使用严格判分与本次 FULL 对齐。Base 评测用时单独于 FULL 训练计时。
 
 ## RQ4 策略对照
 

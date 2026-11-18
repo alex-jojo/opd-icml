@@ -206,7 +206,8 @@ def build_plan(args, environment):
     evaluate_base = None
     if (args.scale == '4b' and task == 'math' and strategy in (None, 'full') and args.stage != 'train'
             and args.student is None and project_absolute(args.math_benchmarks) == ROOT/'data/benchmarks.jsonl'):
-        evaluate_base = [sys.executable, 'scripts/evaluate_4b_base.py',
+        # The enclosing experiment or suite owns the ZIP that includes eval/base/.
+        evaluate_base = [sys.executable, 'scripts/evaluate_4b_base.py', '--no-package',
                          '--output', project_relative(run/'eval/base'),
                          '--math-benchmarks', project_relative(args.math_benchmarks),
                          '--eval-max-num-seqs', str(args.eval_max_num_seqs),

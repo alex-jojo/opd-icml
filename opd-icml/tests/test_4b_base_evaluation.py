@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+from zipfile import ZIP_STORED, ZipFile
 
 import pytest
 
@@ -54,7 +55,9 @@ def test_base_generates_once_and_grades_same_samples_on_retry(tmp_path, monkeypa
     monkeypatch.setattr(base, 'base_snapshot', download)
     monkeypatch.setattr(base.evaluate, 'generate', generate)
     args = ['--math-benchmarks', str(source), '--output', str(output), '--score-workers', '1']
-    base.main(args)
+    archive_path = tmp_path/'4b-output-results.zip'
+    base.main([*args, '--no-package'])
+    assert not archive_path.exists()
     expected = base.read(output/'summary.json')
     assert expected['questions'] == 6 and expected['samples'] == 48
     assert base.read(output/'responses.meta.json')['model_sha256'] == {'config.json': base.evaluate.digest(snapshot/'config.json')}
@@ -83,10 +86,20 @@ def test_base_generates_once_and_grades_same_samples_on_retry(tmp_path, monkeypa
     scores.write_bytes(b''.join(scores.read_bytes().splitlines(keepends=True)[:2]) + b'{"cut":')
     base.main(args)
     assert base.read(output/'summary.json') == expected
+    with ZipFile(archive_path) as archive:
+        assert archive.testzip() is None
+        manifest = json.loads(archive.read('EXPORT_MANIFEST.json'))
+        assert manifest['phase'] == 'base-eval'
+        for name in ('responses.jsonl.gz', 'responses.meta.json', 'scores.jsonl', 'summary.json'):
+            assert archive.read(f'output/{name}') == (output/name).read_bytes()
+        assert manifest['file_count'] == 4
+        assert archive.getinfo('output/responses.jsonl.gz').compress_type == ZIP_STORED
+    saved_zip = archive_path.read_bytes()
     with (output/'responses.jsonl.gz').open('ab') as stream:
         stream.write(b'corruption')
     with pytest.raises(ValueError, match='checksum'):
         base.main(args)
+    assert archive_path.read_bytes() == saved_zip
 
 
 def test_no_model_download_or_output_when_disk_is_low(tmp_path, monkeypatch):
