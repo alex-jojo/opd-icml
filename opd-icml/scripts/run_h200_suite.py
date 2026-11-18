@@ -114,6 +114,7 @@ def build_suite(args, environment, cpus, free_gib):
         grade[grade.index('--cpu-ids')+1] = ','.join(map(str, grade_cpus))
         grade[grade.index('--score-workers')+1] = str(len(grade_cpus))
         return dict(name=name, scale=scale, rq4_strategy=strategy, shared_early_stop=strategy == 'full',
+                    evaluate_base=strategy == 'full',
                     devices=ids, cpu_ids=cores, output=project_relative(output),
                     command=cmd+['--stage', 'train-generate'],
                     grade=grade+['--stage', 'grade'] if spec.task == 'code' else None)

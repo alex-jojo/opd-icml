@@ -129,17 +129,19 @@ bash scripts/h200/train_eval_qwen3_4b.sh \
 此命令适用于评测失败后保留的 checkpoint，或启动时设置了 `--keep-model-files` 的实验。评测成功并自动清理权重后，不能再通过 `--stage eval` 重新生成回答；已保存的回答和统计仍保留。合并中断且没有完成标记时，先将该实验的 `merged/` 移到另一个位置后重试。训练中断需使用新输出目录重新训练。
 
 
-## 补测表 3 的 Qwen3-4B-Base
+## 单独补测任一未训练 Base
 
-在含 `train.py` 的项目目录执行下面的命令，即可用一张卡评测原始学生模型。脚本读取 `configs/4b/models.json` 中锁定的 Qwen3-4B-Base 版本，无需教师模型或训练 checkpoint。
+在含 `train.py` 的项目目录运行。每组使用 `configs/<规模>/models.json` 固定的原始学生权重。下面分别以论文表 3 的 Qwen3 4B 和四卡的 DeepSeek-Coder 33B 为例。代码评测使用训练后评测的同一套题库、提示模板和判题环境。
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_4b_base.py
+CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_base.py --scale 4b
+python scripts/prepare_code_benchmarks.py --output-dir data/code_benchmarks
+CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-coder-33b
 ```
 
-默认输出目录为 `runs/h200/4b/math-base/`，可用 `--output` 更改。MATH500、HMMT25、HMMT26、AIME26、Minerva 分别有 500、30、33、30、272 题。每题以 temperature=1、top_p=1、seed=42 生成 8 个回答。先算各题集的正确回答比例，再对五项等权平均。
+默认输出目录为 `runs/h200/<规模>/math-base/` 或 `runs/h200/<规模>/code-base/`，可用 `--output` 更改。数学组评测的 MATH500、HMMT25、HMMT26、AIME26、Minerva 分别有 500、30、33、30、272 题。每题以 temperature=1、top_p=1、seed=42 生成 8 个回答。先算各题集的正确回答比例，再对五项等权平均。代码组在 LiveCodeBench 和 HumanEval+ 每题生成八份候选，保存各题集的 pass@8 及两项等权平均。
 
-新 Base 运行在结果目录保存以下文件：
+数学 Base 在结果目录保存以下文件。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -152,7 +154,9 @@ CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_4b_base.py
 
 独立评测成功后，默认在其他 4B 实验 ZIP 所在目录生成 `runs/h200/4b/4b-math-base-results.zip`。自定义 `--output` 时，ZIP 保存在该输出目录旁。终端的 `[DOWNLOAD ZIP]` 会打印实际路径。`--no-package` 可关闭打包。
 
-H200 套件使用默认模型和数学题集时，在 4B FULL 的数学评测后自动补测一次 Base。最终只生成一个总 ZIP，Base 的原文、判分和汇总在包内的 `<套件目录名>/4b/eval/base/`，与训练结果一起下载。套件的 `rq4_comparison.json` 使用严格判分与本次 FULL 对齐。Base 评测用时单独于 FULL 训练计时。
+默认 H200 套件对全部七个原始学生模型各测一次 Base，每组在 `<规模>/eval/base/` 保存，和训练结果进入同一 ZIP。四组数学沿用表 3 五项 Mean@8，RQ4 采用严格判分；三组 DeepSeek 用相同的 chat 提示和双 EOS，评测 LiveCodeBench、HumanEval+ 的 pass@8，GPU 生成后由 CPU 判题。每组四行 Base、FULL、早停、复用，共 28 行结果、14 次训练。
+
+单独补测用 `python scripts/evaluate_base.py --scale <规模>`，可用 `--output` 指定目标，默认单独打 ZIP。代码任务使用与训练后评测相同的已准备 benchmark 目录（可用 `python scripts/prepare_code_benchmarks.py` 准备），支持 `--generate-only` 和 `--grade-only`。单独运行时请设置与该组一致的可见 GPU。原有 4B 脚本继续可用。
 
 ## RQ4 策略对照
 

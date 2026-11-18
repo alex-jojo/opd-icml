@@ -2,7 +2,7 @@
 
 在四张 H200 上运行 OPD FULL 和 RQ4 策略对照，自动准备模型和数据、训练、评测并打包结果。
 
-**模型范围**包括 DeepSeek-Coder 1.3B/6.7B/33B、Qwen3 1.7B/4B/8B 和 Gemma3 12B。总入口训练七组 FULL，每组另训练一次 Rollout reuse，共 14 次训练。每组的早停成绩从各自 FULL 轨迹首次满足稳定条件的 checkpoint 取得。
+**模型范围**包括 DeepSeek-Coder 1.3B/6.7B/33B、Qwen3 1.7B/4B/8B 和 Gemma3 12B。总入口训练七组 FULL，每组另训练一次 Rollout reuse，共 14 次训练。每组的早停成绩从各自 FULL 轨迹首次满足稳定条件的 checkpoint 取得。 七组各自评测一次未训练学生模型，整套对比表共 28 行，包含七行 Base。
 
 ## 1. 下载代码、安装环境（首次执行）
 

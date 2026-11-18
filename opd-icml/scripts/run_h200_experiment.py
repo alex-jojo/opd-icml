@@ -209,16 +209,20 @@ def build_plan(args, environment):
             '--max_num_seqs', str(args.eval_max_num_seqs), '--score_workers', str(args.score_workers)]
         prepare_eval = None
     evaluate_base = None
-    if (args.scale == '4b' and task == 'math' and strategy in (None, 'full') and args.stage != 'train'
-            and args.student is None and project_absolute(args.math_benchmarks) == ROOT/'data/benchmarks.jsonl'):
-        # The enclosing experiment or suite owns the ZIP that includes eval/base/.
-        evaluate_base = [sys.executable, 'scripts/evaluate_4b_base.py', '--no-package',
+    if (strategy in (None, 'full') and args.stage != 'train' and args.student is None and task == spec.task
+            and (task == 'code' or project_absolute(args.math_benchmarks) == ROOT/'data/benchmarks.jsonl')):
+        evaluate_base = [sys.executable, 'scripts/evaluate_base.py', '--scale', args.scale, '--no-package',
                          '--output', project_relative(run/'eval/base'),
-                         '--math-benchmarks', project_relative(args.math_benchmarks),
                          '--eval-max-num-seqs', str(args.eval_max_num_seqs),
                          '--score-workers', str(args.score_workers)]
-        if args.cache_dir is not None:
-            evaluate_base += ['--cache-dir', project_relative(args.cache_dir)]
+        if task == 'code':
+            evaluate_base += ['--code-benchmarks', project_relative(args.code_benchmarks),
+                              '--eval-batch-size', str(args.eval_batch_size)]
+        else:
+            evaluate_base += ['--math-benchmarks', project_relative(args.math_benchmarks)]
+        for flag, path in [('--cache-dir', args.cache_dir), ('--model-dir', args.model_dir)]:
+            if path is not None:
+                evaluate_base += [flag, project_relative(path)]
     checkpoint = checkpoints_root / 'global_step_<latest>/actor'
     merge = [sys.executable, '-m', 'verl.model_merger', 'merge', '--backend', 'fsdp',
              '--local_dir', project_relative(checkpoint), '--target_dir', project_relative(merged), '--use_cpu_initialization']
@@ -293,6 +297,14 @@ def grade_code(plan, run, env):
             raise ValueError('Code grading endpoints do not match the early-stop mode')
         if selection and not selection['uses_full_endpoint']:
             run_command(early_code_command(plan, run) + ['--grade-only'], cpu, run/'logs/grade_early_stop.log')
+        base_generated = receipt.get('evaluate_base', False)
+    else:
+        # Older runs have no RQ4 receipt. An explicit Base generation can still be graded.
+        base_generated = (run/'eval/base/code_pass8/run.json').is_file()
+    if base_generated:
+        if not plan['evaluate_base']:
+            raise ValueError('CPU grading must include the scheduled Base evaluation')
+        run_command(plan['evaluate_base'] + ['--grade-only'], cpu, run/'logs/grade_base.log')
     run_command(plan['evaluate'] + ['--grade-only'], cpu, run/'logs/grade.log')
     if strategy:
         arm = rq4_results.save_arm(run, plan['scale'], strategy, receipt['endpoint'], 'code')
@@ -414,9 +426,11 @@ def execute(args, plan, env):
         # Generate ALL benchmarks before CPU grading; suite scheduling can release
         # these GPUs immediately with train-generate/generate and grade separately.
         run_command(plan['evaluate'] + ['--generate-only'], env, run / 'logs/generate.log')
+        if plan['evaluate_base']:
+            run_command(plan['evaluate_base'] + ['--generate-only'], env, run/'logs/generate_base.log')
         if strategy:
             rq4_results.save_json(rq4/'code_endpoints.json', dict(scale=plan['scale'], strategy=strategy,
-                                  endpoint=end, early_stop=selection))
+                                  endpoint=end, early_stop=selection, evaluate_base=bool(plan['evaluate_base'])))
         if args.stage not in ('train-generate', 'generate'):
             grade_code(plan, run, env)
     else:

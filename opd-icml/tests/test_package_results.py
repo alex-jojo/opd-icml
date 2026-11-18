@@ -231,6 +231,10 @@ def test_suite_suppresses_individual_zips_and_exports_one_archive_after_all_jobs
             assert '--no-package' in job['command']
             if job['grade']:
                 assert '--no-package' in job['grade']
+            if job['evaluate_base']:
+                save(run, job['name']+'/eval/base/summary.json', json.dumps(dict(scale=job['scale'], strategy='base',
+                     model={}, rollout_rounds=0, optimizer_updates=0, training_wall_seconds=None,
+                     strict_last_box=dict(mean_at_8={}, five_benchmark_mean_at_8=.5))).encode())
             if job['rq4_strategy']:
                 summary = dict(scale=job['scale'], strategy=job['rq4_strategy'],
                                training_wall_seconds=60., five_benchmark_mean_at_8=.5)

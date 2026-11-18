@@ -155,12 +155,27 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                         scores = {name: dict(problems=4, samples=32, **{'pass@8': value})
                                   for name in rq4.CODE_BENCHMARKS}
                         rq4.save_json(output/'summary.json', dict(metric='pass@8', benchmarks=scores))
-                elif command == q['evaluate_base']:
-                    assert '--no-package' in command
-                    base_runs.append((args.scale, strategy))
-                    scores = dict(mean_at_8=dict.fromkeys(rq4.BENCHMARKS, .1), five_benchmark_mean_at_8=.1)
-                    rq4.save_json(run/'eval/base/summary.json', dict(scale='4b', strategy='base', model=q['models']['student'],
-                                  rollout_rounds=0, optimizer_updates=0, training_wall_seconds=None, strict_last_box=scores))
+                elif 'scripts/evaluate_base.py' in command:
+                    assert '--no-package' in command and strategy == 'full'
+                    assert command[command.index('--scale') + 1] == args.scale
+                    target = run/'eval/base'
+                    if '--grade-only' in command:
+                        assert env['CUDA_VISIBLE_DEVICES'] == ''
+                        for name in rq4.CODE_BENCHMARKS:
+                            assert (target/'code_pass8'/name/'generations.jsonl').is_file()
+                    else:
+                        base_runs.append((args.scale, strategy))
+                    if q['task'] == 'code':
+                        if '--generate-only' in command:
+                            for name in rq4.CODE_BENCHMARKS:
+                                rq4.save_json(target/'code_pass8'/name/'generations.jsonl', {'responses':['a']*8})
+                            return
+                        scores = dict(pass_at_8=dict.fromkeys(rq4.CODE_BENCHMARKS, .25), two_benchmark_mean_pass_at_8=.25)
+                    else:
+                        scores = dict(strict_last_box=dict(mean_at_8=dict.fromkeys(rq4.BENCHMARKS, .1),
+                                                           five_benchmark_mean_at_8=.1))
+                    rq4.save_json(target/'summary.json', dict(scale=args.scale, strategy='base', model=q['models']['student'],
+                                  rollout_rounds=0, optimizer_updates=0, training_wall_seconds=None, **scores))
             monkeypatch.setattr(h200, 'run_command', launch)
             h200.execute(args, q, {})
             if q['task'] == 'code':
@@ -179,7 +194,7 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
     assert len(set(paths)) == len(paths) == 14
     assert len(code_grades) == 7
     assert early_evals == [('4b', 'full')]
-    assert base_runs == [('4b', 'full')]
+    assert sorted(base_runs) == sorted((scale, 'full') for scale in h200.EXPERIMENTS)
     rq4.save_comparison(plan)
     root = h200.project_absolute(plan['output'])
     combined = rq4.read(root/'rq4_comparison.json')
@@ -202,7 +217,10 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
     baseline = combined['4b']['base']
     assert baseline['five_benchmark_change_pp'] == pytest.approx(-20)
     assert baseline['scoring_mode'] == 'strict_last_box' and baseline['training_time_saved_fraction'] is None
-    assert 'base' not in combined['1.7b']
+    for scale, arms in combined.items():
+        assert set(arms) == {'full', 'early-stop', 'reuse', 'base'}
+        if h200.EXPERIMENTS[scale].task == 'code':
+            assert arms['base']['two_benchmark_change_pp'] == -50
     with ZipFile(package_results(root)) as archive:
         assert 'suite/rq4_comparison.json' in archive.namelist()
         assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 14
@@ -210,7 +228,7 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
         assert 'suite/4b/eval/early-stop/final_mean8.jsonl' in archive.namelist()
         for path in code_early['responses_files'].values():
             assert 'suite/deepseek-coder-33b/' + path in archive.namelist()
-        assert sum(n.endswith('/eval/base/summary.json') for n in archive.namelist()) == 1
+        assert sum(n.endswith('/eval/base/summary.json') for n in archive.namelist()) == 7
 
 
 def test_shared_checkpoint_is_first_committed_model_and_full_keeps_its_basis(tmp_path):

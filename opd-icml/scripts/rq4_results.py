@@ -172,17 +172,19 @@ def save_comparison(plan):
                     if (shared['scale'], shared['strategy'], shared['source_strategy']) != (job['scale'], 'early-stop', 'full'):
                         raise ValueError('Shared early-stop result does not match its FULL run')
                     arms['early-stop'] = shared
-                if job['scale'] == '4b' and strategy == 'full':
+                if strategy == 'full':
                     base = project_absolute(job['output'])/'eval/base/summary.json'
-                    if base.is_file():  # Older completed suites predate the Base evaluation.
+                    if job.get('evaluate_base') or base.is_file():  # Legacy plans can omit Base.
                         result = read(base)
-                        if (result['scale'], result['strategy']) != ('4b', 'base'):
-                            raise ValueError('Base summary does not match the scheduled 4B experiment')
+                        if (result['scale'], result['strategy']) != (job['scale'], 'base'):
+                            raise ValueError('Base summary does not match the scheduled experiment')
                         arms['base'] = {key: result[key] for key in ('scale', 'strategy', 'model',
                                         'rollout_rounds', 'optimizer_updates', 'training_wall_seconds')}
-                        arms['base'].update(scoring_mode='strict_last_box',
-                                            mean_at_8=result['strict_last_box']['mean_at_8'],
-                                            five_benchmark_mean_at_8=result['strict_last_box']['five_benchmark_mean_at_8'])
+                        if row.get('task') == 'code':
+                            arms['base'].update(task='code', pass_at_8=result['pass_at_8'],
+                                two_benchmark_mean_pass_at_8=result['two_benchmark_mean_pass_at_8'])
+                        else:
+                            arms['base'].update(task='math', scoring_mode='strict_last_box', **result['strict_last_box'])
     for arms in groups.values():
         if set(arms) - {'base'} != set(STRATEGIES):
             raise ValueError('RQ4 comparison requires every matched arm')

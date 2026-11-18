@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 from project_paths import project_absolute, project_relative, saved_path_matches
+from scripts.disk_space import require_space
 
 
 ROOT = Path(__file__).resolve().parent
@@ -93,8 +94,13 @@ def export_gemma_text(source, destination):
             tensors = {new: handle.get_tensor(old) for old, new in keys}
         if len(tensors) != len(keys) or any(key in weight_map for key in tensors):
             raise ValueError('Duplicate text weight names')
-        total_bytes += sum(t.numel() * t.element_size() for t in tensors.values())
+        shard_bytes = sum(t.numel() * t.element_size() for t in tensors.values())
+        total_bytes += shard_bytes
         temporary = destination / (filename + '.tmp')
+        # The text-only shard has a subset of the original tensor headers.
+        with path.open('rb') as stream:
+            header_bytes = int.from_bytes(stream.read(8), 'little')
+        require_space(destination, shard_bytes + header_bytes + 4096)
         save_file(tensors, str(temporary), metadata={'format': 'pt'})
         temporary.replace(destination / filename)
         weight_map.update({key: filename for key in tensors})

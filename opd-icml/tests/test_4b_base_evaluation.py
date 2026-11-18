@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
-import evaluate_4b_base as base
+import evaluate_base as base
 import disk_space
 
 
@@ -24,7 +24,8 @@ def test_paper_questions_match_all_five_benchmarks(tmp_path):
         base.paper_questions(damaged)
 
 
-def test_base_generates_once_and_grades_same_samples_on_retry(tmp_path, monkeypatch):
+@pytest.mark.parametrize('scale', ['1.7b', '4b', '8b', 'gemma3-12b'])
+def test_base_generates_once_and_grades_same_samples_on_retry(tmp_path, monkeypatch, scale):
     counts = dict.fromkeys(base.QUESTIONS, 1)
     counts['math500'] = 2  # A pooled average would differ from the five-task macro average.
     monkeypatch.setattr(base, 'QUESTIONS', counts)
@@ -38,8 +39,13 @@ def test_base_generates_once_and_grades_same_samples_on_retry(tmp_path, monkeypa
     (snapshot/'config.json').write_text('{}')
 
     def download(spec, cache_dir):
-        assert spec == base.read_models('4b')['student'] and spec['repo'] == 'Qwen/Qwen3-4B-Base'
+        assert spec == base.read_models(scale)['student']
         return snapshot
+
+    def export(source, target):
+        assert scale == 'gemma3-12b' and source == snapshot and target == tmp_path/scale/'student'
+        return snapshot
+    monkeypatch.setattr(base, 'export_gemma_text', export)
 
     def generate(args, questions):
         assert questions == inputs and args.model_path == str(snapshot)
@@ -54,14 +60,16 @@ def test_base_generates_once_and_grades_same_samples_on_retry(tmp_path, monkeypa
         row, str.__eq__, base.evaluate.strict_last_box, lambda value: value))
     monkeypatch.setattr(base, 'base_snapshot', download)
     monkeypatch.setattr(base.evaluate, 'generate', generate)
-    args = ['--math-benchmarks', str(source), '--output', str(output), '--score-workers', '1']
-    archive_path = tmp_path/'4b-output-results.zip'
+    args = ['--scale', scale, '--model-dir', str(tmp_path), '--math-benchmarks', str(source),
+            '--output', str(output), '--score-workers', '1']
+    archive_path = tmp_path/f'{scale}-output-results.zip'
     base.main([*args, '--no-package'])
     assert not archive_path.exists()
     expected = base.read(output/'summary.json')
     assert expected['questions'] == 6 and expected['samples'] == 48
     assert base.read(output/'responses.meta.json')['model_sha256'] == {'config.json': base.evaluate.digest(snapshot/'config.json')}
-    assert expected['optimizer_updates'] == 0 and expected['model'] == base.read_models('4b')['student']
+    assert expected['optimizer_updates'] == 0 and expected['model'] == base.read_models(scale)['student']
+    assert expected['scale'] == scale
     strict, lenient = expected['strict_last_box'], expected['lenient_answers_v1']
     assert strict['five_benchmark_mean_at_8'] == pytest.approx(.1)
     assert lenient['five_benchmark_mean_at_8'] == pytest.approx(.2)
@@ -109,6 +117,75 @@ def test_no_model_download_or_output_when_disk_is_low(tmp_path, monkeypatch):
     with pytest.raises(OSError, match='reserve'):
         base.main(['--output', str(tmp_path/'output')])
     assert not (tmp_path/'output').exists()
+
+
+@pytest.mark.parametrize('scale', ['deepseek-coder-1.3b', 'deepseek-coder-6.7b', 'deepseek-coder-33b'])
+def test_code_base_generation_then_cpu_grade(tmp_path, monkeypatch, scale):
+    import evaluate_code
+    from code_benchmarks import BENCHMARKS, save_json
+    output = tmp_path/'out'
+    prepared = []
+    def model(args, models):
+        prepared.append(models['student']['repo'])
+        assert args.scale == scale
+        return tmp_path/'pinned-base'
+    def evaluator(cmd):
+        assert cmd[cmd.index('--samples') + 1] == '8' and cmd[cmd.index('--prompt-style') + 1] == 'chat'
+        directory = Path(cmd[cmd.index('--output-dir') + 1])
+        if '--generate-only' in cmd:
+            assert cmd[cmd.index('--model-path') + 1] == str(tmp_path/'pinned-base')
+            for name in BENCHMARKS:
+                save_json(directory/name/'generations.jsonl', dict(responses=['a']*8))
+        else:
+            assert '--grade-only' in cmd and '--model-path' not in cmd
+            reports = {name: dict(problems=8, samples=64, **{'pass@8': score})
+                       for name, score in zip(BENCHMARKS, (.25, .75), strict=True)}
+            for name, report in reports.items():
+                save_json(directory/name/'grades.jsonl', dict(task_id='test', pass_list=[True]*8))
+                save_json(directory/name/'grading.complete.json', report)
+            save_json(directory/'summary.json', dict(metric='pass@8', benchmarks=reports))
+    monkeypatch.setattr(base, 'code_base_model', model)
+    monkeypatch.setattr(evaluate_code, 'main', evaluator)
+    args = ['--scale', scale, '--output', str(output)]
+    base.main([*args, '--no-package', '--generate-only'])
+    assert not (output/'summary.json').exists()
+    base.main([*args, '--grade-only'])
+    record = base.read(output/'summary.json')
+    assert prepared == [base.read_models(scale)['student']['repo']]
+    assert record['model'] == base.read_models(scale)['student'] and record['optimizer_updates'] == 0
+    assert record['two_benchmark_mean_pass_at_8'] == .5
+    with ZipFile(tmp_path/f'{scale}-out-results.zip') as zipped:
+        for name in BENCHMARKS:
+            for filename in ('generations.jsonl', 'grades.jsonl', 'grading.complete.json'):
+                assert zipped.read(f'out/code_pass8/{name}/{filename}') == (output/'code_pass8'/name/filename).read_bytes()
+
+
+def test_deepseek_base_uses_student_weights_and_fetches_only_teacher_text_assets(tmp_path, monkeypatch):
+    import huggingface_hub as hub
+    import deepseek_assets
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    scale = 'deepseek-coder-33b'
+    models = base.read_models(scale)
+    student, tokenizer = tmp_path/'student', tmp_path/'tokenizer'
+    cache = tmp_path/'hub'
+    def snapshot(spec, cache_dir):
+        assert spec == models['student'] and cache_dir == cache
+        return student
+    def download(repo, **options):
+        assert repo == models['teacher']['repo'] and options['revision'] == models['teacher']['revision']
+        assert all(p in ('*.json', '*.txt', '*.model', '*.jinja') for p in options['allow_patterns'])
+        if options.get('local_files_only'):
+            raise LocalEntryNotFoundError('cold cache')
+        return str(tokenizer)
+    def prepare(weights, teacher, target):
+        assert weights == student and Path(teacher) == tokenizer
+        return target
+    monkeypatch.setattr(base, 'base_snapshot', snapshot)
+    monkeypatch.setattr(hub, 'snapshot_download', download)
+    monkeypatch.setattr(deepseek_assets, 'prepare_deepseek_student', prepare)
+    args = SimpleNamespace(scale=scale, cache_dir=cache, model_dir=tmp_path)
+    assert base.code_base_model(args, models) == tmp_path/scale/'student-opd-eos-v2'
 
 
 def test_cold_snapshot_checks_missing_bytes_on_cache_volume(tmp_path, monkeypatch):

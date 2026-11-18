@@ -29,7 +29,7 @@ def same_identity(saved, current):
     return saved == current
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model-path', type=Path, help='Local merged student or prepared Base/IT checkpoint')
     parser.add_argument('--benchmark', choices=['all', *BENCHMARKS], default='all')
@@ -53,7 +53,7 @@ def main():
     modes.add_argument('--grade-only', action='store_true', help='Use saved generations, no GPU/model loading')
     modes.add_argument('--generate-only', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     for name in ('model_path', 'data_dir', 'output_dir'):
         if getattr(args, name) is not None:
             setattr(args, name, project_absolute(getattr(args, name)))
