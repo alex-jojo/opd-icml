@@ -127,6 +127,29 @@ bash scripts/h200/train_eval_qwen3_4b.sh \
 此命令适用于评测失败后保留的 checkpoint，或启动时设置了 `--keep-model-files` 的实验。评测成功并自动清理权重后，不能再通过 `--stage eval` 重新生成回答；已保存的回答和统计仍保留。合并中断且没有完成标记时，先将该实验的 `merged/` 移到另一个位置后重试。训练中断需使用新输出目录重新训练。
 
 
+## 补测表 3 的 Qwen3-4B-Base
+
+在含 `train.py` 的项目目录执行下面的命令，即可用一张卡评测原始学生模型。脚本读取 `configs/4b/models.json` 中锁定的 Qwen3-4B-Base 版本，无需教师模型或训练 checkpoint。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_4b_base.py
+```
+
+默认输出目录为 `runs/h200/4b/math-base/`，可用 `--output` 更改。MATH500、HMMT25、HMMT26、AIME26、Minerva 分别有 500、30、33、30、272 题。每题以 temperature=1、top_p=1、seed=42 生成 8 个回答。先算各题集的正确回答比例，再对五项等权平均。
+
+新 Base 运行在结果目录保存以下文件：
+
+| 文件 | 内容 |
+| --- | --- |
+| `responses.jsonl.gz` | 每题一行。保存题目、标准答案、实际提示词、8 个回答全文、长度和停止原因。直接写入 gzip 临时文件，完成后在同一目录改名。 |
+| `responses.meta.json` | 固定模型版本、模型文件和题集哈希、采样配置、提示词编码版本、压缩原文的 SHA-256。 |
+| `scores.jsonl` | 每完成一道题追加一行。用 `index`（从 0 开始）关联原文，以 `generation_sha256` 核对来源。`row.acc_list` 和 `row.strict_last_box_acc_list` 分别是这 8 个回答的宽松和严格判分，顺序和原文相同。多进程判分的写入顺序可以与题序不同。 |
+| `summary.json` | 五项成绩、等权平均、题数、样本数以及原文和判分文件的实际字节数。表 3 取 `lenient_answers_v1.mean_at_8` 和 `lenient_answers_v1.five_benchmark_mean_at_8`，乘 100 得到百分数。 |
+
+原文整批写完并校验后，同目录重试可直接接着判题。生成或压缩中断且原文尚未写完时，需要重新生成。`.base-evaluation.lock` 防止两个评测同时写同一目录。旧格式的完整生成缓存通过校验后原地复用，已有的旧文件保留。Base 独立入口只生成评测结果，模型权重位于共享 Hugging Face 缓存，可用 `--cache-dir` 指定已有缓存。独立运行不创建 ZIP。
+
+H200 套件使用默认模型和数学题集时，在 4B FULL 的数学评测后自动补测一次 Base，写入 `4b/eval/base/`。套件的 `rq4_comparison.json` 使用严格判分与本次 FULL 对齐。Base 评测用时单独于 FULL 训练计时。
+
 ## RQ4 策略对照
 
 总入口会在每个选中的 Qwen3 1.7B、4B 的同一 GPU 槽依次运行 FULL、早停和复用，各自从相同的初始学生模型启动。比较沿用当前 paired-full 的全局 128 条训练样本、独立验证集、学习率、逐步诊断和生成配置。可用 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 单跑这六次训练。单臂可用 `python scripts/run_h200_experiment.py --scale 1.7b --rq4-strategy reuse`，策略可选 `full`、`early-stop` 和 `reuse`。
@@ -146,8 +169,11 @@ bash scripts/h200/train_eval_qwen3_4b.sh \
 - `model_cleanup.json` 记录删除路径、文件大小与完成状态；`model_artifact_metadata.json` 保留 checkpoint 的配置和步数等文本元数据。两份记录进入结果 ZIP。
 - 不删除共享 Hugging Face 缓存、原始学生/教师模型、数据集或其他实验目录。
 - 需要保留训练后权重时，在总入口或单模型入口添加 `--keep-model-files`。默认不需要额外参数。
+- 单模型入口显式指定 `--model-artifacts-root` 时，checkpoint 和合并权重会保留在该目录下。显式指定 `--save-freq` 会生成可续训的 checkpoint，同时保存模型、优化器和额外状态，磁盘预算需要相应增加。
 
-每次启动显示输出文件系统的剩余空间，清理结束显示删除文件的逻辑大小。该值不是硬链接、压缩或文件系统配额下的实际可用空间增量。
+默认磁盘余量为 5 GiB，可通过环境变量 `OPD_MIN_FREE_GIB` 调高。Base 首次下载前按固定模型版本的实际缺失文件大小检查缓存盘，在写压缩原文、判分和汇总前检查输出盘。打包时按实际写出的 ZIP 字节检查目标盘，旧 ZIP 保留到新 ZIP 成功完成；打包失败时移除本次临时 ZIP。总套件启动各子任务前及运行中约每秒检查输出、数据、临时目录和 Hugging Face 缓存所在的文件系统，低于余量会中止套件。监控依据文件系统可用空间。独立用户配额、其他并发写入和进程退出延迟仍会影响实际余量。
+
+运行整套时，模型合并阶段的峰值包含训练 checkpoint 和合并后的权重，且套件会预先缓存所选模型。成功清理时打印本组 checkpoint 和合并权重的逻辑字节数。共享下载缓存跨实验保留。打整套 ZIP 时，源结果和 ZIP 同时占用空间；`--no-package` 可跳过打包。
 
 按FP32 checkpoint加BF16合并模型估算，两份临时模型约为每参数6字节；33B约198 GB（184 GiB）。实际大小以本次文件记录为准，原始模型下载缓存、数据集、统计与ZIP占用另算。默认逐组清理能避免七组完成后的权重副本长期累积，但不能消除当前正在训练/合并/评测那一组的磁盘峰值。
 

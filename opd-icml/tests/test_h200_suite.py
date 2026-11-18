@@ -229,6 +229,27 @@ def test_cleanup_does_not_kill_a_group_that_exits_gracefully(monkeypatch):
     assert signals == [suite.signal.SIGTERM]
 
 
+def test_low_disk_during_suite_job_reaps_its_process_group(tmp_path, monkeypatch):
+    runner = suite.Processes()
+    runner.disk_paths = (tmp_path,)
+    checks = []
+    stopped = []
+    def check(path):
+        checks.append(path)
+        if len(checks) > 1:
+            raise OSError('disk reserve reached')
+    class Running:
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired('test job', timeout)
+    process = Running()
+    monkeypatch.setattr(suite.subprocess, 'Popen', lambda *args, **kwargs: process)
+    monkeypatch.setattr(suite, 'require_space', check)
+    monkeypatch.setattr(suite, 'terminate_groups', lambda processes, grace: stopped.extend(processes))
+    with pytest.raises(OSError, match='disk reserve'):
+        runner.run(['test job'], tmp_path/'job.log')
+    assert checks == [tmp_path, tmp_path] and stopped == [process] and not runner.active
+
+
 @pytest.mark.skipif(os.name != 'posix', reason='Actual POSIX process-group signals require Linux/Unix')
 def test_failed_launcher_reaps_a_real_term_ignoring_descendant(tmp_path):
     import psutil

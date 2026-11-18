@@ -197,7 +197,7 @@ def score_row(row, equivalent=None, extract=None, unbox=None):
     return result
 
 
-def grade(rows, journal, cache_hash, workers, scorer=score_row):
+def grade(rows, journal, cache_hash, workers, scorer=score_row, *, scores_only=False):
     journal = Path(journal)
     completed = {}
     if journal.exists():
@@ -215,7 +215,11 @@ def grade(rows, journal, cache_hash, workers, scorer=score_row):
                 if item['generation_sha256'] != cache_hash or i not in range(len(rows)) or i in completed:
                     raise ValueError('Grading journal identity/order conflict')
                 result = item['row']
-                if any(result.get(k) != v for k, v in rows[i].items()) or len(result['acc_list']) != len(rows[i]['responses']):
+                expected = rows[i]
+                keys = ('benchmark', 'benchmark_index') if scores_only else expected
+                if (any(result.get(k) != expected[k] for k in keys)
+                        or len(result['acc_list']) != len(expected['responses'])
+                        or (scores_only and len(result['strict_last_box_acc_list']) != len(expected['responses']))):
                     raise ValueError('Grading journal row mismatch')
                 completed[i] = result
     pending = [i for i in range(len(rows)) if i not in completed]
@@ -224,7 +228,11 @@ def grade(rows, journal, cache_hash, workers, scorer=score_row):
     with journal.open('a', encoding='utf-8') as stream:
         def record(i, row):
             completed[i] = row
-            stream.write(json.dumps(dict(index=i, generation_sha256=cache_hash, row=row), ensure_ascii=False) + '\n')
+            line = json.dumps(dict(index=i, generation_sha256=cache_hash, row=row), ensure_ascii=False) + '\n'
+            if scores_only:
+                from disk_space import require_space
+                require_space(journal.parent, len(line.encode('utf-8')) + 1)
+            stream.write(line)
             stream.flush()
             if len(completed) % 10 == 0 or len(completed) == len(rows):
                 print(f'[GRADE] {len(completed)}/{len(rows)} problems; elapsed={time.monotonic()-started:.1f}s', flush=True)
@@ -308,7 +316,7 @@ def generate(args, inputs):
     return rows
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser()
     for key in ('input_file', 'model_path', 'output_file'):
         p.add_argument('--' + key, required=True)
@@ -323,7 +331,7 @@ def main():
     p.add_argument('--scoring_mode',choices=['strict_last_box',LENIENT_MODE],default='strict_last_box')
     p.add_argument('--regrade_only',action='store_true',help='Use saved responses only; never start GPU generation')
     p.add_argument('--compact_output', action='store_true')
-    args = p.parse_args()
+    args = p.parse_args(argv)
     for key in ('input_file', 'model_path', 'output_file'):
         setattr(args, key, str(project_absolute(getattr(args, key))))
     if args.n < 1 or args.score_workers < 1 or args.max_num_seqs < 1 or (args.n > 1 and args.temperature <= 0):

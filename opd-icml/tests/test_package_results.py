@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import package_results as exports
+import disk_space
 import run_h200_experiment as h200
 import run_h200_suite as suite
 
@@ -75,6 +76,24 @@ def test_regeneration_updates_results_without_including_its_own_zip(tmp_path):
         assert archive.read('run/eval/summary.json') == b'{"score":0.75}'
         assert not any(name.endswith('.zip') for name in archive.namelist())
         assert json.loads(archive.read(exports.MANIFEST))['file_count'] == 1
+
+
+def test_running_out_of_space_while_packing_keeps_source_and_old_zip(tmp_path, monkeypatch):
+    run = tmp_path/'run'
+    raw = save(run, 'eval/base/responses.jsonl.gz', b'previous result')
+    output = exports.package_results(run)
+    previous = output.read_bytes()
+    raw.write_bytes(b'x' * 5 * 1024**2)
+    calls = []
+    def available(path):
+        calls.append(path)
+        return SimpleNamespace(free=disk_space.GIB + (4 * 1024**2 if len(calls) < 3 else 1))
+    monkeypatch.setattr(disk_space.shutil, 'disk_usage', available)
+    monkeypatch.setenv('OPD_MIN_FREE_GIB', '1')
+    with pytest.raises(OSError, match='reserve'):
+        exports.package_results(run)
+    assert output.read_bytes() == previous and raw.stat().st_size == 5 * 1024**2
+    assert not list(output.parent.glob('*.tmp'))
 
 
 def test_packaging_failure_preserves_the_previous_complete_archive(tmp_path, monkeypatch):

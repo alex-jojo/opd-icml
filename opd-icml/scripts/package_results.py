@@ -10,6 +10,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from project_paths import project_absolute, project_relative, saved_path_matches
+from disk_space import SpaceCheckedWriter
 
 PROTOCOL = 'opd-experiment-data-zip-v1'
 MANIFEST = 'EXPORT_MANIFEST.json'
@@ -89,7 +90,7 @@ def package_results(run, output=None, *, phase='manual'):
     entries = []
     print(f'[ZIP] Packaging {len(files)} experiment data files from {project_relative(run)}', flush=True)
     try:
-        with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED,
+        with SpaceCheckedWriter(temporary) as writer, zipfile.ZipFile(writer, 'w', compression=zipfile.ZIP_DEFLATED,
                              compresslevel=3, allowZip64=True, strict_timestamps=False) as archive:
             for path in files:
                 if path.is_symlink() or not path.resolve().is_relative_to(run):

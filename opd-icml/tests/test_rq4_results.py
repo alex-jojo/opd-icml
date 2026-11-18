@@ -91,6 +91,7 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
     plan = suite.build_suite(suite.parser().parse_args(['--output', str(tmp_path/'suite'), '--scales', '1.7b', '4b']),
                              {}, list(range(64)), 512)
     paths = []
+    base_runs = []
     for queue in plan['small_queues']:
         assert [job['rq4_strategy'] for job in queue] == list(rq4.STRATEGIES)
         for job in queue:
@@ -120,6 +121,11 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                     values['amc23'] = 1.
                     rq4.save_json(run/'eval/final_mean8.summary.json', {
                         k: dict(problems=i+1, samples=8*(i+1), mean_at_8=v) for i,(k,v) in enumerate(values.items())})
+                elif command == q['evaluate_base']:
+                    base_runs.append((args.scale, strategy))
+                    scores = dict(mean_at_8=dict.fromkeys(rq4.BENCHMARKS, .1), five_benchmark_mean_at_8=.1)
+                    rq4.save_json(run/'eval/base/summary.json', dict(scale='4b', strategy='base', model=q['models']['student'],
+                                  rollout_rounds=0, optimizer_updates=0, training_wall_seconds=None, strict_last_box=scores))
             monkeypatch.setattr(h200, 'run_command', launch)
             h200.execute(args, q, {})
             saved = rq4.read(window/'summary.json')
@@ -129,15 +135,22 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
             assert saved['training_wall_seconds'] > 0
             paths.append(run)
     assert len(set(paths)) == 6
+    assert base_runs == [('4b', 'full')]
     rq4.save_comparison(plan)
     root = h200.project_absolute(plan['output'])
     combined = rq4.read(root/'rq4_comparison.json')
     for arms in combined.values():
-        for row in arms.values():
+        for strategy in rq4.STRATEGIES:
+            row = arms[strategy]
             assert row['training_time_saved_fraction'] == pytest.approx(1-row['training_wall_seconds']/arms['full']['training_wall_seconds'])
+    baseline = combined['4b']['base']
+    assert baseline['five_benchmark_change_pp'] == pytest.approx(-20)
+    assert baseline['scoring_mode'] == 'strict_last_box' and baseline['training_time_saved_fraction'] is None
+    assert 'base' not in combined['1.7b']
     with ZipFile(package_results(root)) as archive:
         assert 'suite/rq4_comparison.json' in archive.namelist()
         assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 6
+        assert sum(n.endswith('/eval/base/summary.json') for n in archive.namelist()) == 1
 
 
 def test_early_stop_rejects_unconfirmed_partial_checkpoint(tmp_path):

@@ -203,6 +203,16 @@ def build_plan(args, environment):
             '--max_prompt_tokens', '1024', '--max_tokens', '8192',
             '--max_num_seqs', str(args.eval_max_num_seqs), '--score_workers', str(args.score_workers)]
         prepare_eval = None
+    evaluate_base = None
+    if (args.scale == '4b' and task == 'math' and strategy in (None, 'full') and args.stage != 'train'
+            and args.student is None and project_absolute(args.math_benchmarks) == ROOT/'data/benchmarks.jsonl'):
+        evaluate_base = [sys.executable, 'scripts/evaluate_4b_base.py',
+                         '--output', project_relative(run/'eval/base'),
+                         '--math-benchmarks', project_relative(args.math_benchmarks),
+                         '--eval-max-num-seqs', str(args.eval_max_num_seqs),
+                         '--score-workers', str(args.score_workers)]
+        if args.cache_dir is not None:
+            evaluate_base += ['--cache-dir', project_relative(args.cache_dir)]
     checkpoint = checkpoints_root / 'global_step_<latest>/actor'
     merge = [sys.executable, '-m', 'verl.model_merger', 'merge', '--backend', 'fsdp',
              '--local_dir', project_relative(checkpoint), '--target_dir', project_relative(merged), '--use_cpu_initialization']
@@ -217,7 +227,7 @@ def build_plan(args, environment):
         model_artifacts=project_relative(artifacts) if artifacts else None,
         profile=args.profile, ray_cpus=cpus, gradient_cache_gib=args.gradient_cache_gib,
         prepare_training=prepare, prepare_evaluation=prepare_eval,
-        train=command, merge=merge, evaluate=evaluation)
+        train=command, merge=merge, evaluate=evaluation, evaluate_base=evaluate_base)
 
 
 def child_environment(plan, environment):
@@ -341,6 +351,8 @@ def execute(args, plan, env):
             run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
     else:
         run_command(plan['evaluate'], env, run / 'logs/evaluate.log')
+        if plan['evaluate_base']:
+            run_command(plan['evaluate_base'], env, run / 'logs/evaluate_base.log')
         if strategy:
             rq4_results.save_arm(run, plan['scale'], strategy, end)
     print(f'[DONE] Results: {project_relative(run / "eval")}', flush=True)

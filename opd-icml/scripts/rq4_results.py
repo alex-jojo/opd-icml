@@ -56,6 +56,16 @@ def endpoint(checkpoints, directory, strategy, rounds_cap, reuse):
     return dict(rollout_rounds=step, optimizer_updates=counts['optimizer_updates_done'], stop_reason=reason)
 
 
+def five_benchmark_scores(scores):
+    means = {}
+    for name in BENCHMARKS:
+        entry = scores[name]
+        if entry['problems'] <= 0 or entry['samples'] != 8*entry['problems'] or not 0 <= entry['mean_at_8'] <= 1:
+            raise ValueError(f'Incomplete Mean@8 results for {name}')
+        means[name] = entry['mean_at_8']
+    return dict(mean_at_8=means, five_benchmark_mean_at_8=sum(means.values())/len(means))
+
+
 def save_arm(run, scale, strategy, end):
     timing = read(run/'rq4_training_time.json')
     attempts = timing['attempts']
@@ -64,14 +74,8 @@ def save_arm(run, scale, strategy, end):
     complete = timing['complete_history'] and all('seconds' in attempt for attempt in attempts)
     wall = sum(attempt['seconds'] for attempt in attempts) if complete else None
     scores = read(run/'eval/final_mean8.summary.json')
-    means = {}
-    for name in BENCHMARKS:
-        entry = scores[name]
-        if entry['problems'] <= 0 or entry['samples'] != 8*entry['problems'] or not 0 <= entry['mean_at_8'] <= 1:
-            raise ValueError(f'Incomplete Mean@8 results for {name}')
-        means[name] = entry['mean_at_8']
     summary = dict(scale=scale, strategy=strategy, **end, training_wall_seconds=wall,
-                   mean_at_8=means, five_benchmark_mean_at_8=sum(means.values())/len(means))
+                   **five_benchmark_scores(scores))
     save_json(run/'training/training_records/rq4/summary.json', summary)
 
 
@@ -85,9 +89,21 @@ def save_comparison(plan):
                 row = read(folder/'summary.json')
                 if (row['scale'], row['strategy']) != (job['scale'], strategy):
                     raise ValueError('RQ4 summary does not match its scheduled experiment')
-                groups.setdefault(job['scale'], {})[strategy] = row
+                arms = groups.setdefault(job['scale'], {})
+                arms[strategy] = row
+                if job['scale'] == '4b' and strategy == 'full':
+                    base = project_absolute(job['output'])/'eval/base/summary.json'
+                    if base.is_file():  # Older completed suites predate the Base evaluation.
+                        result = read(base)
+                        if (result['scale'], result['strategy']) != ('4b', 'base'):
+                            raise ValueError('Base summary does not match the scheduled 4B experiment')
+                        arms['base'] = {key: result[key] for key in ('scale', 'strategy', 'model',
+                                        'rollout_rounds', 'optimizer_updates', 'training_wall_seconds')}
+                        arms['base'].update(scoring_mode='strict_last_box',
+                                            mean_at_8=result['strict_last_box']['mean_at_8'],
+                                            five_benchmark_mean_at_8=result['strict_last_box']['five_benchmark_mean_at_8'])
     for arms in groups.values():
-        if set(arms) != set(STRATEGIES):
+        if set(arms) - {'base'} != set(STRATEGIES):
             raise ValueError('RQ4 comparison requires every matched arm')
         reference = arms['full']
         for row in arms.values():

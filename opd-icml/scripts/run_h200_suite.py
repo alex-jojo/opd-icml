@@ -19,6 +19,7 @@ from wandb_config import load_wandb_environment
 from project_paths import project_absolute, project_relative
 from package_results import archive_path, package_results
 from cleanup_model_artifacts import print_disk_space
+from disk_space import require_space
 import rq4_results
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
@@ -220,11 +221,14 @@ class Processes:
         self.active = set()
         self.cancelled = False
         self.termination_grace_seconds = termination_grace_seconds
+        self.disk_paths = ()
 
     def run(self, command, log, cpu_only=False):
         env = load_wandb_environment(os.environ)
         if cpu_only:
             env['CUDA_VISIBLE_DEVICES'] = ''
+        for path in self.disk_paths:
+            require_space(path)
         log.parent.mkdir(parents=True, exist_ok=True)
         with log.open('a', encoding='utf-8') as out:
             with self.lock:
@@ -234,7 +238,13 @@ class Processes:
                     stderr=subprocess.STDOUT, start_new_session=True)
                 self.active.add(process)
             try:
-                code = process.wait()
+                while True:
+                    try:
+                        code = process.wait(timeout=1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        for path in self.disk_paths:
+                            require_space(path)
                 if code:
                     raise subprocess.CalledProcessError(code, command)
             finally:
@@ -314,8 +324,10 @@ def schedule(plan, runner):
             wait(grades, timeout=1, return_when=FIRST_COMPLETED)
             collect_grades()
     except BaseException:
-        record('__suite__', 'failed-or-interrupted; see logs')
-        runner.cancel()
+        try:
+            record('__suite__', 'failed-or-interrupted; see logs')
+        finally:
+            runner.cancel()
         raise
     finally:
         gpu.shutdown(wait=True, cancel_futures=True)
@@ -350,6 +362,12 @@ def main():
             except BlockingIOError:
                 raise ValueError(f'GPU {identity} is already owned by another OPD suite')
         root = project_absolute(plan['output'])
+        from huggingface_hub import constants as hub
+        runner.disk_paths = (root, ROOT/'data', Path(tempfile.gettempdir()), Path(hub.HF_HUB_CACHE),
+                             Path(getattr(hub, 'HF_XET_CACHE', Path(hub.HF_HOME)/'xet')),
+                             Path(os.environ.get('HF_DATASETS_CACHE', Path(hub.HF_HOME)/'datasets')))
+        if 'gemma3-12b' in args.scales:
+            runner.disk_paths += (ROOT/'models',)
         if root.exists() and any(root.iterdir()):
             raise ValueError('Choose an empty suite --output; existing experiments will not be overwritten')
         root.mkdir(parents=True, exist_ok=True)
