@@ -85,31 +85,37 @@ def verify_math_evaluation(directory):
             row.get('problems', 0) > 0 and row.get('samples') == 8 * row['problems']
             and 0 <= row.get('mean_at_8', -1) <= 1 for row in summary.values()):
         raise ValueError('Keep model files: incomplete math evaluation summary')
-    return summary_path
+    return [summary_path]
 
 
 def verify_completed_evaluation(run, task, checkpoints=None):
     """Check small completion metadata, without rehashing large response files."""
-    if task == 'math':
-        proofs = [verify_math_evaluation(run/'eval')]
-        timing = run/'rq4_training_time.json'
-        if timing.is_file() and _read(timing).get('shared_early_stop'):
-            result = run/'training/training_records/rq4/early_stop_summary.json'
-            early = _read(result)
-            if early.get('source_strategy') != 'full':
-                raise ValueError('Keep model files: missing shared early-stop evaluation')
-            checkpoints = checkpoints if checkpoints is not None else run/'training/checkpoints'
-            if checkpoints.exists():  # A cleanup retry may already have removed the checkpoint tree.
-                selection = _read(checkpoints/'early_stop/selection.json')
-                if (early['rollout_rounds'], early['uses_full_endpoint']) != (selection['step'], selection['uses_full_endpoint']):
-                    raise ValueError('Keep model files: early-stop evaluation does not match its checkpoint')
-            proofs.append(result)
-            if not early['uses_full_endpoint']:
-                proofs.append(verify_math_evaluation(run/'eval/early-stop'))
-        return proofs
-    if task != 'code':
+    if task == 'code':
+        verify = verify_code_evaluation
+    elif task == 'math':
+        verify = verify_math_evaluation
+    else:
         raise ValueError('Unknown evaluation task')
-    root = run / 'eval/code_pass8'
+    proofs = verify(run/'eval')
+    timing = run/'rq4_training_time.json'
+    if timing.is_file() and _read(timing).get('shared_early_stop'):
+        result = run/'training/training_records/rq4/early_stop_summary.json'
+        early = _read(result)
+        if early.get('source_strategy') != 'full':
+            raise ValueError('Keep model files: missing shared early-stop evaluation')
+        checkpoints = checkpoints if checkpoints is not None else run/'training/checkpoints'
+        if checkpoints.exists():  # A cleanup retry may already have removed the checkpoint tree.
+            selection = _read(checkpoints/'early_stop/selection.json')
+            if (early['rollout_rounds'], early['uses_full_endpoint']) != (selection['step'], selection['uses_full_endpoint']):
+                raise ValueError('Keep model files: early-stop evaluation does not match its checkpoint')
+        proofs.append(result)
+        if not early['uses_full_endpoint']:
+            proofs.extend(verify(run/'eval/early-stop'))
+    return proofs
+
+
+def verify_code_evaluation(directory):
+    root = directory/'code_pass8'
     identity = _read(root / 'run.json')
     summary = _read(root / 'summary.json')
     if (identity.get('protocol') != EVALUATION_PROTOCOL or identity.get('sampling', {}).get('samples') != 8

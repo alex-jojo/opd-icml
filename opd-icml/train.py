@@ -262,8 +262,8 @@ def main():
     if args.experiment is None:
         parser.error("--experiment is required unless --prepare-only is used")
     config_name, cfg = training_config(profile, args.experiment, args.task)
-    if args.rq4_strategy and (args.experiment != 'paired-full' or args.task != 'math' or args.scale not in ('1.7b', '4b')):
-        parser.error('--rq4-strategy uses the 1.7B/4B math paired-full profile')
+    if args.rq4_strategy and args.experiment != 'paired-full':
+        parser.error('--rq4-strategy requires the paired-full profile')
     try:
         tracking_env = load_wandb_environment(os.environ)
         hardware_overrides = apply_hardware_profile(cfg, args.hardware, args.num_gpus, args.rollout_tp_size)

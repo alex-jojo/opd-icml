@@ -92,13 +92,15 @@ def test_adaptive_window_published_with_decision(tmp_path):
 
 
 def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
-    plan = suite.build_suite(suite.parser().parse_args(['--output', str(tmp_path/'suite'), '--scales', '1.7b', '4b']),
+    plan = suite.build_suite(suite.parser().parse_args(['--output', str(tmp_path/'suite')]),
                              {}, list(range(64)), 512)
     paths = []
     base_runs = []
     early_evals = []
-    for queue in plan['small_queues']:
-        assert [job['rq4_strategy'] for job in queue] == ['full', 'reuse']
+    import code_benchmarks
+    monkeypatch.setattr(code_benchmarks, 'read_manifest', lambda *_: {})
+    code_grades = []
+    for queue in [*plan['small_queues'], plan['large']]:
         for job in queue:
             args = h200.parser().parse_args(job['command'][2:])
             strategy = args.rq4_strategy
@@ -111,12 +113,12 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
             def launch(command, env, log):
                 if command == q['train']:
                     assert not (run/'training').exists()
-                    actor = checkpoint_fixture(run/'training', 1, final)
+                    actor = checkpoint_fixture(run/'training', q['gpu_count'], final)
                     rq4.save_json(actor.parent/'opd_optimizer_updates.json', dict(rollout_round=final, optimizer_updates_done=final*split))
                     if strategy == 'full':
                         observer = SharedEarlyStop(actor.parent.parent, 0, 5)
                         for step in range(1, final + 1):
-                            stable = args.scale == '4b' and step == 40
+                            stable = args.scale in ('4b', 'deepseek-coder-33b') and step == 40
                             if step % 5 == 0:
                                 rq4.save_json(window/f'early_stop_{step:03d}.json', dict(step=step, stable=stable))
                             observer.observe(step, step, stable, step == final, lambda path, _: shutil.copytree(actor, path))
@@ -137,6 +139,22 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                     rq4.save_json(output.with_suffix('.summary.json'), {
                         k: dict(problems=i+1, samples=8*(i+1), mean_at_8=v) for i,(k,v) in enumerate(values.items())})
                     output.write_text('{}\n')
+                elif 'scripts/evaluate_code.py' in command:
+                    output = h200.project_absolute(command[command.index('--output-dir')+1])
+                    if '--generate-only' in command:
+                        model = h200.project_absolute(command[command.index('--model-path')+1])
+                        assert (model/'config.json').exists()
+                        for name in rq4.CODE_BENCHMARKS:
+                            rq4.save_json(output/name/'generations.jsonl', {'responses': ['a']*8})
+                    else:
+                        assert '--grade-only' in command and env['CUDA_VISIBLE_DEVICES'] == ''
+                        code_grades.append((args.scale, strategy, output.parent.name))
+                        value = .5 if output.parent.name == 'early-stop' else .75
+                        for name in rq4.CODE_BENCHMARKS:
+                            assert (output/name/'generations.jsonl').exists()
+                        scores = {name: dict(problems=4, samples=32, **{'pass@8': value})
+                                  for name in rq4.CODE_BENCHMARKS}
+                        rq4.save_json(output/'summary.json', dict(metric='pass@8', benchmarks=scores))
                 elif command == q['evaluate_base']:
                     assert '--no-package' in command
                     base_runs.append((args.scale, strategy))
@@ -145,18 +163,30 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                                   rollout_rounds=0, optimizer_updates=0, training_wall_seconds=None, strict_last_box=scores))
             monkeypatch.setattr(h200, 'run_command', launch)
             h200.execute(args, q, {})
+            if q['task'] == 'code':
+                assert not (window/'summary.json').exists()
+                grade_args = h200.parser().parse_args(job['grade'][2:])
+                h200.execute(grade_args, h200.build_plan(grade_args, {}), {})
             saved = rq4.read(window/'summary.json')
             assert saved['optimizer_updates'] == final*split and saved['rollout_rounds'] == final
             assert saved['stop_reason'] == ('stable' if strategy == 'early-stop' else 'budget')
-            assert saved['five_benchmark_mean_at_8'] == pytest.approx(.3)
+            if q['task'] == 'code':
+                assert saved['two_benchmark_mean_pass_at_8'] == .75
+            else:
+                assert saved['five_benchmark_mean_at_8'] == pytest.approx(.3)
             assert saved['training_wall_seconds'] > 0
             paths.append(run)
-    assert len(set(paths)) == 4
+    assert len(set(paths)) == len(paths) == 14
+    assert len(code_grades) == 7
     assert early_evals == [('4b', 'full')]
     assert base_runs == [('4b', 'full')]
     rq4.save_comparison(plan)
     root = h200.project_absolute(plan['output'])
     combined = rq4.read(root/'rq4_comparison.json')
+    assert set(combined) == set(h200.EXPERIMENTS)
+    code_early = combined['deepseek-coder-33b']['early-stop']
+    assert code_early['two_benchmark_change_pp'] == -25 and code_early['rollout_rounds'] == 40
+    assert set(code_early['responses_files']) == set(rq4.CODE_BENCHMARKS)
     early = combined['4b']['early-stop']
     assert early['source_strategy'] == 'full' and early['rollout_rounds'] == early['optimizer_updates'] == 40
     assert early['stop_reason'] == 'stable' and early['five_benchmark_change_pp'] == pytest.approx(-5)
@@ -175,9 +205,11 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
     assert 'base' not in combined['1.7b']
     with ZipFile(package_results(root)) as archive:
         assert 'suite/rq4_comparison.json' in archive.namelist()
-        assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 4
-        assert sum(n.endswith('/rq4/early_stop_summary.json') for n in archive.namelist()) == 2
+        assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 14
+        assert sum(n.endswith('/rq4/early_stop_summary.json') for n in archive.namelist()) == 7
         assert 'suite/4b/eval/early-stop/final_mean8.jsonl' in archive.namelist()
+        for path in code_early['responses_files'].values():
+            assert 'suite/deepseek-coder-33b/' + path in archive.namelist()
         assert sum(n.endswith('/eval/base/summary.json') for n in archive.namelist()) == 1
 
 
@@ -269,7 +301,7 @@ def test_early_stop_rejects_unconfirmed_partial_checkpoint(tmp_path):
         rq4.endpoint(tmp_path/'checkpoints', tmp_path, 'early-stop', 106, 1)
 
 
-@pytest.mark.parametrize('scale', rq4.SCALES)
+@pytest.mark.parametrize('scale', h200.EXPERIMENTS)
 @pytest.mark.parametrize('strategy', rq4.STRATEGIES)
 def test_matched_real_hydra_config(scale, strategy):
     from hydra import compose, initialize_config_dir
@@ -279,13 +311,19 @@ def test_matched_real_hydra_config(scale, strategy):
     overrides = [s for s in shlex.split(dry['command']) if s.startswith('++')]
     search = 'hydra.searchpath='+json.dumps(['file://'+(ROOT/'runtime/verl/trainer/config').as_posix()], ensure_ascii=False)
     with initialize_config_dir(config_dir=str(ROOT/'configs'/scale), version_base=None):
-        cfg = compose(config_name='paired-full', overrides=[search, *overrides])
+        name = 'code-paired-full' if h200.EXPERIMENTS[scale].task == 'code' else 'paired-full'
+        cfg = compose(config_name=name, overrides=[search, *overrides])
     policy = cfg.actor_rollout_ref.actor.policy_loss
     assert policy.jump_reuse_updates == policy.replication17.reuse == (2 if strategy == 'reuse' else 1)
     assert policy.replication17.rounds == cfg.trainer.opd_pause_after_rollout_rounds == cfg.trainer.total_training_steps
     assert cfg.trainer.total_training_steps*policy.jump_reuse_updates == 106
     assert cfg.data.train_batch_size == cfg.actor_rollout_ref.actor.ppo_mini_batch_size == 128
     assert policy.gradient_study.parameter_tokens.sample_size == 256 and policy.fixed_heldout_probe_size == 0
+    assert policy.replication17.enabled and policy.replication17.mode == 'full'
+    assert policy.replication17.freeze_step == 10 and policy.replication17.rank == 128
+    assert policy.gradient_study.enabled and policy.gradient_study.validation_interval == 10
+    assert list(policy.gradient_study.geometry_steps) == [10, 30, 60, 100]
+    assert list(policy.gradient_study.path_steps) == [10, 50, 100]
     assert policy.replication17.adaptive_stability.enabled == (strategy != 'reuse')
     assert policy.replication17.adaptive_stability.get('snapshot_only', False) == (strategy == 'full')
 

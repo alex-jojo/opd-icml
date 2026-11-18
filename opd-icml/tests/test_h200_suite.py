@@ -43,7 +43,7 @@ def test_parallel_plan_has_disjoint_gpu_cpu_and_aggregate_memory_budgets(tmp_pat
 def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     plan = plan_for(tmp_path, free=180, cpus=24)
     assert plan['small_parallelism'] == 1
-    assert len(plan['small_queues'][0]) == 6
+    assert len(plan['small_queues'][0]) == 8
     assert all(value(j['command'], '--parameter-token-samples') == '256' for j in plan['small_queues'][0])
 
 
@@ -308,6 +308,7 @@ def test_scheduler_releases_gpu_while_grade_runs_and_waits_before_large(tmp_path
     active = set()
     completed_small = set()
     grading = threading.Event()
+    large_full_graded = threading.Event()
     large_started = threading.Event()
     jobs = {j['scale']: j for q in plan['small_queues'] for j in q}
     jobs.update({j['scale']: j for j in plan['large']})
@@ -317,7 +318,11 @@ def test_scheduler_releases_gpu_while_grade_runs_and_waits_before_large(tmp_path
             if cpu_only:
                 grading.set()
                 assert large_started.wait(10), 'grading blocked GPU stage scheduling'
+                if scale == 'deepseek-coder-33b' and value(command, '--rq4-strategy') == 'full':
+                    large_full_graded.set()
                 return
+            if scale == 'deepseek-coder-33b' and value(command, '--rq4-strategy') == 'reuse':
+                assert large_full_graded.is_set()
             devices = set(jobs[scale]['devices'])
             with lock:
                 assert not active & devices

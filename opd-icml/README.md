@@ -2,7 +2,7 @@
 
 在四张 H200 上运行 OPD FULL 和 RQ4 策略对照，自动准备模型和数据、训练、评测并打包结果。
 
-**模型范围**包括 DeepSeek-Coder 1.3B/6.7B/33B、Qwen3 1.7B/4B/8B 和 Gemma3 12B。总入口训练七组 FULL，另在 Qwen3 1.7B、4B 上各训练一次 Rollout reuse，共 9 次训练。两组 Qwen 的早停成绩从各自 FULL 轨迹首次满足稳定条件的 checkpoint 取得。
+**模型范围**包括 DeepSeek-Coder 1.3B/6.7B/33B、Qwen3 1.7B/4B/8B 和 Gemma3 12B。总入口训练七组 FULL，每组另训练一次 Rollout reuse，共 14 次训练。每组的早停成绩从各自 FULL 轨迹首次满足稳定条件的 checkpoint 取得。
 
 ## 1. 下载代码、安装环境（首次执行）
 
@@ -57,7 +57,7 @@ bash scripts/h200/run_all.sh \
   --output runs/h200-suite/run1
 ```
 
-本命令使用下表中的七组学生与教师配对。Qwen3 1.7B、4B 的 GPU 槽还会顺序完成各自的早停和复用对照。
+本命令使用下表中的七组学生与教师配对。每组用同一 GPU 配置评测 FULL 早停点，并单独完成复用训练和评测。
 
 | 模型配对（学生 → 教师） | 训练数据 | 测评 benchmark | 指标 | GPU 编号 | 运行顺序 |
 |---|---|---|---|---|---|
@@ -80,7 +80,7 @@ RQ2 在每次 FULL 参数更新后测量同一组固定 probe。`training/traini
 
 RQ3 的 `training/training_records/rq3/checkpoint_XXX.json` 按更新前的检查点编号。0、10、…、100 各存 128 条验证回答在下一次更新前后的配对 KL；10、30、60、100 另存图 7(b、c) 的六对子集明细和均值。
 
-RQ4 比较结果在整个实验 ZIP 的 `rq4_comparison.json`。每个规模的 FULL、早停和复用使用相同的数据划分及五项数学测评。FULL 每 5 步检查早停条件，首次触发时单独保存权重并继续训练到第 106 步。早停耗时记录从 FULL 启动到该权重保存完成的累计时间。复用在 53 轮中做 106 次更新，并在 11 个观测轮记录同批回答第二次更新的 KL 降幅。五项 Mean@8 按 benchmark 等权平均。逐轮文件和单组命令见 [H200 说明](scripts/h200/README.md#rq4-策略对照)。
+RQ4 比较结果在整个实验 ZIP 的 `rq4_comparison.json`。每个规模的 FULL、早停和复用使用相同的数据划分和本任务的评测协议。FULL 每 5 步检查早停条件，首次触发时单独保存权重并继续训练到第 106 步。早停耗时记录从 FULL 启动到该权重保存完成的累计时间。复用在 53 轮中做 106 次更新，并在 11 个观测轮记录同批回答第二次更新的 KL 降幅。数学汇总五项 Mean@8；代码汇总 LiveCodeBench、HumanEval+ 的 pass@8，各自按题集等权平均。逐轮文件和单组命令见 [H200 说明](scripts/h200/README.md#rq4-策略对照)。
 
 输出目录必须是新目录；再次从头运行换成 `run2`。当前入口不支持中断后的训练续跑。
 

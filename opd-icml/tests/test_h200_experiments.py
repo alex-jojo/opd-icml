@@ -126,7 +126,20 @@ def test_pipeline_handoff_preserves_devices_and_can_retry_evaluation(name, scale
         called.append(list(command))
         assert environment['CUDA_VISIBLE_DEVICES'] == ('' if '--grade-only' in command else ('3' if gpus == 1 else '3,2,1,0'))
         if command == plan['train']:
-            checkpoint_fixture(Path(plan['output']) / 'training', gpus)
+            actor = checkpoint_fixture(Path(plan['output']) / 'training', gpus)
+            if plan['shared_early_stop']:
+                import rq4_results as rq4
+                run = h200.project_absolute(plan['output'])
+                rq4.save_json(actor.parent/'opd_optimizer_updates.json', dict(rollout_round=106, optimizer_updates_done=106))
+                for step in range(5, 106, 5):
+                    rq4.save_json(run/f'training/training_records/rq4/early_stop_{step:03d}.json', dict(step=step, stable=False))
+                rq4.save_json(actor.parent.parent/'early_stop/selection.json', dict(step=106, optimizer_updates=106,
+                              interval=5, stop_reason='budget', uses_full_endpoint=True))
+        if '--grade-only' in command:
+            import rq4_results as rq4
+            scores = {b: dict(problems=1, samples=8, **{'pass@8': 1.}) for b in rq4.CODE_BENCHMARKS}
+            rq4.save_json(h200.project_absolute(plan['output'])/'eval/code_pass8/summary.json',
+                          dict(metric='pass@8', benchmarks=scores))
         if 'verl.model_merger' in command:
             source = command[command.index('--local_dir') + 1]
             assert 'global_step_106' in source and '<latest>' not in source

@@ -6,6 +6,8 @@
 
 所有入口继承当前终端的 `WANDB_API_KEY`、`WANDB_MODE`、`WANDB_PROJECT` 和可选的 `WANDB_ENTITY`。无需配置文件；设置方法见[快速开始](../../README.md#2-登录模型账号设置-wb)。
 
+默认七组的输出目录、逐步记录、评测文件和清理时机见[实验保存说明](./实验保存说明.md)。
+
 ## 整套实验
 
 ```bash
@@ -20,7 +22,7 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 \
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。Qwen3 1.7B 和 4B 在各自的 FULL 训练中保存早停权重，各另跑一次复用训练。默认每一步抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重，各另跑一次复用训练。默认每一步抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
@@ -154,16 +156,16 @@ H200 套件使用默认模型和数学题集时，在 4B FULL 的数学评测后
 
 ## RQ4 策略对照
 
-总入口在每个选中的 Qwen3 1.7B、4B 的同一 GPU 槽依次运行 FULL 和复用。早停成绩来自同一条 FULL 轨迹。运行 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 会执行四次训练，产出两个规模各三行策略结果。单模型默认数学入口和显式 `--rq4-strategy full` 同样会评测早停点；显式 `--rq4-strategy early-stop` 仍可单独训练至早停。
+总入口为每组所选模型在相同 GPU 配置上依次运行 FULL 和复用。早停成绩来自同一条 FULL 轨迹。运行 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 会执行四次训练，产出两个规模各三行策略结果。单模型默认入口和显式 `--rq4-strategy full` 同样会评测早停点；显式 `--rq4-strategy early-stop` 仍可单独训练至早停。
 
-* **早停**。每 5 次参数更新在固定 probe 上检查一次。从第 15 步起，窗口覆盖 t−10、t−5、t。`training/training_records/rq4/early_stop_XXX.json` 保存判定依据。首次触发时，FULL 把当前权重保存到 `training/checkpoints/early_stop/actor/`，然后继续训练。训练结束后对这份权重运行与 FULL 相同的 Mean@8，回答存入 `eval/early-stop/final_mean8.jsonl`，临时合并模型在评测后释放。到预算终点才选中最终模型时，共用 FULL 的权重和逐题结果。`training/training_records/rq4/early_stop_summary.json` 记录来源、实际步数、判定原因、回答路径和累计训练耗时，随结果 ZIP 导出。
+* **早停**。每 5 次参数更新在固定 probe 上检查一次。从第 15 步起，窗口覆盖 t−10、t−5、t。`training/training_records/rq4/early_stop_XXX.json` 保存判定依据。首次触发时，FULL 把当前权重保存到 `training/checkpoints/early_stop/actor/`，然后继续训练。训练结束后对这份权重运行与 FULL 相同的评测。数学回答保存在 `eval/early-stop/final_mean8.jsonl`，代码回答及判题结果按题集保存在 `eval/early-stop/code_pass8/`。代码生成结束后释放临时合并模型，由 CPU 判题。到预算终点才选中最终模型时，共用 FULL 的权重和逐题结果。`training/training_records/rq4/early_stop_summary.json` 记录来源、实际步数、判定原因、回答路径和累计训练耗时，随结果 ZIP 导出。
 * **复用**。每次新 rollout 和教师目标供两次真实 AdamW 更新使用，53 次 rollout 共 106 次更新。在 rollout 第 5、10、…、50、53 轮，`reuse_round_XXX.json` 记录同一训练 batch 按有效 token 平均的 `kl_before_first`、`kl_after_first` 和 `kl_after_second`。最后一项用第二次更新后的学生重新前向计算。`second_gain = kl_after_first - kl_after_second`，正值表示第二步进一步降低了 KL。
 * **时间与评测**。每次独立训练的 `rq4_training_time.json` 记录训练命令的实测墙钟时间，包含训练初始化、诊断和保存 checkpoint。共享早停行以 `source_strategy=full` 标记，计时截止于早停权重保存完成；共用预算终点时采用 FULL 总时长。合并及 benchmark 评测单独执行。续跑累计有记录的训练尝试，无法还原完整时长时汇总值为 `null`。
-* **对照表**。套件 ZIP 的 `rq4_comparison.json` 按规模和策略汇总上述结果。五项为 MATH500、HMMT25、HMMT26、AIME26 和 Minerva，各项 Mean@8 和算术平均用 0–1 表示，`five_benchmark_change_pp` 给出相对同规模 FULL 的百分点变化，`training_time_saved_fraction` 给出实测时间节省比例。含 AMC23 的原始六项评测在相应训练目录的 `eval/final_mean8.summary.json`，提前触发的早停点在 FULL 的 `eval/early-stop/final_mean8.summary.json`。
+* **对照表**。套件 ZIP 的 `rq4_comparison.json` 按规模和策略汇总上述结果。代码组保存两项 pass@8、等权平均和相对 FULL 的百分点变化 `two_benchmark_change_pp`。数学五项为 MATH500、HMMT25、HMMT26、AIME26 和 Minerva，各项 Mean@8 和算术平均用 0–1 表示，`five_benchmark_change_pp` 给出相对同规模 FULL 的百分点变化，`training_time_saved_fraction` 给出实测时间节省比例。含 AMC23 的数学原始六项评测在相应训练目录的 `eval/final_mean8.summary.json`，提前触发的早停点在 FULL 的 `eval/early-stop/final_mean8.summary.json`。
 
 ## 磁盘与自动清理
 
-七组 paired-FULL 均在第106步保存最终模型，最多保留1个 checkpoint，保存内容仅为模型，不保存优化器状态。
+七组 paired-FULL 均在第106步保存最终模型，常规终点保留1个 checkpoint，提前触发时另保留1个早停 checkpoint，保存内容仅为模型，不保存优化器状态。
 
 默认每组完成全部评测后，立即删除该组输出目录内的 `training/checkpoints/` 和 `merged/`，无需等七组全部结束。Code 先完成两项 benchmark 的 CPU 判题再清理；只训练或只生成回答的阶段保留权重，评测失败也保留权重以便重试。
 
@@ -171,13 +173,13 @@ H200 套件使用默认模型和数学题集时，在 4B FULL 的数学评测后
 - `model_cleanup.json` 记录删除路径、文件大小与完成状态；`model_artifact_metadata.json` 保留 checkpoint 的配置和步数等文本元数据。两份记录进入结果 ZIP。
 - 不删除共享 Hugging Face 缓存、原始学生/教师模型、数据集或其他实验目录。
 - 需要保留训练后权重时，在总入口或单模型入口添加 `--keep-model-files`。默认不需要额外参数。
-- 单模型入口显式指定 `--model-artifacts-root` 时，checkpoint 和合并权重会保留在该目录下。显式指定 `--save-freq` 会生成可续训的 checkpoint，同时保存模型、优化器和额外状态，磁盘预算需要相应增加。
+- 单模型入口显式指定 `--model-artifacts-root` 时，checkpoint 和合并权重写到外部目录。默认在完整评测成功后清理本次运行拥有的权重，`--keep-model-files` 可保留它们。显式指定 `--save-freq` 会生成可续训的 checkpoint，同时保存模型、优化器和额外状态，磁盘预算需要相应增加。
 
 默认磁盘余量为 5 GiB，可通过环境变量 `OPD_MIN_FREE_GIB` 调高。Base 首次下载前按固定模型版本的实际缺失文件大小检查缓存盘，在写压缩原文、判分和汇总前检查输出盘。打包时按实际写出的 ZIP 字节检查目标盘，旧 ZIP 保留到新 ZIP 成功完成；打包失败时移除本次临时 ZIP。总套件启动各子任务前及运行中约每秒检查输出、数据、临时目录和 Hugging Face 缓存所在的文件系统，低于余量会中止套件。监控依据文件系统可用空间。独立用户配额、其他并发写入和进程退出延迟仍会影响实际余量。
 
-运行整套时，模型合并阶段的峰值包含训练 checkpoint 和合并后的权重，且套件会预先缓存所选模型。1.7B、4B 提前触发早停时，还会多一份只含模型权重和配置的 checkpoint。正常流程先合并并评测早停模型，释放临时合并副本后再合并 FULL。成功清理时打印本组 checkpoint 和合并权重的逻辑字节数。共享下载缓存跨实验保留。打整套 ZIP 时，源结果和 ZIP 同时占用空间；`--no-package` 可跳过打包。
+运行整套时，模型合并阶段的峰值包含训练 checkpoint 和合并后的权重，且套件会预先缓存所选模型。任一规模提前触发早停时，还会多一份只含模型权重和配置的 checkpoint。正常流程先合并并评测早停模型，释放临时合并副本后再合并 FULL。成功清理时打印本组 checkpoint 和合并权重的逻辑字节数。共享下载缓存跨实验保留。打整套 ZIP 时，源结果和 ZIP 同时占用空间；`--no-package` 可跳过打包。
 
-按FP32 checkpoint加BF16合并模型估算，两份临时模型约为每参数6字节；33B约198 GB（184 GiB）。实际大小以本次文件记录为准，原始模型下载缓存、数据集、统计与ZIP占用另算。默认逐组清理能避免七组完成后的权重副本长期累积，但不能消除当前正在训练/合并/评测那一组的磁盘峰值。
+按FP32 checkpoint加BF16合并模型估算，两份临时模型约为每参数6字节；33B约198 GB（184 GiB）；提前触发时再计一份按 FP32 估算约 132 GB 的早停分片，合计约 330 GB（307 GiB），共享缓存及统计另计。33B 的 FULL 判题完成后才启动同规模复用训练。实际大小以本次文件记录为准，原始模型下载缓存、数据集、统计与ZIP占用另算。默认逐组清理能避免七组完成后的权重副本长期累积，但不能消除当前正在训练/合并/评测那一组的磁盘峰值。
 
 统计协议和保存频率保持原样。逐token参数梯度诊断保存能量及抽样统计，不把每个token的完整参数梯度向量写入磁盘。
 

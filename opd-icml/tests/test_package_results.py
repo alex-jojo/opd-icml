@@ -246,6 +246,6 @@ def test_suite_suppresses_individual_zips_and_exports_one_archive_after_all_jobs
     with zipfile.ZipFile(exports.archive_path(run)) as archive:
         assert archive.testzip() is None
         assert 'suite/4b/eval/final_mean8.summary.json' in archive.namelist()
-        assert set(json.loads(archive.read('suite/rq4_comparison.json'))) == {'1.7b', '4b'}
+        assert set(json.loads(archive.read('suite/rq4_comparison.json'))) == set(h200.EXPERIMENTS)
         assert json.loads(archive.read(exports.MANIFEST))['phase'] == 'suite-complete'
         assert not any('model.safetensors' in name for name in archive.namelist())

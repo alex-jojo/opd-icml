@@ -1,13 +1,12 @@
-"""Measured training costs and five-benchmark scores for the matched RQ4 runs."""
+"""Measured training costs and task-specific evaluation scores for matched RQ4 runs."""
 from contextlib import contextmanager
 import json
 import time
 
-from code_benchmarks import save_json
+from code_benchmarks import BENCHMARKS as CODE_BENCHMARKS, save_json
 from project_paths import project_absolute
 
 
-SCALES = ('1.7b', '4b')
 STRATEGIES = ('full', 'early-stop', 'reuse')
 BENCHMARKS = ('math500', 'hmmt25_feb', 'hmmt26_feb', 'aime26', 'minerva')
 
@@ -72,16 +71,30 @@ def five_benchmark_scores(scores):
     return dict(mean_at_8=means, five_benchmark_mean_at_8=sum(means.values())/len(means))
 
 
-def save_arm(run, scale, strategy, end):
+def evaluation_scores(directory, task):
+    if task == 'math':
+        return five_benchmark_scores(read(directory/'final_mean8.summary.json'))
+    summary = read(directory/'code_pass8/summary.json')
+    if summary['metric'] != 'pass@8' or set(summary['benchmarks']) != set(CODE_BENCHMARKS):
+        raise ValueError('Expected both code pass@8 benchmarks')
+    scores = {}
+    for name, row in summary['benchmarks'].items():
+        if row['problems'] <= 0 or row['samples'] != 8*row['problems'] or not 0 <= row['pass@8'] <= 1:
+            raise ValueError(f'Incomplete pass@8 results for {name}')
+        scores[name] = row['pass@8']
+    return dict(pass_at_8=scores, two_benchmark_mean_pass_at_8=sum(scores.values())/len(scores))
+
+
+def save_arm(run, scale, strategy, end, task='math'):
     timing = read(run/'rq4_training_time.json')
     attempts = timing['attempts']
     if (timing['scale'], timing['strategy']) != (scale, strategy) or attempts[-1]['status'] != 'complete':
         raise ValueError('RQ4 evaluation and completed training strategy must match')
     complete = timing['complete_history'] and all('seconds' in attempt for attempt in attempts)
     wall = sum(attempt['seconds'] for attempt in attempts) if complete else None
-    scores = read(run/'eval/final_mean8.summary.json')
+    scores = evaluation_scores(run/'eval', task)
     summary = dict(scale=scale, strategy=strategy, **end, training_wall_seconds=wall,
-                   **five_benchmark_scores(scores))
+                   task=task, **scores)
     save_json(run/'training/training_records/rq4/summary.json', summary)
     return summary
 
@@ -123,22 +136,28 @@ def prefix_wall_seconds(timing, selected_at):
 
 
 def save_shared_arm(run, full, selection):
+    task = full.get('task', 'math')
     at_budget = selection['uses_full_endpoint']
-    evaluation = 'eval/final_mean8' if at_budget else 'eval/early-stop/final_mean8'
-    scores = five_benchmark_scores(read(run/(evaluation + '.summary.json')))
+    directory = 'eval' if at_budget else 'eval/early-stop'
+    scores = evaluation_scores(run/directory, task)
+    if task == 'code':
+        responses = dict(responses_files={name: f'{directory}/code_pass8/{name}/generations.jsonl'
+                                          for name in CODE_BENCHMARKS})
+    else:
+        responses = dict(responses_file=f'{directory}/final_mean8.jsonl')
     wall = (full['training_wall_seconds'] if at_budget else
             prefix_wall_seconds(read(run/'rq4_training_time.json'), selection['selected_at_unix']))
     summary = dict(scale=full['scale'], strategy='early-stop', source_strategy='full',
                    rollout_rounds=selection['step'], optimizer_updates=selection['optimizer_updates'],
                    stop_reason=selection['stop_reason'], training_wall_seconds=wall, uses_full_endpoint=at_budget,
                    timing_basis='full_endpoint' if at_budget else 'full_prefix_through_checkpoint_save',
-                   responses_file=evaluation + '.jsonl', **scores)
+                   task=task, **responses, **scores)
     save_json(run/'training/training_records/rq4/early_stop_summary.json', summary)
 
 
 def save_comparison(plan):
     groups = {}
-    for queue in plan['small_queues']:
+    for queue in [*plan['small_queues'], plan.get('large', [])]:
         for job in queue:
             strategy = job.get('rq4_strategy')
             if strategy:
@@ -171,6 +190,9 @@ def save_comparison(plan):
         for row in arms.values():
             wall, base = row['training_wall_seconds'], reference['training_wall_seconds']
             row['training_time_saved_fraction'] = 1-wall/base if wall is not None and base else None
-            row['five_benchmark_change_pp'] = 100*(row['five_benchmark_mean_at_8']-reference['five_benchmark_mean_at_8'])
+            if reference.get('task') == 'code':
+                row['two_benchmark_change_pp'] = 100*(row['two_benchmark_mean_pass_at_8']-reference['two_benchmark_mean_pass_at_8'])
+            else:
+                row['five_benchmark_change_pp'] = 100*(row['five_benchmark_mean_at_8']-reference['five_benchmark_mean_at_8'])
     if groups:
         save_json(project_absolute(plan['output'])/'rq4_comparison.json', groups)

@@ -127,6 +127,29 @@ def test_shared_weights_survive_until_early_evaluation_is_complete(tmp_path):
     assert not early.exists() and summary.is_file() and (run/'eval/early-stop/final_mean8.jsonl').is_file()
 
 
+def test_missing_code_early_grade_retains_all_weights(tmp_path):
+    import shutil
+    run = tmp_path/'run'
+    models(run)
+    code_results(run)
+    snapshot = write(run, 'training/checkpoints/early_stop/actor/model.pt')
+    save_json(run/'rq4_training_time.json', dict(shared_early_stop=True))
+    save_json(snapshot.parent.parent/'selection.json', dict(step=25, uses_full_endpoint=False))
+    save_json(run/'training/training_records/rq4/early_stop_summary.json',
+              dict(source_strategy='full', rollout_rounds=25, uses_full_endpoint=False))
+    output = run/'eval/early-stop/code_pass8'
+    shutil.copytree(run/'eval/code_pass8', output)
+    receipt = output/'humanevalplus/grading.complete.json'
+    proof = receipt.read_bytes()
+    receipt.unlink()
+    with pytest.raises(FileNotFoundError):
+        cleanup.cleanup_completed_models(run, 'code')
+    assert snapshot.is_file() and (run/'merged/model.safetensors').is_file()
+    receipt.write_bytes(proof)
+    cleanup.cleanup_completed_models(run, 'code')
+    assert not snapshot.exists() and (output/'humanevalplus/grades.jsonl').is_file()
+
+
 def test_interrupted_early_merge_reclaims_its_only_owned_workdir(tmp_path):
     actor = write(tmp_path, 'actor/model.pt')
     write(tmp_path, 'eval-merge-tmp/.opd-early-eval')

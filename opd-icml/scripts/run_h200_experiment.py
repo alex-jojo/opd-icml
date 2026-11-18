@@ -55,7 +55,7 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--scale', required=True, choices=EXPERIMENTS)
     p.add_argument('--rq4-strategy', choices=rq4_results.STRATEGIES,
-                   help='Matched 1.7B/4B math strategy, with training timing and paper Mean@8')
+                   help='Matched FULL, early-stop or reuse strategy with task-specific scores and timing')
     p.add_argument('--task', choices=['math', 'code'], help='Default: DeepSeek code; Qwen/Gemma math')
     p.add_argument('--stage', choices=['all', 'train', 'eval', 'train-generate', 'generate', 'grade'], default='all')
     p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
@@ -114,7 +114,7 @@ def build_plan(args, environment):
     label = f'rq4-{strategy}' if strategy else 'paired-full'
     run = project_absolute(args.output or Path('runs/h200') / args.scale / f'{task}-{label}')
     legacy_full = False
-    if args.resume or args.stage in ('eval', 'generate'):
+    if args.resume or args.stage in ('eval', 'generate', 'grade'):
         marker = run/'rq4_training_time.json'
         if marker.is_file():
             record = rq4_results.read(marker)
@@ -126,11 +126,8 @@ def build_plan(args, environment):
         elif strategy == 'full':
             # Runs predating the timing record cannot supply a first-stable checkpoint.
             legacy_full = True
-    elif (strategy is None and args.scale in rq4_results.SCALES and task == 'math'
-          and project_absolute(args.math_benchmarks) == ROOT/'data/benchmarks.jsonl'):
+    elif strategy is None and (task == 'code' or project_absolute(args.math_benchmarks) == ROOT/'data/benchmarks.jsonl'):
         strategy = 'full'
-    if strategy and (args.scale not in rq4_results.SCALES or task != 'math'):
-        raise ValueError('Paper RQ4 strategies use 1.7B or 4B math')
     if args.stage == 'grade' and task != 'code':
         raise ValueError('--stage grade is for code; math uses its existing combined scoring protocol')
     micro, teacher_micro, sequences, offload = (PRESETS[args.scale] if args.profile == 'throughput'
@@ -276,6 +273,33 @@ def checked_actor(actor, gpus):
     return actor
 
 
+def early_code_command(plan, run):
+    command = list(plan['evaluate'])
+    command[command.index('--output-dir') + 1] = project_relative(run/'eval/early-stop/code_pass8')
+    return command
+
+
+def grade_code(plan, run, env):
+    strategy = plan['rq4_strategy']
+    cpu = dict(env, CUDA_VISIBLE_DEVICES='')
+    if strategy:
+        # The generation stage validates the actual endpoint and writes this only
+        # after both sets of generations complete. CPU regrading needs no weights.
+        receipt = rq4_results.read(run/'training/training_records/rq4/code_endpoints.json')
+        if (receipt['scale'], receipt['strategy']) != (plan['scale'], strategy):
+            raise ValueError('Code grading endpoints do not match this experiment')
+        selection = receipt['early_stop']
+        if bool(selection) != plan['shared_early_stop']:
+            raise ValueError('Code grading endpoints do not match the early-stop mode')
+        if selection and not selection['uses_full_endpoint']:
+            run_command(early_code_command(plan, run) + ['--grade-only'], cpu, run/'logs/grade_early_stop.log')
+    run_command(plan['evaluate'] + ['--grade-only'], cpu, run/'logs/grade.log')
+    if strategy:
+        arm = rq4_results.save_arm(run, plan['scale'], strategy, receipt['endpoint'], 'code')
+        if selection:
+            rq4_results.save_shared_arm(run, arm, selection)
+
+
 def evaluate_early_checkpoint(plan, run, checkpoints, env):
     snapshot = checkpoints/'early_stop'
     actor = checked_actor(snapshot/'actor', plan['gpu_count'])
@@ -287,9 +311,13 @@ def evaluate_early_checkpoint(plan, run, checkpoints, env):
         merge[merge.index('--local_dir') + 1] = project_relative(actor)
         merge[merge.index('--target_dir') + 1] = merged
         run_command(merge, env, run/'logs/merge_early_stop.log')
-        evaluation = list(plan['evaluate'])
-        evaluation[evaluation.index('--model_path') + 1] = merged
-        evaluation[evaluation.index('--output_file') + 1] = project_relative(run/'eval/early-stop/final_mean8.jsonl')
+        if plan['task'] == 'code':
+            evaluation = early_code_command(plan, run) + ['--generate-only']
+            evaluation[evaluation.index('--model-path') + 1] = merged
+        else:
+            evaluation = list(plan['evaluate'])
+            evaluation[evaluation.index('--model_path') + 1] = merged
+            evaluation[evaluation.index('--output_file') + 1] = project_relative(run/'eval/early-stop/final_mean8.jsonl')
         run_command(evaluation, env, run/'logs/evaluate_early_stop.log')
 
 
@@ -315,7 +343,7 @@ def execute(args, plan, env):
     rq4 = run/'training/training_records/rq4'
     strategy = plan['rq4_strategy']
     if args.stage == 'grade':
-        run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
+        grade_code(plan, run, env)
         return
     training_stage = args.stage in ('all', 'train', 'train-generate')
     if training_stage and not args.resume and run.exists() and any(run.iterdir()):
@@ -386,8 +414,11 @@ def execute(args, plan, env):
         # Generate ALL benchmarks before CPU grading; suite scheduling can release
         # these GPUs immediately with train-generate/generate and grade separately.
         run_command(plan['evaluate'] + ['--generate-only'], env, run / 'logs/generate.log')
+        if strategy:
+            rq4_results.save_json(rq4/'code_endpoints.json', dict(scale=plan['scale'], strategy=strategy,
+                                  endpoint=end, early_stop=selection))
         if args.stage not in ('train-generate', 'generate'):
-            run_command(plan['evaluate'] + ['--grade-only'], dict(env, CUDA_VISIBLE_DEVICES=''), run / 'logs/grade.log')
+            grade_code(plan, run, env)
     else:
         run_command(plan['evaluate'], env, run / 'logs/evaluate.log')
         if plan['evaluate_base']:

@@ -122,10 +122,10 @@ def build_suite(args, environment, cpus, free_gib):
     for i, scale in enumerate(selected_small):
         slot = i % slots
         cores = training_cpus[slot::slots]
-        strategies = ('full', 'reuse') if scale in rq4_results.SCALES else (None,)
-        for strategy in strategies:
+        for strategy in ('full', 'reuse'):
             queues[slot].append(job(scale, [devices[slot]], cores, slots, strategy))
-    large = [job(s, devices, training_cpus, 1) for s in LARGE if s in args.scales]
+    large = [job(s, devices, training_cpus, 1, strategy) for s in LARGE if s in args.scales
+             for strategy in ('full', 'reuse')]
     prepare = []
     if any(EXPERIMENTS[s].task == 'math' for s in args.scales):
         prepare.append([sys.executable, 'scripts/prepare_dapo14k.py', '--output', 'data/dapo14k_train.parquet'])
@@ -148,7 +148,7 @@ def print_execution_schedule(plan):
             rows.append((job['name'], ','.join(job['devices']),
                          f"stage 1, GPU queue position {position}"))
     for stage, job in enumerate(plan['large'], 2):
-        rows.append((job['scale'], ','.join(job['devices']),
+        rows.append((job['name'], ','.join(job['devices']),
                      f"stage {stage}, all selected GPUs"))
     print("\nModel                    | GPU IDs             | Execution order", flush=True)
     print("-" * 88, flush=True)
@@ -314,6 +314,11 @@ def schedule(plan, runner):
                     nxt = queue.pop(0)
                     pending[submit(gpu, nxt)] = (nxt, queue)
         for job in plan['large']:
+            # A four-GPU FULL can retain two checkpoints plus its merged model
+            # until CPU grading finishes. Reclaim them before training its reuse arm.
+            for future, previous in list(grades.items()):
+                if previous['scale'] == job['scale']:
+                    future.result()
             collect_grades()
             future = submit(gpu, job)
             while not future.done():
