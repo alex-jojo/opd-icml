@@ -11,6 +11,7 @@ import pickle
 import re
 import time
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 import numpy as np
 import torch
@@ -360,10 +361,13 @@ class GradientStudy:
         self.calls=0
 
     def start(self,train,basis,payload,checkpoint):
-        self.started=time.perf_counter();self.diagnostic_seconds=0.;self.checkpoint=checkpoint;self.train=train;self.basis=basis.float()
+        self.started=time.perf_counter();self.diagnostic_seconds=0.;self.checkpoint=checkpoint;self.basis=basis.float()
         self.payload=payload;self.directory=self.output/f'checkpoint_{checkpoint:03d}'
         self.layout=ParameterLayout(self.actor.actor_module);self.calls=0;self.report={}
-        self.subset_alignment = self.cross_batch() if payload.get('geometry',False) else None
+        self.subset_alignment = None
+        detailed = payload.get('geometry', False)
+        if detailed or self.cfg.get('subset_alignment_every_update', False):
+            self.subset_alignment = self.cross_batch(train, basis, checkpoint, detailed=detailed)
         if payload.get('paths') is not None:self.path_variance(payload['paths'])
         self.validation=payload['validation']
         self.val_grad,self.before,val_moments=self.grad(self.validation,normalization='response',capture_hidden=True)
@@ -384,27 +388,40 @@ class GradientStudy:
         self.calls+=1
         return gradient(self.actor,*args,basis=self.basis,**kwargs)
 
-    def cross_batch(self):
+    def cross_batch(self, train, basis, checkpoint, *, detailed=False):
         m=int(self.cfg.get('batches',4))
-        if len(self.train)%m or (len(self.train)//m)%dp.size():raise ValueError('diagnostic batch split must divide DP ranks')
-        size=len(self.train)//m
+        if len(train)%m or (len(train)//m)%dp.size():raise ValueError('diagnostic batch split must divide DP ranks')
+        size=len(train)//m
         # Stable random partition avoids reward/length sorting defining the batches.
-        indices=np.random.default_rng(int(self.cfg.get('seed',42))+self.checkpoint).permutation(len(self.train))
-        batches=[self.train.select_idxs(indices[i*size:(i+1)*size].tolist()) for i in range(m)]
+        indices=np.random.default_rng(int(self.cfg.get('seed',42))+checkpoint).permutation(len(train))
+        train_rows = indices.reshape(m,size).tolist()
+        batches=[train.select_idxs(rows) for rows in train_rows]
+        if self.payload is not None:
+            read_gradient, layout = self.grad, self.layout
+        else:
+            read_gradient = partial(gradient, self.actor, basis=basis)
+            layout = ParameterLayout(self.actor.actor_module)
         hidden={}
         def oracle(i):
-            v,_,mom=self.grad(batches[i],capture_hidden=i not in hidden)
+            v,_,mom=read_gradient(batches[i],capture_hidden=i not in hidden)
             if mom is not None:
-                hidden[i]=mom
-                atomic_moment(self.directory/f'train_batch_{i}_hidden_moments.npz',mom)
+                hidden[i]=mom if dp.primary() else None
+                if detailed:
+                    atomic_moment(self.directory/f'train_batch_{i}_hidden_moments.npz',mom)
             return v
-        grams,replays=exact_gram(oracle,self.layout,m)
+        grams,replays=exact_gram(oracle,layout,m)
+        def hidden_comparison():
+            items = [scope_geometry(hidden[i]['second'], hidden[i]['mean'], hidden[i]['basis'],
+                                    subset_only=not detailed) for i in range(m)]
+            return compare_hidden(items, subset_only=not detailed)
+        if not detailed:
+            return dp.primary_call(lambda: subset_alignment(train_rows, gram_summary(grams['all']),
+                                                             hidden_comparison()['full']))
         effective=None
         if self.actor.config.policy_loss.get('hidden_projection',{}).get('enabled',False):
             eg,_=exact_gram(lambda i:self.grad(batches[i],route='u')[0],self.layout,m)
             effective={key:gram_summary(value) for key,value in eg.items()}
         groups = {key:gram_summary(k) for key,k in grams.items()}
-        train_rows = indices.reshape(m,size).tolist()
         atomic_json(self.directory/'parameter_cross_batch.json',dict(
             groups=groups,
             raw_opd_groups=True,effective_r128_groups=effective,
@@ -412,7 +429,7 @@ class GradientStudy:
             train_indices=train_rows,exact_gradient_evaluations=replays,
             comparison='same checkpoint, different disjoint subsets of current on-policy training rollout'))
         # CPU decompositions once, not once per GPU.
-        result=dp.primary_call(lambda:compare_hidden([scope_geometry(hidden[i]['second'],hidden[i]['mean'],hidden[i]['basis']) for i in range(m)]))
+        result=dp.primary_call(hidden_comparison)
         atomic_json(self.directory/'hidden_cross_batch.json',result)
         self.report['cross_batch_gradient_evaluations']=replays
         self.report['cross_batch_complete']=True
@@ -435,7 +452,7 @@ class GradientStudy:
         record = dict(checkpoint_before=self.checkpoint, optimizer_update=self.checkpoint+1,
                       gain_epsilon=result['threshold'], kl_before=result['kl_before'], kl_after=result['kl_after'],
                       gain=result['gain'], positive_fraction=result['positive_fraction'], responses=responses)
-        if self.subset_alignment is not None:
+        if self.payload.get('geometry', False) and self.subset_alignment is not None:
             record['subset_alignment'] = self.subset_alignment
         atomic_json(self.rq3_directory / f'checkpoint_{self.checkpoint:03d}.json', record)
 

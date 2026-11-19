@@ -25,30 +25,35 @@ def gram_summary(gram):
         definition='variance / mean-gradient energy at the recorded batch scale; not batch-size-invariant GNS')
 
 
-def scope_geometry(second,mean,basis):
+def scope_geometry(second,mean,basis,*,subset_only=False):
     c=torch.as_tensor(second,dtype=torch.float64);mu=torch.as_tensor(mean,dtype=torch.float64)
-    u=torch.linalg.qr(torch.as_tensor(basis,dtype=torch.float64),mode='reduced').Q
-    cu=c@u;inside=u.T@cu;outside=c-cu@u.T-u@cu.T+u@inside@u.T
+    scopes=[('full',c,mu,len(c))]
+    if not subset_only:
+        u=torch.linalg.qr(torch.as_tensor(basis,dtype=torch.float64),mode='reduced').Q
+        cu=c@u;inside=u.T@cu;outside=c-cu@u.T-u@cu.T+u@inside@u.T
+        scopes.extend([('u',inside,u.T@mu,u.shape[1]),('outside',outside,mu-u@(u.T@mu),len(c)-u.shape[1])])
     result={}
-    for name,m,v,d in [('full',c,mu,len(c)),('u',inside,u.T@mu,u.shape[1]),
-                       ('outside',outside,mu-u@(u.T@mu),len(c)-u.shape[1])]:
+    for name,m,v,d in scopes:
         entry=dict(mean=v.numpy(),dimension=d,mean_energy=float(v@v),energy=float(torch.trace(m)))
         entry['coherence']=entry['mean_energy']/entry['energy'] if entry['energy']>1e-30 else None
         for label,matrix in [('uncentered',m),('centered',m-v[:,None]*v[None,:])]:
-            e,q=torch.linalg.eigh((matrix+matrix.T)*.5);e=e.flip(0)[:d].clamp_min(0);q=q.flip(1)[:,:min(128,d)]
+            if subset_only and label=='uncentered':continue
+            e,q=torch.linalg.eigh((matrix+matrix.T)*.5);e=e.flip(0)[:d].clamp_min(0)
+            keep=min(4 if subset_only else 128,d)
+            q=q[:,q.shape[1]-keep:].flip(1).contiguous()
             entry[label]=dict(eigenvalues=e.numpy(),vectors=q.numpy())
         result[name]=entry
     return result
 
 
-def compare_hidden(items):
+def compare_hidden(items,*,subset_only=False):
     result={}
-    for scope in ('full','u','outside'):
+    for scope in items[0]:
         means=np.stack([x[scope]['mean'] for x in items]);out=gram_summary(means@means.T)
         out['coherence']=[x[scope]['coherence'] for x in items];out['overlap']={}
         d=items[0][scope]['dimension']
-        for label in ('uncentered','centered'):
-            for k in (1,4,8,16,32,64,128):
+        for label in (('centered',) if subset_only else ('uncentered','centered')):
+            for k in ((4,) if subset_only else (1,4,8,16,32,64,128)):
                 if k>d:continue
                 matrix=np.full((len(items),len(items)),np.nan)
                 for i,a in enumerate(items):

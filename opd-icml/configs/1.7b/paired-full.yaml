@@ -91,6 +91,7 @@
         },
         "fixed_heldout_probe_size": 0,
         "gradient_study": {
+          "subset_alignment_every_update": true,
           "parameter_tokens": {
             "enabled": true,
             "mode": "exact_all"

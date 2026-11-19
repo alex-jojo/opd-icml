@@ -106,6 +106,13 @@ def worker(rank, address, output):
         assert [row['source_index'] for row in saved['responses']] == [71, 32]
         np.testing.assert_allclose([row['kl_before'] for row in saved['responses']], before, atol=1e-6)
         np.testing.assert_allclose([row['kl_after'] for row in saved['responses']], after, atol=1e-6)
+        # Replay the same partition on both ranks, including the compact training-only path.
+        train = data.select_idxs([0, 1]*8)
+        basis = torch.eye(4)[:, :2]
+        compact = study.cross_batch(train, basis, 11)
+        study.start(train, basis, dict(validation=validation, geometry=True), 11)
+        assert compact == study.subset_alignment and len(compact['pairs']) == 6
+        assert all(p.grad is None for p in actor.actor_module.parameters())
     finally:
         dist.destroy_process_group()
 

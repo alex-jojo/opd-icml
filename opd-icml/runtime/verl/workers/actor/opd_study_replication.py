@@ -51,6 +51,7 @@ class StudyReplication:
             # A resumed FULL run already has its committed early checkpoint.
             self.stability.stable = True
         self.pending_gradient = None
+        self.pending_subset_alignment = None
         reuse=int(self.cfg.get('reuse',1));self.completed=(step-1)*reuse
         self.measure=(step==1 or any((self.completed+i)%self.interval==0 for i in range(1,reuse+1)) or step==int(self.cfg['rounds']))
         device=next(self.actor.actor_module.parameters()).device
@@ -123,6 +124,13 @@ class StudyReplication:
         self.study.start(self.train,self.u,payload,self.completed)
 
     def before_inner(self,inner):
+        if self.study_cfg.get('subset_alignment_every_update', False):
+            if self.study.payload is not None:
+                self.pending_subset_alignment = self.study.subset_alignment
+            else:
+                started = time.perf_counter()
+                self.pending_subset_alignment = self.study.cross_batch(self.train, self.u, self.completed + inner)
+                self.extra += time.perf_counter() - started
         if int(self.cfg.get('reuse', 1)) > 1:
             update = self.completed + inner + 1
             self.measure = (update == 1 or update % self.interval == 0 or
@@ -365,9 +373,14 @@ class StudyReplication:
         self.extra+=time.perf_counter()-started
 
     def after_inner(self,inner):
+        update = self.completed + inner
+        if self.pending_subset_alignment is not None:
+            record = dict(checkpoint_before=update-1, optimizer_update=update, rollout_round=self.step,
+                          inner=inner, **self.pending_subset_alignment)
+            dp.primary_call(lambda: atomic_json(self.study.rq3_directory / f'subset_alignment_{update:03d}.json', record))
+            self.pending_subset_alignment = None
         if self.study.payload is not None and inner==1:self.metrics.update(self.study.after_update())
         if not self.full:return
-        update = self.completed + inner
         started = time.perf_counter()
         current = panel_hidden(self.actor, self.panel)
         reshard_after_readout(self.actor)

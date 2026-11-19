@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from test_parameter_tokens import ROOT, make_actor, make_data, objective, study_module
+from test_rq2_motion import configure
 
 sys.path.insert(0, str(ROOT/'scripts'))
 from package_results import package_results
@@ -45,7 +46,8 @@ def subset_reference(actor, batch, rows):
     return torch.cat([p.flatten() for p in param]).double(), g.mean(0), axes
 
 
-def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch):
+@pytest.mark.parametrize('reuse', [1, 2], ids=['full', 'reuse'])
+def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch, reuse):
     torch.manual_seed(27)
     run = tmp_path/'training'
     cfg = json.loads((ROOT/'configs/1.7b/paired-full.yaml').read_text())['actor_rollout_ref']['actor']['policy_loss']['gradient_study']
@@ -58,7 +60,16 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch):
     model.lm_head = torch.nn.Linear(8, 16, bias=False)
     actor.actor_optimizer = torch.optim.AdamW(model.parameters(), lr=.001)
     actor.config.ppo_micro_batch_size_per_gpu = 32
-    study = study_module.GradientStudy(actor, cfg, run/'replication')
+    configure(actor, run, rounds=106//reuse, reuse=reuse)
+    actor.config.policy_loss.update(gradient_study={**cfg, 'parameter_tokens': {}}, jump_reuse_updates=reuse)
+    replication = study_module.StudyReplication(actor)
+    study = replication.study
+    subset_checks = []
+    cross_batch = study.cross_batch
+    def measured(train, basis, checkpoint, *, detailed=False):
+        subset_checks.append((checkpoint, detailed))
+        return cross_batch(train, basis, checkpoint, detailed=detailed)
+    monkeypatch.setattr(study, 'cross_batch', measured)
     train = batch128()
     directory = run/'training_records/rq3'
     spec = importlib.util.spec_from_file_location('rq3_fixed_validation', ROOT/'runtime/verl/trainer/ppo/opd_fixed_validation.py')
@@ -66,7 +77,7 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch):
     spec.loader.exec_module(fixed)
     source = list(range(2000, 2128))
     trainer = SimpleNamespace(config=SimpleNamespace(actor_rollout_ref=SimpleNamespace(
-        actor=SimpleNamespace(policy_loss={'gradient_study': cfg}))), train_dataset=list(range(256)),
+        actor=actor.config)), train_dataset=list(range(256)),
         opd_validation_source_indices=source, opd_validation_output=run/'validation128')
     trainer.opd_validation_output.mkdir(parents=True)
     readouts = []
@@ -78,28 +89,51 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch):
     monkeypatch.setattr(fixed, 'readout', readout)
     monkeypatch.setattr(fixed, 'generate', lambda trainer, rows: batch128().select_idxs(list(range(len(rows)))))
     for update in range(1, 107):
-        trainer.global_steps = update
         checkpoint = update-1
-        fixed.attach(trainer, train)
-        payload_bytes = train.meta_info.pop('gradient_study_payload', None)
+        trainer.global_steps, inner = divmod(checkpoint, reuse)
+        trainer.global_steps += 1
+        payload_bytes = None
+        if inner == 0:
+            fixed.attach(trainer, train)
+            payload_bytes = train.meta_info.pop('gradient_study_payload', None)
+            replication.begin(train, None, trainer.global_steps)
         if payload_bytes:
             payload = pickle.loads(payload_bytes)
             validation = payload['validation']
             before = response_kl(actor, validation)
-            study.start(train, torch.eye(8)[:, :2], payload, checkpoint)
-            if payload['geometry']:
-                partition = np.random.default_rng(cfg['seed']+checkpoint).permutation(128).reshape(4, 32).tolist()
-                references = [subset_reference(actor, train, rows) for rows in partition]
+            replication.start_study(payload)
         actor.actor_optimizer.zero_grad(set_to_none=True)
+        replication.before_inner(inner)
+        assert all(p.grad is None for p in model.parameters())
+        alignment_path = directory/f'subset_alignment_{update:03d}.json'
+        assert not alignment_path.exists()
+        partition = np.random.default_rng(cfg['seed']+checkpoint).permutation(128).reshape(4, 32).tolist()
+        check_values = checkpoint in (0, 1, 10, 30, 60, 100, 105)
+        if check_values:
+            references = [subset_reference(actor, train, rows) for rows in partition]
         objective(actor, train)[train.batch['response_mask'].bool()].mean().backward()
         if payload_bytes:
             study.before_update()
         actor.actor_optimizer.step()
+        calls_before_readout = study.calls
+        replication.after_inner(inner+1)
+        assert study.calls == calls_before_readout
+        cross = json.loads(alignment_path.read_text())
+        assert (cross['checkpoint_before'], cross['optimizer_update']) == (checkpoint, update)
+        assert (cross['rollout_round'], cross['inner']) == (trainer.global_steps, inner+1)
+        assert cross['subset_train_rows'] == partition and len(cross['pairs']) == 6
+        if check_values:
+            for pair, (a, b) in zip(cross['pairs'], combinations(range(4), 2), strict=True):
+                assert (pair['subset_a'], pair['subset_b']) == (a, b)
+                pa, ma, va = references[a]
+                pb, mb, vb = references[b]
+                assert pair['parameter_gradient_cosine'] == pytest.approx(torch.cosine_similarity(pa, pb, dim=0).item(), abs=2e-6)
+                assert pair['mean_hidden_gradient_cosine'] == pytest.approx(torch.cosine_similarity(ma, mb, dim=0).item(), abs=2e-6)
+                assert pair['centered_covariance_top4_overlap'] == pytest.approx((va@vb.T).square().sum().item()/4, abs=2e-5)
+            for key, value in cross['means'].items():
+                assert cross['valid_pairs'][key] == 6 and value == pytest.approx(np.mean([p[key] for p in cross['pairs']]))
         if not payload_bytes:
             continue
-        calls_before_readout = study.calls
-        study.after_update()
-        assert study.calls == calls_before_readout
         after = response_kl(actor, validation)
         record = json.loads((directory/f'checkpoint_{checkpoint:03d}.json').read_text())
         assert (record['checkpoint_before'], record['optimizer_update']) == (checkpoint, update)
@@ -118,23 +152,17 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch):
         assert record['positive_fraction'] == (gains > record['gain_epsilon']).mean()
         assert ('subset_alignment' in record) == (checkpoint in [10, 30, 60, 100])
         if 'subset_alignment' in record:
-            cross = record['subset_alignment']
-            assert cross['subset_train_rows'] == partition
-            for pair, (a, b) in zip(cross['pairs'], combinations(range(4), 2), strict=True):
-                assert (pair['subset_a'], pair['subset_b']) == (a, b)
-                pa, ma, va = references[a]
-                pb, mb, vb = references[b]
-                assert pair['parameter_gradient_cosine'] == pytest.approx(torch.cosine_similarity(pa, pb, dim=0).item(), abs=2e-6)
-                assert pair['mean_hidden_gradient_cosine'] == pytest.approx(torch.cosine_similarity(ma, mb, dim=0).item(), abs=2e-6)
-                assert pair['centered_covariance_top4_overlap'] == pytest.approx((va@vb.T).square().sum().item()/4, abs=2e-5)
-            for key, value in cross['means'].items():
-                assert cross['valid_pairs'][key] == 6 and value == pytest.approx(np.mean([p[key] for p in cross['pairs']]))
+            assert all(cross[key] == value for key, value in record['subset_alignment'].items())
     fixed.terminal(trainer)
     assert readouts == [*range(0, 101, 10), 106]
+    assert subset_checks == [(i, i in cfg['geometry_steps']) for i in range(106)]
+    detailed_files = list((run/'replication/gradient_study').glob('checkpoint_*/train_batch_*_hidden_moments.npz'))
+    assert len(detailed_files) == len(cfg['geometry_steps'])*cfg['batches']
     with ZipFile(package_results(run)) as archive:
         prefix = 'training/training_records/rq3/'
         assert sorted(n for n in archive.namelist() if n.startswith(prefix)) == [
-            f'{prefix}checkpoint_{i:03d}.json' for i in range(0, 101, 10)]
+            f'{prefix}checkpoint_{i:03d}.json' for i in range(0, 101, 10)] + [
+            f'{prefix}subset_alignment_{i:03d}.json' for i in range(1, 107)]
 
 
 def test_undefined_pairs_are_preserved_and_excluded_from_means():

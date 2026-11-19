@@ -340,6 +340,7 @@ def test_matched_real_hydra_config(scale, strategy):
     assert policy.replication17.enabled and policy.replication17.mode == 'full'
     assert policy.replication17.freeze_step == 10 and policy.replication17.rank == 128
     assert policy.gradient_study.enabled and policy.gradient_study.validation_interval == 10
+    assert policy.gradient_study.subset_alignment_every_update
     assert list(policy.gradient_study.geometry_steps) == [10, 30, 60, 100]
     assert list(policy.gradient_study.path_steps) == [10, 50, 100]
     assert policy.replication17.adaptive_stability.enabled == (strategy != 'reuse')
