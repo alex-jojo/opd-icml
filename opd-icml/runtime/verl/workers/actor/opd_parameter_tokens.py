@@ -193,6 +193,7 @@ class FullParameterTokenAudit:
         from .opd_gradient_study import gradient_observation
         from .opd_top16 import forward, reverse_kl
         from .opd_graph_reuse import RetainedGraph
+        from .opd_diagnostic_checkpoint import diagnostic_checkpoint_cache
         started = time.perf_counter()
         # No training gradients need copying/restoring. No optimizer step.
         if any(p.grad is not None for p in self.actor.actor_module.parameters()):
@@ -233,6 +234,7 @@ class FullParameterTokenAudit:
         capacity = min(len(rows), 256)
         values = torch.empty((2, capacity), dtype=torch.float64, device=device)
         full_forward_tokens = actual_forward_tokens = forward_calls = 0
+        checkpoint_cache = dict(cached_matmuls=0, reused_matmuls=0, max_cached_bytes=0)
         with gradient_observation(self.actor):
             for row in np.unique(rows):
                 selected = data.select_idxs([row])
@@ -245,37 +247,44 @@ class FullParameterTokenAudit:
                     full_forward_tokens += inputs['input_ids'].numel() * len(group)
                     actual_forward_tokens += token_inputs['input_ids'].numel()
                     forward_calls += 1
-                    with timing.stage('forward'):
-                        _, logits, _, _ = forward(self.actor, token_inputs, float(data.meta_info['temperature']),
-                                                  token_inputs['opd_top16_ids'], diagnostics=False,
-                                                  response_positions=group)
-                    teacher_logits = token_inputs['opd_teacher_top16_logits'][:, group]
-                    token_losses = reverse_kl(logits, teacher_logits)[0]
-                    graph = RetainedGraph(self.actor.actor_module) if len(group) > 1 else None
-                    for index in range(len(group)):
-                        if index:
-                            graph.prepare_next_backward()
-                        token_loss = token_losses[index]
-                        with timing.stage('backward'):
-                            token_loss.backward(retain_graph=index+1 < len(group))
-                        slot = cursor % capacity
-                        with timing.stage('parameter_energy'):
-                            values[0, slot] = layout.local_squared_norm(device)
-                        values[1, slot] = token_loss.detach()
-                        self.actor.actor_optimizer.zero_grad(set_to_none=True)
-                        del token_loss
-                        cursor += 1
-                        if slot+1 == capacity or cursor == len(rows):
-                            batch_start = cursor - (slot + 1)
-                            measurements[:, batch_start:cursor] = layout.collect(values[:, :slot+1])
-                        if dp.primary() and (cursor % (16 if sampling is not None else 256) == 0 or cursor == len(rows)):
-                            print(f'[parameter tokens] {cursor}/{len(rows)}; '
-                                  f'{time.perf_counter()-started:.1f}s', flush=True)
-                    del logits, token_losses, graph
+                    with diagnostic_checkpoint_cache(self.actor.actor_module,
+                                                     single_backward=len(group) == 1) as cache:
+                        with timing.stage('forward'):
+                            _, logits, _, _ = forward(self.actor, token_inputs, float(data.meta_info['temperature']),
+                                                      token_inputs['opd_top16_ids'], diagnostics=False,
+                                                      response_positions=group)
+                        teacher_logits = token_inputs['opd_teacher_top16_logits'][:, group]
+                        token_losses = reverse_kl(logits, teacher_logits)[0]
+                        graph = RetainedGraph(self.actor.actor_module) if len(group) > 1 else None
+                        for index in range(len(group)):
+                            if index:
+                                graph.prepare_next_backward()
+                            token_loss = token_losses[index]
+                            with timing.stage('backward'):
+                                token_loss.backward(retain_graph=index+1 < len(group))
+                            slot = cursor % capacity
+                            with timing.stage('parameter_energy'):
+                                values[0, slot] = layout.local_squared_norm(device)
+                            values[1, slot] = token_loss.detach()
+                            self.actor.actor_optimizer.zero_grad(set_to_none=True)
+                            del token_loss
+                            cursor += 1
+                            if slot+1 == capacity or cursor == len(rows):
+                                batch_start = cursor - (slot + 1)
+                                measurements[:, batch_start:cursor] = layout.collect(values[:, :slot+1])
+                            if dp.primary() and (cursor % (16 if sampling is not None else 256) == 0 or cursor == len(rows)):
+                                print(f'[parameter tokens] {cursor}/{len(rows)}; '
+                                      f'{time.perf_counter()-started:.1f}s', flush=True)
+                        del logits, token_losses, graph
+                    checkpoint_cache['cached_matmuls'] += cache['cached_matmuls']
+                    checkpoint_cache['reused_matmuls'] += cache['reused_matmuls']
+                    checkpoint_cache['max_cached_bytes'] = max(checkpoint_cache['max_cached_bytes'], cache['cached_bytes'])
         stage_timing = timing.finish()
+        stage_timing['activation_checkpoint_cache'] = checkpoint_cache
         if dp.primary():
             print(f'[parameter tokens] completed: {forward_calls} forwards, {len(rows)} backwards '
                   '(checkpoint recomputations excluded)', flush=True)
+            print(f'[parameter tokens] checkpoint cache: {checkpoint_cache}', flush=True)
             print('[parameter tokens] stage seconds (' + stage_timing['clock'] + '): ' +
                   ', '.join(f'{k}={v:.3f}' for k,v in stage_timing['stage_seconds'].items()), flush=True)
         result = dict(row=rows, pos=positions, energy=measurements[0], diagnostic_kl=measurements[1],

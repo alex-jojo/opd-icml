@@ -350,6 +350,7 @@ def gradient(actor,data,basis,route='full',normalization='token',capture_hidden=
     if hasattr(actor,'fixed_u_adapter'):
         from .opd_adapter_diagnostics import cached_gradient
         return cached_gradient(actor,data,basis,route,normalization,capture_hidden)
+    from .opd_diagnostic_checkpoint import diagnostic_checkpoint_cache
     layout=ParameterLayout(actor.actor_module);actor.actor_optimizer.zero_grad(set_to_none=True)
     device=next(actor.actor_module.parameters()).device
     replicated=len(data)%dp.size()!=0
@@ -377,11 +378,12 @@ def gradient(actor,data,basis,route='full',normalization='token',capture_hidden=
                     h.register_hook(backward)
                 handle=_final_norm_module(actor.actor_module).register_forward_hook(hook)
             try:
-                _,z,_,_=forward(actor,x,float(data.meta_info['temperature']),x['opd_top16_ids'],diagnostics=False)
-                kl=reverse_kl(z,x['opd_teacher_top16_logits'])
-                per=(kl*mask).sum(1)/mask.sum(1).clamp_min(1) if collect_losses or normalization!='token' else None
-                loss=(kl*mask).sum()*factor/total if normalization=='token' else per.sum()*factor/len(data)
-                loss.backward()
+                with diagnostic_checkpoint_cache(actor.actor_module):
+                    _,z,_,_=forward(actor,x,float(data.meta_info['temperature']),x['opd_top16_ids'],diagnostics=False)
+                    kl=reverse_kl(z,x['opd_teacher_top16_logits'])
+                    per=(kl*mask).sum(1)/mask.sum(1).clamp_min(1) if collect_losses or normalization!='token' else None
+                    loss=(kl*mask).sum()*factor/total if normalization=='token' else per.sum()*factor/len(data)
+                    loss.backward()
                 if collect_losses:losses.append(per.detach())
                 # Release the previous microbatch's outputs before the next
                 # forward, including autograd references held by loss/per/z.

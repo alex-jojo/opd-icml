@@ -231,3 +231,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 日志新增 `[parameter tokens] stage seconds`，分别报告 `forward`、`backward`、`parameter_energy`。原始记录的 `parameter_gradient_measurement.stage_timing` 保存相同数据，训练指标使用 `timing/parameter_token_<stage>_seconds`。CUDA 使用事件计时，不在 token 循环中强制同步；`host_stage_seconds` 是另一套主机提交耗时，不能与设备时间相加。模型加载、验证、CPU 谱分解等不包含在这些 token 阶段中。
 
 额外统计不超过 30 分钟是待 H200 计时验证的目标，不是当前代码已证明达到的性能。默认 23 个重型观测点对应全部统计平均每点约 78 秒，另有验证和配对诊断成本。实现不会为了满足预算而静默降低样本数、跳过观测，或用 hidden 梯度替代参数梯度。
+
+
+单卡梯度诊断还启用有界 selective checkpoint 缓存：仅在一次 backward 的诊断图中缓存部分 `mm/addmm` 输出，反传时通过 PyTorch 公共 checkpoint API 复用，减少 Transformer 层内矩阵乘法重算。训练更新、64-token 抽样、全部观测点和统计定义保持原样。默认缓存上限 4 GiB，并按空闲显存扣除尚未分配的参数梯度与 2 GiB 工作区后，只取剩余量的四分之一；未选中的操作仍重算。多卡、CPU、activation offload、编译模型、自定义或 reentrant checkpoint，以及需要重复 backward 的保留图沿用原路径。可设 `OPD_DIAGNOSTIC_ACTIVATION_CACHE_GIB=0` 恢复原诊断计算路径。`[parameter tokens] checkpoint cache` 和结果中的 `stage_timing.activation_checkpoint_cache` 记录缓存字节数及实际复用的矩阵乘法次数；这些是操作计数，不能直接当作整轮训练的时间下降。FP32/BF16、Qwen3 与单进程 CPU FSDP 对照检验统计和后续更新；A100/H200 的实测耗时尚未测量。
