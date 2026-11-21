@@ -37,6 +37,14 @@ class GradientEnergy:
         from torch.nn.parallel import DistributedDataParallel
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
         self.layout = ParameterLayout(model)
+        # Energy needs only the union of real shard elements. Layer/group
+        # boundaries can be merged, but FSDP's alignment padding must be skipped.
+        self.ranges = []
+        for index, start, count, _ in self.layout.slices:
+            if self.ranges and self.ranges[-1][0] == index and self.ranges[-1][2] == start:
+                self.ranges[-1] = (index, self.ranges[-1][1], start + count)
+            elif count:
+                self.ranges.append((index, start, start + count))
         if self.layout.replicated_adapter is not None:
             raise ValueError('Full parameter token audit requires full-model training, not an adapter')
         self.divisor = 1
@@ -59,7 +67,7 @@ class GradientEnergy:
         # Keep reductions on their device; scalar conversion per tiny block
         # otherwise forces thousands of CUDA/host synchronizations per token.
         subtotals = {}
-        for index, start, count, _ in self.layout.slices:
+        for index, start, end in self.ranges:
             grad = self.layout.params[index].grad
             if grad is None:
                 continue
@@ -68,9 +76,15 @@ class GradientEnergy:
             flat = grad.detach().reshape(-1)
             if flat.device not in subtotals:
                 subtotals[flat.device] = torch.zeros((),device=flat.device,dtype=torch.float64)
-            for offset in range(start, start + count, 262144):
-                block = flat[offset:min(offset + 262144, start + count)].double()
-                subtotals[flat.device].add_(block.square().sum())
+            segment = flat[start:end]
+            if segment.is_cuda and torch.version.cuda and segment.is_contiguous() and segment.numel() >= 262144:
+                from .opd_gradient_energy_cuda import fused_squared_sum
+                if fused_squared_sum is not None:
+                    subtotals[flat.device].add_(fused_squared_sum(segment))
+                    continue
+            for block in segment.split(262144):
+                values = block.double()
+                subtotals[flat.device].add_(torch.dot(values, values))
         if not subtotals:
             return torch.zeros((), device=device, dtype=torch.float64)
         parts = iter(subtotals.values())

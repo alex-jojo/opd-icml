@@ -8,6 +8,26 @@ import torch
 from test_parameter_tokens import audit_module, make_actor, make_data, opd, reference_energy
 
 
+def test_group_scatter_uses_one_weight_lookup_for_overlapping_supports():
+    fast_head = importlib.import_module(audit_module.__package__ + '.opd_fast_head')
+    torch.manual_seed(71)
+    head = torch.nn.Linear(8, 32, bias=False)
+    hidden = torch.randn(1, 4, 8, requires_grad=True)
+    ids = torch.tensor([[[3, 2, 3], [2, 3, 5], [5, 5, 3]]])
+    dense = head(hidden[:, :3]).gather(-1, ids)
+    with fast_head.compact_head(head, ids, response_positions=[0, 1, 2]):
+        compact = head(hidden)[:, :3]
+    torch.testing.assert_close(compact, dense)
+    for p in range(3):
+        with torch.autograd.profiler.profile() as profile:
+            actual = torch.autograd.grad(compact[:, p].sum(), (hidden, head.weight), retain_graph=True)
+        assert sum(event.count for event in profile.key_averages()
+                   if event.key == 'aten::index_select_backward') == 1
+        expected = torch.autograd.grad(dense[:, p].sum(), (hidden, head.weight), retain_graph=True)
+        for a, b in zip(actual, expected):
+            torch.testing.assert_close(a, b)
+
+
 def wide_actor(tied=False, compact=True):
     actor = make_actor(tied, compact)
     model = actor.actor_module

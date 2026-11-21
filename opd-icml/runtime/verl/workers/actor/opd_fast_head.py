@@ -29,7 +29,18 @@ def compact_head(head, ids=None, hidden_only=False, response_position=None, resp
             bias=None if head.bias is None else head.bias.index_select(0,unique)
             logits=F.linear(prediction_hidden,weight,bias)
             return logits.gather(-1,inverse.reshape_as(support))
-        if response_positions is not None:
+        if response_positions is not None and hidden.shape[0] == 1:
+            # Token audits replay a single response. Gather all requested head
+            # rows in one operation so each backward scatters into one dense
+            # vocabulary gradient. Each Linear still sees only its own support.
+            support = ids[0, list(response_positions)].reshape(-1)
+            width = ids.shape[-1]
+            weights = head.weight.index_select(0, support).split(width)
+            biases = (head.bias.index_select(0, support).split(width) if head.bias is not None
+                      else (None,) * len(response_positions))
+            selected = torch.cat([F.linear(hidden[:, p:p+1], w, b)
+                                  for p, w, b in zip(response_positions, weights, biases)], dim=1)
+        elif response_positions is not None:
             # Keep each token's own support: no group-wide vocabulary union.
             selected=torch.cat([project(hidden[:,p:p+1],ids[:,p:p+1]) for p in response_positions],dim=1)
         elif response_position is not None:

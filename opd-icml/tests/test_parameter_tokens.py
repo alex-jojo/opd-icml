@@ -160,6 +160,29 @@ def test_parameter_energy_is_not_head_only():
     assert actor.actor_module.model.embed_tokens.weight.grad[1].norm() > 0
 
 
+@pytest.mark.parametrize('device', ['cpu', 'cuda'])
+def test_shard_energy_skips_padding_and_includes_partial_block(device):
+    if device == 'cuda':
+        if not torch.cuda.is_available():
+            pytest.skip('requires CUDA')
+        pytest.importorskip('triton')
+    count = 262147
+    model = torch.nn.Linear(1, count + 9, bias=False, device=device)
+    weight = model.weight
+    # Two adjacent tensor slices, a padding gap and an unaligned final slice.
+    slices = [(1, 3), (4, count - 3), (count + 5, 2)]
+    weight._fqns = ['a', 'b', 'c']
+    weight._shard_param_infos = [types.SimpleNamespace(in_shard=True, offset_in_shard=s,
+                                                       numel_in_shard=n) for s, n in slices]
+    weight.grad = torch.randn_like(weight)
+    flat = weight.grad.flatten()
+    flat[0] = flat[count + 1:count + 5] = flat[count + 7:] = float('nan')
+    expected = sum(flat[s:s+n].double().square().sum() for s, n in slices)
+    energy = audit_module.GradientEnergy(model)
+    assert energy.ranges == [(0, 1, count + 1), (0, count + 5, count + 7)]
+    torch.testing.assert_close(energy.local_squared_norm(weight.device), expected, rtol=1e-12, atol=0)
+
+
 def test_rejects_dropout_and_does_not_silently_estimate():
     actor = make_actor()
     with pytest.raises(ValueError, match='Unsupported'):
