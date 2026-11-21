@@ -78,7 +78,7 @@ def weighted_energy(values, membership, population_group_count, plan):
                 missing_reason='no sampled tokens in nonempty group' if not available else None)
 
 
-def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None):
+def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None, observation_plan=None):
     """Keep full hidden fields intact and add weighted paired sample statistics."""
     from .opd_token_audit import prepare_groups
     target = list(zip(fields['row'].tolist(), fields['pos'].tolist()))
@@ -90,15 +90,16 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
         raise ValueError('Sampled parameter tokens must belong to the SAME hidden token population')
     indices = np.asarray([lookup[key] for key in source], dtype=np.int64)
     plan = measurement['sampling']
-    if plan['population_count'] != len(target):
+    population = len(target) if observation_plan is None else observation_plan['population_count']
+    if plan['population_count'] != population:
         raise ValueError('Parameter and hidden population sizes differ')
     weights = plan['weight']
     energy = measurement['energy']
     total = float(weights @ energy)
-    sampled = len(source) != len(target)
-    report.update(parameter_gradient_rms=float(np.sqrt(total / len(target))),
+    sampled = len(source) != population
+    report.update(parameter_gradient_rms=float(np.sqrt(total / population)),
                   parameter_gradient_frobenius=float(np.sqrt(total)),
-                  parameter_gradient_l2_mean=float(weights @ np.sqrt(energy) / len(target)))
+                  parameter_gradient_l2_mean=float(weights @ np.sqrt(energy) / population))
     if grouping is None:
         grouping = prepare_groups(fields, thresholds)
     masks = grouping['masks']
@@ -107,7 +108,8 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
             continue
         mask = np.zeros(len(target), bool)
         mask[chosen] = True
-        quantity = weighted_energy(energy, mask[indices], int(mask.sum()), plan)
+        count = grouping.get('population_counts', {}).get('partition_'+label, int(mask.sum()))
+        quantity = weighted_energy(energy, mask[indices], count, plan)
         report['kl_high_middle_low'][label].update(
             parameter_gradient_energy=quantity['sum'],
             parameter_gradient_rms=float(np.sqrt(quantity['mean'])) if quantity['mean'] is not None else None,
@@ -120,20 +122,24 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
     if 'projected_gradient_energy' in fields:
         quantities['projected_gradient_energy'] = fields['projected_gradient_energy'][indices]
     for name, mask in masks.items():
-        count = int(mask.sum())
+        count = grouping.get('population_counts', {}).get(name, int(mask.sum()))
         paired[name] = {key: weighted_energy(value, mask[indices], count, plan)
                         for key, value in quantities.items()}
+        if observation_plan is not None and name not in grouping['exact_count_groups']:
+            for value in paired[name].values():
+                value.update(share_standard_error=None, share_ci95=None,
+                             interval_method='unavailable for sample-defined groups')
         report['groups'][name]['quantities']['parameter_gradient_energy'] = paired[name]['parameter_gradient_energy']
     metadata = dict(mode='kl_stratified', sampled=sampled, exact=not sampled,
                     individual_token_gradients_exact=True, token_count=len(source),
-                    population_token_count=len(target), coverage_fraction=len(source) / len(target),
+                    population_token_count=population, coverage_fraction=len(source) / population,
                     requested_token_count=plan['requested_size'], strata=plan['strata'],
                     seed=plan['seed'], seed_components=plan['seed_components'],
                     sampling='uniform without replacement within each cached-KL stratum',
                     ranking='all valid tokens, pre-update cached conditional student/teacher KL; stable ties',
                     estimator='Horvitz-Thompson totals; ratios of estimated totals (not unbiased ratios)',
                     paired_hidden_population='identical sampled (response row, token position) with identical weights',
-                    full_hidden_statistics_preserved='projected_gradient_energy' in fields,
+                    full_hidden_statistics_preserved=observation_plan is None and 'projected_gradient_energy' in fields,
                     extra_backwards=measurement['backwards'], seconds=measurement['seconds'],
                     norm_chunk_elements=measurement.get('norm_chunk_elements'),
                     stage_timing=measurement.get('stage_timing'),
@@ -148,10 +154,10 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
                     diagnostic_vs_training_kl_max_abs=float(np.max(np.abs(
                         measurement['diagnostic_kl'] - fields['kl'][indices]))),
                     parameter_energy_ranked_concentration_available=False,
-                    warning='Population parameter energies are estimates; paired hidden estimates are separate from full hidden statistics')
+                    warning='Population parameter energies and paired hidden energies are estimates; RQ2 overall spectra are recorded separately')
     report['parameter_gradient_measurement'] = metadata
     report['paired_parameter_hidden_sample'] = dict(groups=paired, estimated=sampled,
-        population_token_count=len(target), sample_count=len(source))
+        population_token_count=population, sample_count=len(source))
     arrays = {key: np.asarray(value)[indices] for key, value in fields.items()}
     arrays.update(parameter_gradient_energy=energy, diagnostic_kl=measurement['diagnostic_kl'],
                   sampling_weight=weights, sampling_stratum=plan['stratum'],

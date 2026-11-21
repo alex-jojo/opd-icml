@@ -24,7 +24,7 @@ bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/con
 
 七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重。四个数学模型和 DeepSeek-Coder 1.3B 各另跑一次复用训练。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
-每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
+每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出128-token抽样估计的 hidden 梯度能量占比和64-token抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
 RQ2 的 `training/training_records/rq2/probe_initial.npz` 保存固定回答的输入、掩码、位置及初始化 hidden。`row` 和 `response_position` 标识每行 hidden 所预测的回答 token。FULL 在第 1、5、10、…、105、106 次更新后生成对应的 `step_XXX.npz`，共 23 个观测点。各步基于同一 probe，`raw_displacement_rms` 和 `unit_displacement_rms` 均以初始化为参照。归一化位移的二阶矩按降序保存 `eigenvalues`；`cumulative_energy_coverage[r-1]` 给出前 r 个方向的能量占比。`basis` 的列是当前前 128 个方向，任意两个检查点的重合度可用 `np.linalg.norm(Ua.T @ Ub, 'fro')**2 / Ua.shape[1]` 复算。
 
@@ -210,7 +210,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 
 ## 重型诊断频率
 
-训练 KL、固定高 KL 阈值占比和整批 hidden 梯度能量占比继续逐次更新记录。逐 token 全模型参数梯度、固定 probe 表征及完整 hidden 梯度谱在更新 1、5、10、…、105、106 测量（23 点）；每点抽样 64 个 token；保留分层抽样、加权估计和完整参数梯度定义。未测量步的 RQ1 文件标记 `parameter_gradient_measurement.measured=false`，参数能量项留空，不插值、不沿用旧值。全量模式也沿用诊断步调度。
+训练 KL、固定高 KL 阈值占比继续全量逐次记录；hidden 梯度能量占比改为每次更新抽128个 token 的加权估计。逐 token 全模型参数梯度、固定 probe 表征及完整 hidden 梯度谱在更新 1、5、10、…、105、106 测量（23 点）；其中参数梯度每点抽64个 token，RQ2 总体 hidden 谱仍使用全部有效 token。未测量步的 RQ1 文件标记 `parameter_gradient_measurement.measured=false`，参数能量项留空，不插值、不沿用旧值。全量模式也沿用诊断步调度。
 
 跨 batch 梯度在上述 23 点及原有 4 个验证配对诊断点测量（共 27 点）。验证集的每 10 步安排、首尾评测和 early-stop 的每 5 步检查保持原样。Reuse 使用实际 optimizer update 编号调度。
 
@@ -234,3 +234,16 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 
 
 单卡梯度诊断还启用有界 selective checkpoint 缓存：仅在一次 backward 的诊断图中缓存部分 `mm/addmm` 输出，反传时通过 PyTorch 公共 checkpoint API 复用，减少 Transformer 层内矩阵乘法重算。训练更新、64-token 抽样、全部观测点和统计定义保持原样。默认缓存上限 4 GiB，并按空闲显存扣除尚未分配的参数梯度与 2 GiB 工作区后，只取剩余量的四分之一；未选中的操作仍重算。多卡、CPU、activation offload、编译模型、自定义或 reentrant checkpoint，以及需要重复 backward 的保留图沿用原路径。可设 `OPD_DIAGNOSTIC_ACTIVATION_CACHE_GIB=0` 恢复原诊断计算路径。`[parameter tokens] checkpoint cache` 和结果中的 `stage_timing.activation_checkpoint_cache` 记录缓存字节数及实际复用的矩阵乘法次数；这些是操作计数，不能直接当作整轮训练的时间下降。FP32/BF16、Qwen3 与单进程 CPU FSDP 对照检验统计和后续更新；A100/H200 的实测耗时尚未测量。
+
+
+## 128-token 描述统计与全量 RQ2 谱
+
+启动命令不变。默认 sampled 参数诊断模式下，token 分数、hidden 能量和高／中／低 KL 分组分析改为每次更新全局抽128个位置；各 GPU 合计128个，不是每卡128个。64个参数梯度样本包含在这128个位置内，参数样本和额外反向次数不变。有效位置不足128时全部统计。
+
+- 按缓存 KL 的两个层分别无放回抽样，使用各自的逆包含概率权重。不能直接拿128个样本的能量相加当作总体占比。
+- 当前训练 KL 仍在全部有效位置计算，固定阈值比例与当前 KL 最高十分位的成员、数量保持全量口径；其他分数的排名、分位点和 TIP 归一化改为样本估计。
+- `rq1_step_XXXX.json` 的 `token_statistics_measurement` 记录128样本的口径；原 `samples` 继续只保存64个配对参数样本。`rq1_hidden_sample_XXXX.npz` 单独保存128个位置、训练 KL、hidden 能量、分层和权重；全部自动进入结果包。CSV 导出也包含 hidden 抽样标记、样本数和区间。
+- `token_group_scopes` 的分组谱来自128个样本内的对应组，注明实际样本数和秩上限。以最多128×128的行 Gram 求谱，省去分组的全 hidden 维度矩阵分解与全 batch 梯度搬运。分组谱的 Top-128 不能当作总体 Top-128 使用。
+- RQ2 的 `training_records/rq2/gradient_XXX.npz` 与 `gradient_scopes` 继续使用全部有效 token 的梯度矩阵。其完整谱、effective rank、自身 Top-128 覆盖率和早期 U 覆盖率仍按全量计算。固定表征 probe、跨 batch 参数梯度和验证诊断不变。
+
+抽样能量和非线性谱摘要会有抽样误差，保留统计项目不代表与此前全量数值完全相同。只有实际训练更新与上述全量 RQ2 统计保持原口径。配置 `gradient_study.token_statistics_sample_size=0` 可恢复全量 token 描述统计；显式 `exact-all` 参数模式也保留原全量路径。正在运行的进程不会被本次代码更新改变。

@@ -15,7 +15,8 @@ FIELDS = ["step", "model", "train_kl", "above_initial_kl_threshold_pct", "top_kl
           "parameter_token_gradient_seconds", "parameter_token_mode", "parameter_token_sampled",
           "parameter_token_sample_count", "parameter_token_population_count",
           "top_kl_decile_parameter_energy_ci95_low_pct", "top_kl_decile_parameter_energy_ci95_high_pct",
-          "step1_kl_p90"]
+          "step1_kl_p90", "hidden_token_sampled", "hidden_token_sample_count", "hidden_token_population_count",
+          "top_kl_decile_hidden_energy_ci95_low_pct", "top_kl_decile_hidden_energy_ci95_high_pct"]
 
 
 def read_run(path, model):
@@ -44,6 +45,9 @@ def read_run(path, model):
         meta = report.get("parameter_gradient_measurement", {})
         interval = report.get('groups', {}).get('kl_top10', {}).get('quantities', {}).get(
             'parameter_gradient_energy', {}).get('share_ci95')
+        hidden_meta = report.get('token_statistics_measurement', {})
+        hidden_interval = report.get('groups', {}).get('kl_top10', {}).get('quantities', {}).get(
+            'raw_gradient_energy', {}).get('share_ci95')
         yield [step, model, batch["metrics"]["actor/opd_top16_kl"], frequency, share,
                parameter_share, batch["metrics"].get("actor/grad_norm", ""),
                report.get("gradient_rms_full", ""), report.get("parameter_gradient_rms", ""),
@@ -53,7 +57,11 @@ def read_run(path, model):
                meta.get('population_token_count', meta.get('token_count', '')),
                100 * interval[0] if interval is not None else '',
                100 * interval[1] if interval is not None else '',
-               report.get('thresholds', {}).get('kl_p90', batch["metrics"].get('token_audit/step1_kl_p90', ''))]
+               report.get('thresholds', {}).get('kl_p90', batch["metrics"].get('token_audit/step1_kl_p90', '')),
+               hidden_meta.get('estimated', False), hidden_meta.get('sample_count', ''),
+               hidden_meta.get('population_token_count', ''),
+               100 * hidden_interval[0] if hidden_interval is not None else '',
+               100 * hidden_interval[1] if hidden_interval is not None else '']
 
 
 if __name__ == "__main__":

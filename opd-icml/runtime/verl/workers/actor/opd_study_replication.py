@@ -36,6 +36,10 @@ class StudyReplication:
             from .opd_parameter_tokens import FullParameterTokenAudit
             self.parameter_tokens=FullParameterTokenAudit(actor,parameter_cfg)
         self.sample_rq1 = self.parameter_tokens is not None and self.parameter_tokens.mode == 'kl_stratified'
+        self.token_sample_size = int(self.study_cfg.get('token_statistics_sample_size', 128))
+        if self.token_sample_size < 0 or self.token_sample_size == 1:
+            raise ValueError('token_statistics_sample_size must be 0 (all tokens) or >= 2')
+        self.token_sample = None
         self.save_hidden_samples = bool(self.cfg.get('save_hidden_gradient_samples', False))
         self.records = self.output.parent / 'training_records'
         if self.full:
@@ -155,16 +159,41 @@ class StudyReplication:
         self.parameter_measurement=None
         if self.parameter_tokens is not None and (self.measure or (self.sample_rq1 and self.diagnostic_due(update))):
             self.parameter_measurement=self.parameter_tokens.measure(self.train,self.step,inner)
+        self.token_sample = None
+        if self.sample_rq1 and self.token_sample_size and int(self.train.batch['response_mask'].sum()) > self.token_sample_size:
+            from .opd_token_sample import TokenSample
+            self.token_sample = TokenSample(self.train, self.parameter_measurement,
+                self.study_cfg['parameter_tokens'], self.token_sample_size, self.step, inner)
 
     @contextmanager
     def watch_training(self,inputs,inner,cursor):
         if not (self.measure or self.sample_rq1):yield;return
         n=inputs['responses'].shape[1];mask=inputs['response_mask'].bool()
         row,pos=mask.nonzero(as_tuple=True);part={}
+        if self.token_sample is not None:
+            global_index, selected = self.token_sample.select(mask, cursor)
+            part['_selected'] = selected
+            part['_population_index'] = global_index
+            part['index'] = global_index[selected]
         def hook(_m,_a,out):
             with torch.no_grad():
                 z=out[:,-n-1:-1]
                 if z.shape[-1]!=inputs['opd_top16_ids'].shape[-1]:z=z.gather(-1,inputs['opd_top16_ids'])
+                if self.token_sample is not None:
+                    selected = part['_selected']
+                    si = torch.as_tensor(selected, device=z.device)
+                    part['_population_kl'] = output_scores(z[mask], inputs['opd_teacher_top16_logits'][mask], kl_only=True)['kl'].cpu().numpy()
+                    sr, sp = row[si], pos[si]
+                    scores = output_scores(z[sr, sp], inputs['opd_teacher_top16_logits'][sr, sp],
+                        include_teacher_entropy=True, kl_only=not self.measure)
+                    part.update({k: v.cpu().numpy() for k, v in scores.items()})
+                    part.update(row=(sr+cursor).cpu().numpy(), pos=sp.cpu().numpy(),
+                                token=inputs['responses'][sr, sp].cpu().numpy())
+                    if self.measure:
+                        ordinal=mask.long().cumsum(-1)-1
+                        part.update(boundary=(ordinal==0)[sr, sp].cpu().numpy(),
+                            relative_position=(ordinal.float()/(mask.sum(1,keepdim=True)-1).clamp_min(1))[sr, sp].cpu().numpy())
+                    return
                 part.update({k:v.detach().cpu().numpy() for k,v in output_scores(
                     z[mask],inputs['opd_teacher_top16_logits'][mask],include_teacher_entropy=True,
                     kl_only=not self.measure).items()})
@@ -189,6 +218,24 @@ class StudyReplication:
         n=inputs['responses'].shape[1];mask=inputs['response_mask'].bool();total=int(self.train.batch['response_mask'].sum())
         def consume(gradient):
             row,pos=mask.nonzero(as_tuple=True);count=len(row)
+            if self.token_sample is not None:
+                start = gradient.shape[1]-n-1
+                if self.moments is not None:
+                    if not count:self.moments.add(gradient.new_empty((0, gradient.shape[-1])))
+                    for lo in range(0, count, HiddenMoments.chunk_tokens):
+                        hi = min(count, lo+HiddenMoments.chunk_tokens)
+                        g = gradient[row[lo:hi],pos[lo:hi]+start].detach().float()
+                        g.mul_(total/dp.size())
+                        self.moments.add(g)
+                si = torch.as_tensor(self.current_part['_selected'], device=gradient.device)
+                g = gradient[row[si],pos[si]+start].detach().float()
+                g.mul_(total/dp.size())
+                self.current_part['raw_gradient_energy'] = g.square().sum(1).cpu().numpy()
+                if self.measure:
+                    with torch.autocast(device_type=g.device.type, enabled=False):gu=g@self.u.float()
+                    self.current_part.update(g_u=gu.cpu().numpy(), full_gradient=g.cpu().numpy(),
+                        projected_gradient_energy=gu.square().sum(1).cpu().numpy())
+                return
             energy = np.empty(count, dtype=np.float32) if self.measure or self.sample_rq1 else None
             if count == 0 and self.moments is not None:
                 # An all-padding local shard contributes a zero Gram to the global reduction.
@@ -257,6 +304,8 @@ class StudyReplication:
         record = dict(step=step, round=self.step, inner=inner+1, thresholds=self.thresholds,
                        groups=groups, parameter_gradient_measurement=metadata or {'measured': False},
                       samples={key: arrays[key].tolist() for key in sample_keys if key in arrays})
+        if 'token_statistics_measurement' in report:
+            record['token_statistics_measurement'] = report['token_statistics_measurement']
         for key in ('gradient_rms_full', 'gradient_frobenius_full', 'parameter_gradient_rms',
                     'parameter_gradient_frobenius'):
             record[key] = report.get(key)
@@ -288,6 +337,10 @@ class StudyReplication:
                     raise ValueError('Incomplete training hidden-gradient spectrum')
                 if dp.primary():
                     self.pending_gradient = dict(second=moment['second'], count=count)
+        if self.token_sample is not None and not self.measure:
+            self.finish_token_sample(inner)
+            self.extra += time.perf_counter() - started
+            return
         if self.sample_rq1 and not self.measure:
             from .opd_parameter_sampling import rq1_only_report
             fields = self.gather_token_fields()
@@ -318,6 +371,10 @@ class StudyReplication:
         atomic_json(self.output/'gradient_scopes'/f'round_{self.step:03d}_inner_{inner+1}.json',report)
         atomic_npz(self.output/'gradient_scopes'/f'round_{self.step:03d}_inner_{inner+1}.npz',arrays)
         self.metrics.update(metric_values(report))
+        if self.token_sample is not None:
+            self.finish_token_sample(inner)
+            self.extra += time.perf_counter() - started
+            return
         samples=[];sample_rows=[];sample_pos=[];full_parts=[]
         for part in self.parts:
             full_parts.append(part.pop('transient_full_gradient'))
@@ -393,6 +450,80 @@ class StudyReplication:
         atomic_json(self.output/'token_audit'/f'step_{self.step:03d}_inner_{inner+1}.json',token_report)
         atomic_npz(self.output/'token_audit'/f'step_{self.step:03d}_inner_{inner+1}.npz',{**token_arrays,**merged})
         self.extra+=time.perf_counter()-started
+
+    def finish_token_sample(self, inner):
+        from .opd_token_sample import make_report
+        started = time.perf_counter()
+        fields, population_kl = self.token_sample.merge(self.parts)
+        self.parts = []
+        plan = self.token_sample.plan
+        if not hasattr(self, 'thresholds'):
+            # KL thresholds remain exact population quantiles. Entropy uses the
+            # weighted sample; persist once so restarts retain the same threshold.
+            order = np.argsort(fields['entropy'], kind='stable')
+            middle = np.searchsorted(np.cumsum(plan['weight'][order]), plan['population_count']*.5)
+            self.thresholds = dict(kl_p90=float(np.quantile(population_kl, .9)),
+                kl_median=float(np.median(population_kl)), entropy_median=float(fields['entropy'][order[middle]]),
+                entropy_median_estimated=True)
+            dp.primary_call(lambda: atomic_json(self.threshold_file, self.thresholds))
+        if self.measure:
+            model_config=getattr(_unwrap_actor_module(self.actor.actor_module),'config',None)
+            eos=getattr(model_config,'opd_response_eos_token_ids',getattr(model_config,'eos_token_id',None))
+            fields['first']=fields['boundary'].astype(bool)
+            fields['eos']=np.isin(fields['token'],[] if eos is None else [eos] if isinstance(eos,int) else eos)
+            fields['boundary']=fields['first']|fields['eos']
+            if self.tokenizer is not None:
+                for token in np.unique(fields['token']):
+                    if int(token) not in self.labels:
+                        text=self.tokenizer.decode([int(token)])
+                        self.labels[int(token)]=(bool(re.search(r'\d',text)),bool(re.search(r'[+\-*/=<>×÷]',text)),bool(re.search(r'[\\{}_^$]',text)))
+                for j,key in enumerate(('numeric','operator','latex')):
+                    fields[key]=np.array([self.labels[int(t)][j] for t in fields['token']])
+                fields['other']=~(fields['boundary']|fields['numeric']|fields['operator']|fields['latex'])
+            fields=enriched(fields)
+        basis = self.u.detach().cpu().numpy() if dp.primary() else None
+        result = dp.primary_call(lambda: make_report(fields, population_kl, self.thresholds, plan,
+            basis, self.parameter_measurement, self.measure, int((self.train.batch['response_mask'].sum(1)>0).sum())))
+        report, arrays, group_report, group_arrays, metadata, paired = result
+        report.update(basis_reference=self.reference)
+        update = self.completed + inner + 1
+        if not self.save_hidden_samples:
+            arrays.pop('full_gradient', None)
+            paired.pop('full_gradient', None)
+        if self.measure:
+            group_report.update(basis_reference=self.reference, optimizer_update=update)
+            report['full_u_outside_kl_groups'] = group_report
+        def persist():
+            self.save_rq1(inner, report, paired)
+            # Keep the 128-token and 64-token rows separate, with their own weights.
+            atomic_npz(self.records / f'rq1_hidden_sample_{update:04d}.npz',
+                {k: arrays[k] for k in ('index','row','pos','token','kl','raw_gradient_energy','sampling_weight','sampling_stratum',
+                                      'in_current_kl_top10','above_initial_kl_threshold')})
+            if metadata is not None:
+                atomic_npz(self.output/'token_audit'/f'parameter_sample_{self.step:03d}_inner_{inner+1}.npz', paired)
+            if self.measure:
+                atomic_json(self.output/'token_group_scopes'/f'round_{self.step:03d}_inner_{inner+1}.json', group_report)
+                atomic_npz(self.output/'token_group_scopes'/f'round_{self.step:03d}_inner_{inner+1}.npz', group_arrays)
+                atomic_json(self.output/'token_audit'/f'step_{self.step:03d}_inner_{inner+1}.json', report)
+                atomic_npz(self.output/'token_audit'/f'step_{self.step:03d}_inner_{inner+1}.npz', arrays)
+        # Surface rank-zero write failures to every rank before further collectives.
+        dp.primary_call(persist)
+        self.metrics.update({'token_audit/step1_kl_p90': self.thresholds['kl_p90'],
+            'token_audit/kl_top10_hidden_energy_share': report['groups']['kl_top10']['quantities']['raw_gradient_energy']['share'] or 0.,
+            'token_audit/high_kl_fraction': report['groups']['kl_above_step1_p90']['fraction'],
+            'token_audit/hidden_token_sample_count': len(plan['index']),
+            'timing/token_statistics_seconds': time.perf_counter()-started})
+        if metadata is not None:self.record_parameter_metrics(report, metadata)
+        self.parameter_measurement = None
+        if not self.measure:return
+        for metric, field in (('student_entropy_mean','entropy'),('teacher_entropy_mean','teacher_entropy'),
+                              ('logratio_variance_mean','logratio_variance')):
+            self.metrics['token_audit/'+metric] = float(plan['weight'] @ fields[field]/plan['population_count'])
+        self.metrics['token_audit/valid_learned_u'] = float(self.reference['valid_u128'])
+        for label, entry in group_report['groups'].items():
+            for scope, values in entry['all'].items():
+                for key in ('effective_rank','nuclear_norm_token_normalized','rms'):
+                    if values.get(key) is not None:self.metrics[f'token_groups/{label}/{scope}/{key}']=values[key]
 
     def after_inner(self,inner):
         update = self.completed + inner
