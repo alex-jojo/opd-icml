@@ -120,15 +120,21 @@ def build_suite(args, environment, cpus, free_gib):
                     devices=ids, cpu_ids=cores, output=project_relative(output),
                     command=cmd+['--stage', 'train-generate'],
                     grade=grade+['--stage', 'grade'] if spec.task == 'code' else None)
+    reuse_scales = [scale for scale in args.scales
+                    if EXPERIMENTS[scale].task == 'math' or scale == 'deepseek-coder-1.3b']
+
+    def strategies(scale):
+        return ('full', 'reuse') if scale in reuse_scales else ('full',)
+
     # Fixed slot queues keep each GPU/CPU partition owned by one task at a time.
     queues = [[] for _ in range(slots)]
     for i, scale in enumerate(selected_small):
         slot = i % slots
         cores = training_cpus[slot::slots]
-        for strategy in ('full', 'reuse'):
+        for strategy in strategies(scale):
             queues[slot].append(job(scale, [devices[slot]], cores, slots, strategy))
     large = [job(s, devices, training_cpus, 1, strategy) for s in LARGE if s in args.scales
-             for strategy in ('full', 'reuse')]
+             for strategy in strategies(s)]
     prepare = []
     if any(EXPERIMENTS[s].task == 'math' for s in args.scales):
         prepare.append([sys.executable, 'scripts/prepare_dapo14k.py', '--output', 'data/dapo14k_train.parquet'])
@@ -140,7 +146,7 @@ def build_suite(args, environment, cpus, free_gib):
                 results_zip=None if args.no_package else project_relative(archive_path(run)),
                 small_parallelism=slots, grade_cpus=grade_cpus,
                 gradient_cache_total_gib=cache, ray_object_store_total_gib=objects,
-                prepare=prepare, small_queues=queues, large=large)
+                prepare=prepare, small_queues=queues, large=large, reuse_scales=reuse_scales)
 
 
 def print_execution_schedule(plan):

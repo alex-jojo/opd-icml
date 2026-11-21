@@ -22,7 +22,7 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 \
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重，各另跑一次复用训练。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重。四个数学模型和 DeepSeek-Coder 1.3B 各另跑一次复用训练。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
@@ -168,13 +168,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 
 独立评测成功后，默认在其他 4B 实验 ZIP 所在目录生成 `runs/h200/4b/4b-math-base-results.zip`。自定义 `--output` 时，ZIP 保存在该输出目录旁。终端的 `[DOWNLOAD ZIP]` 会打印实际路径。`--no-package` 可关闭打包。
 
-默认 H200 套件对全部七个原始学生模型各测一次 Base，每组在 `<规模>/eval/base/` 保存，和训练结果进入同一 ZIP。四组数学沿用表 3 五项 Mean@8，RQ4 采用严格判分；三组 DeepSeek 用相同的 chat 提示和双 EOS，评测 LiveCodeBench、HumanEval+ 的 pass@8，GPU 生成后由 CPU 判题。每组四行 Base、FULL、早停、复用，共 28 行结果、14 次训练。
+默认 H200 套件对全部七个原始学生模型各测一次 Base，每组在 `<规模>/eval/base/` 保存，和训练结果进入同一 ZIP。四组数学沿用表 3 五项 Mean@8，RQ4 采用严格判分；三组 DeepSeek 用相同的 chat 提示和双 EOS，评测 LiveCodeBench、HumanEval+ 的 pass@8，GPU 生成后由 CPU 判题。七组各有 Base、FULL、早停三行，四个数学模型和 DeepSeek-Coder 1.3B 各增加一行复用，共 26 行结果、12 次训练。
 
 单独补测用 `python scripts/evaluate_base.py --scale <规模>`，可用 `--output` 指定目标，默认单独打 ZIP。代码任务使用与训练后评测相同的已准备 benchmark 目录（可用 `python scripts/prepare_code_benchmarks.py` 准备），支持 `--generate-only` 和 `--grade-only`。单独运行时请设置与该组一致的可见 GPU。原有 4B 脚本继续可用。
 
 ## RQ4 策略对照
 
-总入口为每组所选模型在相同 GPU 配置上依次运行 FULL 和复用。早停成绩来自同一条 FULL 轨迹。运行 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 会执行四次训练，产出两个规模各三行策略结果。单模型默认入口和显式 `--rq4-strategy full` 同样会评测早停点；显式 `--rq4-strategy early-stop` 仍可单独训练至早停。
+总入口为每个所选模型运行 FULL，并为选中的数学模型和 DeepSeek-Coder 1.3B 在相同 GPU 配置上接着运行复用。早停成绩来自同一条 FULL 轨迹。运行 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 会执行四次训练，产出两个规模各三行策略结果。单模型默认入口和显式 `--rq4-strategy full` 同样会评测早停点；显式 `--rq4-strategy early-stop` 仍可单独训练至早停。
 
 * **早停**。每 5 次参数更新在固定 probe 上检查一次。从第 15 步起，窗口覆盖 t−10、t−5、t。`training/training_records/rq4/early_stop_XXX.json` 保存判定依据。首次触发时，FULL 把当前权重保存到 `training/checkpoints/early_stop/actor/`，然后继续训练。训练结束后对这份权重运行与 FULL 相同的评测。数学回答保存在 `eval/early-stop/final_mean8.jsonl`，代码回答及判题结果按题集保存在 `eval/early-stop/code_pass8/`。代码生成结束后释放临时合并模型，由 CPU 判题。到预算终点才选中最终模型时，共用 FULL 的权重和逐题结果。`training/training_records/rq4/early_stop_summary.json` 记录来源、实际步数、判定原因、回答路径和累计训练耗时，随结果 ZIP 导出。
 * **复用**。每次新 rollout 和教师目标供两次真实 AdamW 更新使用，53 次 rollout 共 106 次更新。在 rollout 第 5、10、…、50、53 轮，`reuse_round_XXX.json` 记录同一训练 batch 按有效 token 平均的 `kl_before_first`、`kl_after_first` 和 `kl_after_second`。最后一项用第二次更新后的学生重新前向计算。`second_gain = kl_after_first - kl_after_second`，正值表示第二步进一步降低了 KL。
@@ -197,7 +197,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 
 运行整套时，模型合并阶段的峰值包含训练 checkpoint 和合并后的权重，且套件会预先缓存所选模型。任一规模提前触发早停时，还会多一份只含模型权重和配置的 checkpoint。正常流程先合并并评测早停模型，释放临时合并副本后再合并 FULL。成功清理时打印本组 checkpoint 和合并权重的逻辑字节数。共享下载缓存跨实验保留。打整套 ZIP 时，源结果和 ZIP 同时占用空间；`--no-package` 可跳过打包。
 
-按FP32 checkpoint加BF16合并模型估算，两份临时模型约为每参数6字节；33B约198 GB（184 GiB）；提前触发时再计一份按 FP32 估算约 132 GB 的早停分片，合计约 330 GB（307 GiB），共享缓存及统计另计。33B 的 FULL 判题完成后才启动同规模复用训练。实际大小以本次文件记录为准，原始模型下载缓存、数据集、统计与ZIP占用另算。默认逐组清理能避免七组完成后的权重副本长期累积，但不能消除当前正在训练/合并/评测那一组的磁盘峰值。
+按FP32 checkpoint加BF16合并模型估算，两份临时模型约为每参数6字节；33B约198 GB（184 GiB）；提前触发时再计一份按 FP32 估算约 132 GB 的早停分片，合计约 330 GB（307 GiB），共享缓存及统计另计。33B 的 FULL 完成判题和权重清理后，套件汇总结果。实际大小以本次文件记录为准，原始模型下载缓存、数据集、统计与ZIP占用另算。默认逐组清理能避免七组完成后的权重副本长期累积，但不能消除当前正在训练/合并/评测那一组的磁盘峰值。
 
 统计协议和保存频率保持原样。逐token参数梯度诊断保存能量及抽样统计，不把每个token的完整参数梯度向量写入磁盘。
 

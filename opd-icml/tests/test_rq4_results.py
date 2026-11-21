@@ -195,8 +195,8 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
                 assert saved['five_benchmark_mean_at_8'] == pytest.approx(.3)
             assert saved['training_wall_seconds'] > 0
             paths.append(run)
-    assert len(set(paths)) == len(paths) == 14
-    assert len(code_grades) == 7
+    assert len(set(paths)) == len(paths) == 12
+    assert len(code_grades) == 5
     assert early_evals == [('4b', 'full')]
     assert sorted(base_runs) == sorted((scale, 'full') for scale in h200.EXPERIMENTS)
     rq4.save_comparison(plan)
@@ -214,25 +214,34 @@ def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
     assert budget['stop_reason'] == 'budget' and budget['uses_full_endpoint']
     assert budget['five_benchmark_change_pp'] == budget['training_time_saved_fraction'] == 0
     assert budget['responses_file'] == 'eval/final_mean8.jsonl'
-    for arms in combined.values():
-        for strategy in rq4.STRATEGIES:
-            row = arms[strategy]
-            assert row['training_time_saved_fraction'] == pytest.approx(1-row['training_wall_seconds']/arms['full']['training_wall_seconds'])
     baseline = combined['4b']['base']
     assert baseline['five_benchmark_change_pp'] == pytest.approx(-20)
     assert baseline['scoring_mode'] == 'strict_last_box' and baseline['training_time_saved_fraction'] is None
     for scale, arms in combined.items():
-        assert set(arms) == {'full', 'early-stop', 'reuse', 'base'}
+        expected = {'full', 'early-stop', 'base'}
+        if scale not in {'deepseek-coder-6.7b', 'deepseek-coder-33b'}:
+            expected.add('reuse')
+        assert set(arms) == expected
+        for strategy in expected - {'base'}:
+            row = arms[strategy]
+            assert row['training_time_saved_fraction'] == pytest.approx(1-row['training_wall_seconds']/arms['full']['training_wall_seconds'])
         if h200.EXPERIMENTS[scale].task == 'code':
             assert arms['base']['two_benchmark_change_pp'] == -50
     with ZipFile(package_results(root)) as archive:
         assert 'suite/rq4_comparison.json' in archive.namelist()
-        assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 14
+        assert sum(n.endswith('/rq4/summary.json') for n in archive.namelist()) == 12
         assert sum(n.endswith('/rq4/early_stop_summary.json') for n in archive.namelist()) == 7
         assert 'suite/4b/eval/early-stop/final_mean8.jsonl' in archive.namelist()
         for path in code_early['responses_files'].values():
             assert 'suite/deepseek-coder-33b/' + path in archive.namelist()
         assert sum(n.endswith('/eval/base/summary.json') for n in archive.namelist()) == 7
+
+    without_4b_reuse = [[job for job in queue if job['name'] != '4b-reuse'] for queue in plan['small_queues']]
+    with pytest.raises(ValueError, match='4b.*reuse'):
+        rq4.save_comparison(dict(plan, small_queues=without_4b_reuse))
+    legacy_plan = {k: v for k, v in plan.items() if k != 'reuse_scales'}
+    with pytest.raises(ValueError, match='deepseek-coder-6.7b.*reuse'):
+        rq4.save_comparison(legacy_plan)
 
 
 def test_shared_checkpoint_is_first_committed_model_and_full_keeps_its_basis(tmp_path):

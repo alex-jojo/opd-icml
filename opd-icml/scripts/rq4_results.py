@@ -185,9 +185,14 @@ def save_comparison(plan):
                                 two_benchmark_mean_pass_at_8=result['two_benchmark_mean_pass_at_8'])
                         else:
                             arms['base'].update(task='math', scoring_mode='strict_last_box', **result['strict_last_box'])
-    for arms in groups.values():
-        if set(arms) - {'base'} != set(STRATEGIES):
-            raise ValueError('RQ4 comparison requires every matched arm')
+    # Older suite plans scheduled reuse for every scale.
+    reuse_scales = plan.get('reuse_scales', groups)
+    for scale, arms in groups.items():
+        expected = {'full', 'early-stop'}
+        if scale in reuse_scales:
+            expected.add('reuse')
+        if set(arms) - {'base'} != expected:
+            raise ValueError(f'RQ4 comparison for {scale} requires {sorted(expected)}')
         reference = arms['full']
         for row in arms.values():
             wall, base = row['training_wall_seconds'], reference['training_wall_seconds']

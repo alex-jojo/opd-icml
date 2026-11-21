@@ -43,8 +43,23 @@ def test_parallel_plan_has_disjoint_gpu_cpu_and_aggregate_memory_budgets(tmp_pat
 def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     plan = plan_for(tmp_path, free=180, cpus=24)
     assert plan['small_parallelism'] == 1
-    assert len(plan['small_queues'][0]) == 8
+    assert len(plan['small_queues'][0]) == 7
     assert all(value(j['command'], '--parameter-token-samples') == '64' for j in plan['small_queues'][0])
+
+
+@pytest.mark.parametrize('scales', [
+    suite.SMALL + suite.LARGE, ['deepseek-coder-6.7b', 'deepseek-coder-33b'],
+    ['deepseek-coder-1.3b', '8b', 'deepseek-coder-33b'],
+])
+def test_suite_schedules_reuse_for_math_and_smallest_coder(tmp_path, scales):
+    plan = plan_for(tmp_path, ['--scales', *scales])
+    jobs = [job for queue in [*plan['small_queues'], plan['large']] for job in queue]
+    reuse = {'1.7b', '4b', '8b', 'gemma3-12b', 'deepseek-coder-1.3b'} & set(scales)
+    assert set(plan['reuse_scales']) == reuse
+    for scale in scales:
+        matching = [job for job in jobs if job['scale'] == scale]
+        assert [job['rq4_strategy'] for job in matching] == (['full', 'reuse'] if scale in reuse else ['full'])
+        assert matching[0]['evaluate_base'] and matching[0]['shared_early_stop']
 
 
 @pytest.mark.parametrize('cpus', [6, 7, 8, 16, 64])
@@ -321,8 +336,6 @@ def test_scheduler_releases_gpu_while_grade_runs_and_waits_before_large(tmp_path
                 if scale == 'deepseek-coder-33b' and value(command, '--rq4-strategy') == 'full':
                     large_full_graded.set()
                 return
-            if scale == 'deepseek-coder-33b' and value(command, '--rq4-strategy') == 'reuse':
-                assert large_full_graded.is_set()
             devices = set(jobs[scale]['devices'])
             with lock:
                 assert not active & devices
@@ -338,6 +351,7 @@ def test_scheduler_releases_gpu_while_grade_runs_and_waits_before_large(tmp_path
         def cancel(self):
             pytest.fail('Successful suite must not cancel')
     suite.schedule(plan, Fake())
+    assert large_full_graded.is_set()
     assert set(json.loads((tmp_path/'status.json').read_text()).values()) == {'complete'}
 
 
