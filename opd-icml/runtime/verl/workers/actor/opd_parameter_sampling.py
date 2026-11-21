@@ -135,6 +135,8 @@ def add_sampled_report(report, fields, measurement, thresholds, *, grouping=None
                     paired_hidden_population='identical sampled (response row, token position) with identical weights',
                     full_hidden_statistics_preserved='projected_gradient_energy' in fields,
                     extra_backwards=measurement['backwards'], seconds=measurement['seconds'],
+                    norm_chunk_elements=measurement.get('norm_chunk_elements'),
+                    stage_timing=measurement.get('stage_timing'),
                     causal_prefix=measurement.get('causal_prefix',False),
                     forward_calls=measurement.get('forward_calls'),
                     graph_group_size=measurement.get('graph_group_size',1),

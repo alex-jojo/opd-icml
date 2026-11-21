@@ -205,3 +205,15 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 表征增量的 `previous_observation_*` 表示相对上一个实际观测点的变化，`previous_observation_checkpoint` 和 `previous_observation_update_gap` 标明区间；`previous_step_*` 仅在相邻更新都有观测时存在。恢复后若没有上一个观测的 hidden，则相应可用标记为 false。
 
 降低观测频率减少时间采样密度，保留点的测量算法不变；不等于总训练速度提高 4.61 倍。正在运行的 Python 进程不会因拉取新提交而自动改变频率。
+
+### 统计计算与半小时预算
+
+逐 token 参数梯度能量继续在 GPU 上归约，保留合并输出头查询与 Triton FP64 融合归约。CPU 或无法使用融合路径时，回退实现默认每块 4,194,304 个元素，使用一个约 32 MiB 的 FP64 临时缓冲，避免数千次小块转换及额外平方缓冲；共享权重、FSDP padding 和参数覆盖范围保持原定义。分块求和顺序变化可能产生 FP64 末位差异。
+
+梯度缓存充分时，四组梯度的十个 Gram 条目在一次分块遍历中计算，共享 FP64 转换并合并进程间汇总；不增加整模型梯度缓存预算。缓存不足时继续使用原有的有界重算路径。
+
+跨 batch 的 CPU 谱分解使用单个后台线程，与后续组的 GPU 梯度计算重叠。后台只读取已复制到 CPU 的矩阵；模型、优化器、CUDA 和进程间通信仍由主线程管理。报告返回前等待后台结果，异常通过原有机制通知全部进程；不丢弃观测或跳过失败的统计。
+
+日志新增 `[parameter tokens] stage seconds`，分别报告 `forward`、`backward`、`parameter_energy`。原始记录的 `parameter_gradient_measurement.stage_timing` 保存相同数据，训练指标使用 `timing/parameter_token_<stage>_seconds`。CUDA 使用事件计时，不在 token 循环中强制同步；`host_stage_seconds` 是另一套主机提交耗时，不能与设备时间相加。模型加载、验证、CPU 谱分解等不包含在这些 token 阶段中。
+
+额外统计不超过 30 分钟是待 H200 计时验证的目标，不是当前代码已证明达到的性能。默认 23 个重型观测点对应全部统计平均每点约 78 秒，另有验证和配对诊断成本。实现不会为了满足预算而静默降低样本数、跳过观测，或用 hidden 梯度替代参数梯度。

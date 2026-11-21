@@ -5,9 +5,48 @@ average of unrelated token gradients. Only one sharded gradient is live at a
 time; full parameter vectors are never serialized.
 """
 import time
+from contextlib import contextmanager
 import numpy as np
 import torch
 from . import opd_distributed as dp
+
+
+class AuditTiming:
+    """Stage timings without a CUDA synchronization inside the token loop."""
+    def __init__(self, device):
+        self.device = torch.device(device)
+        self.events = []
+        self.host_seconds = {}
+        self.seconds = {}
+
+    @contextmanager
+    def stage(self, name):
+        started = time.perf_counter()
+        cuda = self.device.type == 'cuda'
+        if cuda:
+            stream = torch.cuda.current_stream(self.device)
+            begin, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            begin.record(stream)
+        try:
+            yield
+        finally:
+            self.host_seconds[name] = self.host_seconds.get(name, 0.) + time.perf_counter() - started
+            if cuda:
+                end.record(stream)
+                self.events.append((name, begin, end))
+            else:
+                self.seconds[name] = self.host_seconds[name]
+
+    def finish(self):
+        if self.events:
+            # Energy collect() already copied the final results to CPU. This
+            # fence also makes the timer correct if that implementation changes.
+            self.events[-1][2].synchronize()
+            for name, begin, end in self.events:
+                self.seconds[name] = self.seconds.get(name, 0.) + begin.elapsed_time(end) / 1000.
+        return dict(clock='cuda_events' if self.events else 'wall',
+                    stage_seconds=self.seconds, host_stage_seconds=self.host_seconds,
+                    note='stages overlap host/device execution; do not add host times to device times')
 
 
 def causal_token_prefix(inputs, position):
@@ -32,13 +71,15 @@ def causal_token_prefix(inputs, position):
 
 class GradientEnergy:
     """Norm across unique trainable parameters, excluding flat padding."""
-    def __init__(self, model):
+    def __init__(self, model, chunk_elements=4194304):
         from .opd_gradient_study import ParameterLayout
         from torch.nn.parallel import DistributedDataParallel
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
         self.layout = ParameterLayout(model)
-        # Energy needs only the union of real shard elements. Layer/group
-        # boundaries can be merged, but FSDP's alignment padding must be skipped.
+        if isinstance(chunk_elements, bool) or int(chunk_elements) != chunk_elements or chunk_elements < 1:
+            raise ValueError('norm_chunk_elements must be a positive integer')
+        self.chunk_elements = int(chunk_elements)
+        # Merge adjacent real shard ranges, preserving padding gaps.
         self.ranges = []
         for index, start, count, _ in self.layout.slices:
             if self.ranges and self.ranges[-1][0] == index and self.ranges[-1][2] == start:
@@ -82,9 +123,14 @@ class GradientEnergy:
                 if fused_squared_sum is not None:
                     subtotals[flat.device].add_(fused_squared_sum(segment))
                     continue
-            for block in segment.split(262144):
-                values = block.double()
-                subtotals[flat.device].add_(torch.dot(values, values))
+            for offset in range(start, end, self.chunk_elements):
+                # One bounded FP64 buffer (32 MiB at the default size), instead
+                # of thousands of tiny casts/reductions and a second square buffer.
+                # copy=True is essential when the original gradient is FP64.
+                block = flat[offset:min(offset + self.chunk_elements, end)].to(dtype=torch.float64, copy=True)
+                block.square_()
+                subtotals[flat.device].add_(block.sum())
+                del block
         if not subtotals:
             return torch.zeros((), device=device, dtype=torch.float64)
         parts = iter(subtotals.values())
@@ -153,8 +199,9 @@ class FullParameterTokenAudit:
             raise RuntimeError('Parameter token audit must start with cleared gradients')
         if hasattr(self.actor, 'fixed_u_adapter'):
             raise ValueError('Full parameter token audit does not support fixed-U adapters')
-        layout = GradientEnergy(self.actor.actor_module)
+        layout = GradientEnergy(self.actor.actor_module, self.cfg.get('norm_chunk_elements', 4194304))
         device = next(self.actor.actor_module.parameters()).device
+        timing = AuditTiming(device)
         mask = data.batch['response_mask'].bool().cpu().numpy()
         rows, positions = np.nonzero(mask)
         population = len(rows)
@@ -198,9 +245,10 @@ class FullParameterTokenAudit:
                     full_forward_tokens += inputs['input_ids'].numel() * len(group)
                     actual_forward_tokens += token_inputs['input_ids'].numel()
                     forward_calls += 1
-                    _, logits, _, _ = forward(self.actor, token_inputs, float(data.meta_info['temperature']),
-                                              token_inputs['opd_top16_ids'], diagnostics=False,
-                                              response_positions=group)
+                    with timing.stage('forward'):
+                        _, logits, _, _ = forward(self.actor, token_inputs, float(data.meta_info['temperature']),
+                                                  token_inputs['opd_top16_ids'], diagnostics=False,
+                                                  response_positions=group)
                     teacher_logits = token_inputs['opd_teacher_top16_logits'][:, group]
                     token_losses = reverse_kl(logits, teacher_logits)[0]
                     graph = RetainedGraph(self.actor.actor_module) if len(group) > 1 else None
@@ -208,9 +256,11 @@ class FullParameterTokenAudit:
                         if index:
                             graph.prepare_next_backward()
                         token_loss = token_losses[index]
-                        token_loss.backward(retain_graph=index+1 < len(group))
+                        with timing.stage('backward'):
+                            token_loss.backward(retain_graph=index+1 < len(group))
                         slot = cursor % capacity
-                        values[0, slot] = layout.local_squared_norm(device)
+                        with timing.stage('parameter_energy'):
+                            values[0, slot] = layout.local_squared_norm(device)
                         values[1, slot] = token_loss.detach()
                         self.actor.actor_optimizer.zero_grad(set_to_none=True)
                         del token_loss
@@ -222,11 +272,15 @@ class FullParameterTokenAudit:
                             print(f'[parameter tokens] {cursor}/{len(rows)}; '
                                   f'{time.perf_counter()-started:.1f}s', flush=True)
                     del logits, token_losses, graph
+        stage_timing = timing.finish()
         if dp.primary():
             print(f'[parameter tokens] completed: {forward_calls} forwards, {len(rows)} backwards '
                   '(checkpoint recomputations excluded)', flush=True)
+            print('[parameter tokens] stage seconds (' + stage_timing['clock'] + '): ' +
+                  ', '.join(f'{k}={v:.3f}' for k,v in stage_timing['stage_seconds'].items()), flush=True)
         result = dict(row=rows, pos=positions, energy=measurements[0], diagnostic_kl=measurements[1],
                       seconds=time.perf_counter()-started, backwards=len(rows),
+                       norm_chunk_elements=layout.chunk_elements, stage_timing=stage_timing,
                       causal_prefix=self.prefix, forward_input_tokens=actual_forward_tokens,
                       forward_calls=forward_calls, graph_group_size=self.group_size,
                       graph_reuse_fallback=self.reuse_fallback,
@@ -249,6 +303,8 @@ def attach_parameter_energy(fields, measurement):
                 token_count=len(target), extra_backwards=measurement['backwards'],
                 diagnostic_optimizer_steps=0, extra_teacher_calls=0,
                 parameter_vectors_saved=False, seconds=measurement['seconds'],
+                norm_chunk_elements=measurement.get('norm_chunk_elements'),
+                stage_timing=measurement.get('stage_timing'),
                 causal_prefix=measurement.get('causal_prefix',False),
                 forward_calls=measurement.get('forward_calls'),
                 graph_group_size=measurement.get('graph_group_size',1),

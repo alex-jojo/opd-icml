@@ -264,6 +264,8 @@ class StudyReplication:
 
     def record_parameter_metrics(self, report, metadata):
         self.metrics['timing/parameter_token_gradient_seconds']=metadata['seconds']
+        for stage, seconds in (metadata.get('stage_timing') or {}).get('stage_seconds', {}).items():
+            self.metrics['timing/parameter_token_'+stage+'_seconds'] = seconds
         self.metrics['token_audit/parameter_gradient_rms']=report['parameter_gradient_rms']
         self.metrics['token_audit/parameter_gradient_frobenius']=report['parameter_gradient_frobenius']
         self.metrics['token_audit/kl_top10_parameter_energy_share']=report['groups']['kl_top10']['quantities']['parameter_gradient_energy']['share'] or 0.

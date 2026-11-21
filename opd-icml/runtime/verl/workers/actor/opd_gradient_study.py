@@ -10,7 +10,8 @@ import os
 import pickle
 import re
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 import numpy as np
@@ -201,6 +202,18 @@ def exact_gram(oracle,layout,count):
     slots=_gradient_cache_slots(layout,count)
     if dp.primary():
         print(f'[gradient Gram] retaining {slots}/{max(0,count-1)} reusable gradients',flush=True)
+    if slots >= count - 1 and hasattr(layout, 'dot_many'):
+        # The same budget already permits these retained vectors. Convert each
+        # CPU block once for all pairings, and gather all Gram entries together.
+        vectors = [oracle(i) for i in range(count)]
+        indices = [(i,j) for i in range(count) for j in range(i,count)]
+        values = layout.dot_many([(vectors[i], vectors[j]) for i,j in indices])
+        matrices = {}
+        for (i,j), groups in zip(indices, values):
+            for group, value in groups.items():
+                matrix = matrices.setdefault(group, np.zeros((count,count),np.float64))
+                matrix[i,j] = matrix[j,i] = value
+        return matrices, count
     matrices={};calls=0;cache={}
     cache_start=count-slots
     for i in range(count):
@@ -409,39 +422,49 @@ class GradientStudy:
         else:
             read_gradient = partial(gradient, self.actor, basis=basis)
             layout = ParameterLayout(self.actor.actor_module)
-        hidden={}
-        def oracle(i):
-            v,_,mom=read_gradient(batches[i],capture_hidden=i not in hidden)
-            if mom is not None:
-                hidden[i]=mom if dp.primary() else None
-                if detailed:
-                    atomic_moment(self.directory/f'train_batch_{i}_hidden_moments.npz',mom)
-            return v
-        grams,replays=exact_gram(oracle,layout,m)
-        def hidden_comparison():
-            items = [scope_geometry(hidden[i]['second'], hidden[i]['mean'], hidden[i]['basis'],
-                                    subset_only=not detailed) for i in range(m)]
-            return compare_hidden(items, subset_only=not detailed)
-        if not detailed:
-            return dp.primary_call(lambda: subset_alignment(train_rows, gram_summary(grams['all']),
-                                                             hidden_comparison()['full']))
-        effective=None
-        if self.actor.config.policy_loss.get('hidden_projection',{}).get('enabled',False):
-            eg,_=exact_gram(lambda i:self.grad(batches[i],route='u')[0],self.layout,m)
-            effective={key:gram_summary(value) for key,value in eg.items()}
-        groups = {key:gram_summary(k) for key,k in grams.items()}
-        atomic_json(self.directory/'parameter_cross_batch.json',dict(
-            groups=groups,
-            raw_opd_groups=True,effective_r128_groups=effective,
-            batches=m,prompts_per_batch=size,normalization='token mean per diagnostic batch',
-            train_indices=train_rows,exact_gradient_evaluations=replays,
-            comparison='same checkpoint, different disjoint subsets of current on-policy training rollout'))
-        # CPU decompositions once, not once per GPU.
-        result=dp.primary_call(hidden_comparison)
-        atomic_json(self.directory/'hidden_cross_batch.json',result)
-        self.report['cross_batch_gradient_evaluations']=replays
-        self.report['cross_batch_complete']=True
-        return subset_alignment(train_rows, groups['all'], result['full'])
+        pool = (ThreadPoolExecutor(max_workers=1, thread_name_prefix='opd-cpu-geometry')
+                if dp.primary() and self.cfg.get('overlap_cpu_geometry', True) else nullcontext())
+        with pool as executor:
+            hidden={}
+            jobs={}
+            def oracle(i):
+                v,_,mom=read_gradient(batches[i],capture_hidden=i not in hidden)
+                if mom is not None:
+                    hidden[i]=mom if dp.primary() else None
+                    if executor is not None:
+                        # CPU-only immutable inputs; worker never touches the actor,
+                        # CUDA, optimizer, filesystem or distributed collectives.
+                        jobs[i]=executor.submit(scope_geometry, mom['second'], mom['mean'],
+                                                mom['basis'], subset_only=not detailed)
+                    if detailed:
+                        atomic_moment(self.directory/f'train_batch_{i}_hidden_moments.npz',mom)
+                return v
+            grams,replays=exact_gram(oracle,layout,m)
+            def hidden_comparison():
+                items = [jobs[i].result() if i in jobs else
+                         scope_geometry(hidden[i]['second'], hidden[i]['mean'], hidden[i]['basis'],
+                                        subset_only=not detailed) for i in range(m)]
+                return compare_hidden(items, subset_only=not detailed)
+            if not detailed:
+                return dp.primary_call(lambda: subset_alignment(train_rows, gram_summary(grams['all']),
+                                                                 hidden_comparison()['full']))
+            effective=None
+            if self.actor.config.policy_loss.get('hidden_projection',{}).get('enabled',False):
+                eg,_=exact_gram(lambda i:self.grad(batches[i],route='u')[0],self.layout,m)
+                effective={key:gram_summary(value) for key,value in eg.items()}
+            groups = {key:gram_summary(k) for key,k in grams.items()}
+            atomic_json(self.directory/'parameter_cross_batch.json',dict(
+                groups=groups,
+                raw_opd_groups=True,effective_r128_groups=effective,
+                batches=m,prompts_per_batch=size,normalization='token mean per diagnostic batch',
+                train_indices=train_rows,exact_gradient_evaluations=replays,
+                comparison='same checkpoint, different disjoint subsets of current on-policy training rollout'))
+            # CPU decompositions once, not once per GPU.
+            result=dp.primary_call(hidden_comparison)
+            atomic_json(self.directory/'hidden_cross_batch.json',result)
+            self.report['cross_batch_gradient_evaluations']=replays
+            self.report['cross_batch_complete']=True
+            return subset_alignment(train_rows, groups['all'], result['full'])
 
     def save_rq3(self, result):
         tokens = self.validation.batch['responses'].detach().cpu().numpy()
