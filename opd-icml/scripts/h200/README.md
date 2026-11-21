@@ -54,7 +54,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 
     python scripts/run_h200_experiment.py --scale 1.7b --devices 0 --profile conservative --parameter-token-samples 64 --save-freq 10 --output runs/a100/qwen17-run1
 
-命令自动选择 CPU，无需手写 --cpu-ids。已有完整断点时使用原 --output 加 --resume；旧的 256 样本记录保留，新观测点按 64 抽样，逐点元数据记录实际样本数。更新代码不会改变已经运行的进程。
+命令自动选择 CPU。已有可续训的 checkpoint 时，使用原 `--output` 加 `--resume`。程序从 `training/hydra/.hydra/config.yaml` 恢复参数梯度诊断和保存间隔。例如，原实验每个测量点抽 256 个 token、每 10 轮保存一次，续训沿用这两个值。若只迁移了 checkpoint，可显式传入原实验的 `--parameter-token-gradients sampled --parameter-token-samples 256 --save-freq 10`。
 
 64 样本只减少诊断抽样，不改变训练 batch、loss、学习率或优化器；每个被抽中的 token 仍计算全部可训练参数的梯度。总体能量占比是加权抽样估计，样本减少通常使估计误差变大，JSON 继续保存权重、样本数及已有标准误差字段。不要把 64 样本的统计精细度写成与 256 完全相同。
 

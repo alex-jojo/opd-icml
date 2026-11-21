@@ -37,7 +37,7 @@ def test_math_model_and_experiment_matrix_preserves_recorded_budget(scale,experi
     assert plan['rounds_cap']==recorded['trainer']['opd_pause_after_rollout_rounds']
     assert plan['updates_per_round']==recorded['actor_rollout_ref']['actor']['policy_loss']['jump_reuse_updates']
     if experiment=='paired-full':
-        assert plan['parameter_token_gradients']==dict(enabled=True,mode='kl_stratified',sample_size=256,seed=42)
+        assert plan['parameter_token_gradients']==dict(enabled=True,mode='kl_stratified',sample_size=64,seed=42)
     else:
         assert plan['parameter_token_gradients']==recorded['actor_rollout_ref']['actor']['policy_loss'].get(
             'gradient_study',{}).get('parameter_tokens',{'enabled':False})
@@ -90,4 +90,4 @@ def test_explicit_gpu_count_overrides_hardware_preset(gpus,tp):
     plan=json.loads(result.stdout)
     assert plan['gpu_count']==gpus and plan['rollout_tensor_parallel_size']==tp
     assert plan['rollout_batch']==plan['mini_batch_size']==128
-    assert plan['parameter_token_gradients']['sample_size']==256
+    assert plan['parameter_token_gradients']['sample_size']==64

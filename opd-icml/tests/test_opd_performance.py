@@ -136,3 +136,35 @@ def test_checkpoint_requires_every_rank_before_publishing(tmp_path,world,final_o
     assert (base/'latest_checkpointed_iteration.txt').read_text()=='106'
     if final_only:
         assert json.loads((current/'final_model_ready.json').read_text())['world_size']==world
+
+
+def test_interrupted_record_write_retains_checkpoint_until_replay(tmp_path):
+    spec = importlib.util.spec_from_file_location('checkpoint_audit', ROOT/'runtime/verl/trainer/ppo/quality_audit.py')
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    checkpoint = checkpoint_module()
+    base = tmp_path / 'checkpoints'
+    for step in (10, 20):
+        current = base / f'global_step_{step}'
+        (current / 'actor').mkdir(parents=True)
+        for kind in ('model', 'optim', 'extra_state'):
+            (current / 'actor' / f'{kind}_world_size_1_rank_0.pt').write_bytes(b'shard')
+        (current / 'data.pt').write_bytes(b'cursor')
+        (current / 'opd_optimizer_updates.json').write_text(json.dumps(dict(
+            rollout_round=step, optimizer_updates_done=step, budget_unit='rollout_rounds')))
+    tracker = base / 'latest_checkpointed_iteration.txt'
+    checkpoint.publish_and_rotate(base, 10, 1)
+    records = tmp_path / 'records'
+    records.mkdir()
+    # A directory at the temporary filename simulates a failed atomic JSON write.
+    obstruction = records / 'post_update_0020.json.tmp'
+    obstruction.mkdir()
+    def publish():
+        assert json.loads((records / 'post_update_0020.json').read_text())['step'] == 20
+        checkpoint.publish_and_rotate(base, 20, 1)
+    with pytest.raises(OSError):
+        audit.commit_post_update(records, 20, {}, publish)
+    assert tracker.read_text() == '10' and (base / 'global_step_10').is_dir()
+    obstruction.rmdir()
+    audit.commit_post_update(records, 20, {}, publish)
+    assert tracker.read_text() == '20' and not (base / 'global_step_10').exists()

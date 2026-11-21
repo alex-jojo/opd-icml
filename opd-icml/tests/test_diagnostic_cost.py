@@ -46,9 +46,12 @@ def test_full_gram_cache_uses_one_gather_and_preserves_all_groups(monkeypatch):
         calls.append(len(pairs))
         return original(pairs)
     monkeypatch.setattr(layout, 'dot_many', dot_many)
-    monkeypatch.setitem(implementation, '_gradient_cache_slots', lambda *_: 0)
-    expected, old_count = implementation['exact_gram'](lambda i: vectors[i], layout, 4)
-    assert old_count == 10 and calls == [1]*10
+    expected = {}
+    for i in range(4):
+        for j in range(i, 4):
+            for group, value in layout.dot(vectors[i], vectors[j]).items():
+                matrix = expected.setdefault(group, np.zeros((4, 4), dtype=np.float64))
+                matrix[i, j] = matrix[j, i] = value
     calls.clear()
     monkeypatch.setitem(implementation, '_gradient_cache_slots', lambda *_: 3)
     actual, count = implementation['exact_gram'](lambda i: vectors[i], layout, 4)

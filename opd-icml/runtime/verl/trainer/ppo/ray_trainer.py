@@ -952,6 +952,7 @@ class RayPPOTrainer:
             )
 
     def _save_checkpoint(self):
+        """Write checkpoint state and return the deferred OPD publication, if any."""
         from verl.utils.fs import local_mkdir_safe
 
         # path: given_path + `/global_step_{global_steps}` + `/actor`
@@ -1023,13 +1024,14 @@ class RayPPOTrainer:
         # latest checkpointed iteration tracker (for atomic usage)
         if replication_checkpoint:
             from verl.trainer.ppo.opd_replication_checkpoint import publish_and_rotate
-            publish_and_rotate(
+            from functools import partial
+            return partial(
+                publish_and_rotate,
                 self.config.trainer.default_local_dir, self.global_steps,
                 int(self.config.actor_rollout_ref.actor.policy_loss.get("jump_reuse_updates", 1)),
                 max_actor_ckpt_to_keep,
                 final_model_only=bool(self.config.trainer.get("opd_final_model_only_checkpoint", False)),
             )
-            return
         local_latest_checkpointed_iteration = os.path.join(
             self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt"
         )
@@ -1744,6 +1746,7 @@ class RayPPOTrainer:
                 # 2. It's the last training step.
                 # 3. The current step number is a multiple of the save frequency.
                 # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
+                publish_checkpoint = None
                 if self.config.trainer.save_freq > 0 and (
                     is_last_step or midpoint_reached or
                     self.global_steps % self.config.trainer.save_freq == 0 or esi_close_to_expiration
@@ -1751,7 +1754,7 @@ class RayPPOTrainer:
                     if esi_close_to_expiration:
                         print("Force saving checkpoint: ESI instance expiration approaching.")
                     with marked_timer("save_checkpoint", timing_raw, color="green"):
-                        self._save_checkpoint()
+                        publish_checkpoint = self._save_checkpoint()
 
                 with marked_timer("stop_profile", timing_raw):
                     next_step_profile = (
@@ -1871,12 +1874,12 @@ class RayPPOTrainer:
                 if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
                     self.train_dataloader.sampler.update(batch=batch)
 
-                # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=self.global_steps)
+                from verl.trainer.ppo.quality_audit import commit_post_update
+                audit_update = self.use_direction_reward or self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode") == "opd_top16"
+                commit_post_update(self.config.trainer.get("rollout_data_dir") if audit_update else None,
+                                   self.global_steps, metrics, publish_checkpoint)
 
-                if (self.use_direction_reward or self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode") == "opd_top16") and self.config.trainer.get("rollout_data_dir", None):
-                    from verl.trainer.ppo.quality_audit import dump_post_update
-                    dump_post_update(self.config.trainer.rollout_data_dir, self.global_steps, metrics)
+                logger.log(data=metrics, step=self.global_steps)
 
                 progress_bar.update(
                     int(metrics["actor/opd_optimizer_steps"])

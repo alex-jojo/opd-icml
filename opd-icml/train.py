@@ -243,9 +243,6 @@ def main():
         parser.error("--code-workers must be positive")
     if args.parameter_token_group_size is not None and args.parameter_token_group_size < 1:
         parser.error('--parameter-token-group-size must be positive')
-    if args.parameter_token_samples is not None and (
-            args.parameter_token_gradients != 'sampled' or args.parameter_token_samples < 2):
-        parser.error('--parameter-token-samples requires --parameter-token-gradients sampled and a count >= 2')
     if args.task != 'code' and (args.val_data or args.sandbox_url):
         parser.error("--val-data and --sandbox-url apply to --task code")
     profile = ROOT / "configs" / args.scale
@@ -262,6 +259,20 @@ def main():
         return
     if args.experiment is None:
         parser.error("--experiment is required unless --prepare-only is used")
+    default_run = ROOT / 'runs' / args.scale / args.experiment if args.task == 'math' else ROOT / 'runs/code' / args.scale / args.experiment
+    if args.rq4_strategy:
+        default_run = default_run.parent / ('rq4-' + args.rq4_strategy)
+    output = project_absolute(args.output or default_run)
+    saved_tokens = None
+    if args.resume and args.experiment == 'paired-full':
+        from resume_state import restore_paired_protocol
+        try:
+            saved_tokens = restore_paired_protocol(output, args)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+    if args.parameter_token_samples is not None and (
+            args.parameter_token_gradients != 'sampled' or args.parameter_token_samples < 2):
+        parser.error('--parameter-token-samples requires --parameter-token-gradients sampled and a count >= 2')
     config_name, cfg = training_config(profile, args.experiment, args.task)
     if args.rq4_strategy and args.experiment != 'paired-full':
         parser.error('--rq4-strategy requires the paired-full profile')
@@ -311,7 +322,9 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     study = cfg['actor_rollout_ref']['actor']['policy_loss'].get('gradient_study', {})
-    if args.parameter_token_gradients:
+    if saved_tokens is not None:
+        study['parameter_tokens'] = saved_tokens
+    elif args.parameter_token_gradients:
         if not study.get('enabled', False):
             parser.error('--parameter-token-gradients requires a gradient-study profile, such as paired-full')
         study['parameter_tokens'] = dict(enabled=args.parameter_token_gradients != 'off',
@@ -322,15 +335,11 @@ def main():
         if not study.get('enabled', False) or not study.get('parameter_tokens', {}).get('enabled', False):
             parser.error('--parameter-token-group-size requires enabled parameter-token diagnostics')
         study['parameter_tokens']['graph_group_size'] = args.parameter_token_group_size
-    default_run = ROOT / 'runs' / args.scale / args.experiment if args.task == 'math' else ROOT / 'runs/code' / args.scale / args.experiment
-    if args.rq4_strategy:
-        default_run = default_run.parent / ('rq4-' + args.rq4_strategy)
-    output = project_absolute(args.output or default_run)
     data = project_absolute(args.data or Path('data/eurus_code_train.parquet' if args.task == 'code' else 'data/dapo14k_train.parquet'))
     validation = project_absolute(args.val_data or Path('data/eurus_code_validation.parquet')) if args.task == 'code' else data
     command = [sys.executable, "-m", "verl.trainer.main_ppo", "--config-dir", Path(os.path.relpath(profile, output)).as_posix(),
                "--config-name", config_name, "hydra.run.dir=hydra"]
-    command += ['++' + key + '=' + ('[' + ','.join(map(str, value)) + ']' if isinstance(value, list) else json.dumps(value, ensure_ascii=False))
+    command += ['++' + key + '=' + json.dumps(value, ensure_ascii=False)
                 for key, value in hardware_overrides.items()]
     if args.parameter_token_gradients or args.parameter_token_group_size is not None:
         prefix = '++actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens.'

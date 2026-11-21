@@ -3,6 +3,46 @@ import json
 from pathlib import Path
 
 
+def restore_paired_protocol(output, args):
+    """Recover effective settings from the previous Hydra invocation before starting a new one."""
+    path = output / 'hydra/.hydra/config.yaml'
+    if not path.is_file():
+        # An old checkpoint can also be moved without its Hydra log directory.
+        if args.parameter_token_samples is not None and args.parameter_token_gradients is None:
+            args.parameter_token_gradients = 'sampled'
+        if (args.save_freq is None or args.parameter_token_gradients is None
+                or (args.parameter_token_gradients == 'sampled' and args.parameter_token_samples is None)):
+            raise ValueError(f'Missing saved training configuration {path}. Supply the original '
+                             '--save-freq, --parameter-token-gradients and (for sampled mode) '
+                             '--parameter-token-samples to resume this checkpoint.')
+        return None
+
+    import yaml
+    try:
+        cfg = yaml.safe_load(path.read_text(encoding='utf-8'))
+        tokens = cfg['actor_rollout_ref']['actor']['policy_loss']['gradient_study']['parameter_tokens']
+        frequency = cfg['trainer']['save_freq']
+        if type(frequency) is not int or frequency < 1 or type(tokens['enabled']) is not bool:
+            raise ValueError('invalid save frequency or diagnostic setting')
+        mode = {'kl_stratified': 'sampled', 'exact_all': 'exact-all'}[tokens['mode']] if tokens['enabled'] else 'off'
+        samples = tokens['sample_size'] if mode == 'sampled' else None
+        if mode == 'sampled' and (type(samples) is not int or samples < 2):
+            raise ValueError('invalid diagnostic sample size')
+    except (KeyError, TypeError, ValueError, yaml.YAMLError) as error:
+        raise ValueError(f'Invalid saved training protocol in {path}: {error}') from error
+
+    for flag, saved in [('save_freq', frequency), ('parameter_token_gradients', mode),
+                        ('parameter_token_samples', samples), ('parameter_token_group_size', tokens.get('graph_group_size', 4))]:
+        requested = getattr(args, flag)
+        if requested is not None and requested != saved:
+            raise ValueError(f'--{flag.replace("_", "-")} conflicts with the saved training protocol '
+                             f'(requested {requested}, saved {saved})')
+    args.save_freq = frequency
+    args.parameter_token_gradients = mode
+    args.parameter_token_samples = samples
+    return tokens
+
+
 def validate_resume_checkpoint(directory, world_size, updates_per_round):
     root = Path(directory).resolve()
     tracker = root/'latest_checkpointed_iteration.txt'

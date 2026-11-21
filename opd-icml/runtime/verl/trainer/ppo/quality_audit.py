@@ -145,3 +145,11 @@ def dump_pre_update(directory, step, batch, tokenizer):
 def dump_post_update(directory, step, metrics):
     # A pre_update file without a matching post_update is explicitly an unconfirmed update.
     atomic_json(Path(directory)/f'post_update_{step:04d}.json',dict(step=step,update_completed=True,metrics=redact(metrics)))
+
+
+def commit_post_update(directory, step, metrics, publish_checkpoint):
+    """Publish a restart point only after this step's local measurements are recorded."""
+    if directory:
+        dump_post_update(directory, step, metrics)
+    if publish_checkpoint is not None:
+        publish_checkpoint()

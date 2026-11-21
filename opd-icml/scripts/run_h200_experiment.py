@@ -81,8 +81,9 @@ def parser():
     p.add_argument('--cpu-ids', help='Linux CPU affinity, comma-separated IDs; inherited by all children')
     p.add_argument('--rollout-gpu-memory-utilization', type=float, default=.30)
     p.add_argument('--learning-rate', type=float, default=1e-5)
-    p.add_argument('--parameter-token-gradients', choices=['sampled', 'exact-all', 'off'], default='sampled')
-    p.add_argument('--parameter-token-samples', type=int, default=64)
+    p.add_argument('--parameter-token-gradients', choices=['sampled', 'exact-all', 'off'],
+                   help='Default: sampled for new runs, saved mode on resume')
+    p.add_argument('--parameter-token-samples', type=int, help='Default: 64 for new runs, saved count on resume')
     p.add_argument('--parameter-token-group-size', type=int)
     p.add_argument('--code-workers', type=int, default=8)
     p.add_argument('--eval-max-num-seqs', type=int, default=64)
@@ -164,12 +165,19 @@ def build_plan(args, environment):
                '--rollout-max-num-seqs', str(sequences),
                '--rollout-gpu-memory-utilization', str(args.rollout_gpu_memory_utilization),
                '--learning-rate', str(args.learning_rate),
-               '--parameter-token-gradients', args.parameter_token_gradients,
                '--code-workers', str(args.code_workers), '--output', project_relative(training)]
     if strategy and not legacy_full:
         command += ['--rq4-strategy', strategy]
-    if args.parameter_token_gradients == 'sampled':
-        command += ['--parameter-token-samples', str(args.parameter_token_samples)]
+    mode = args.parameter_token_gradients
+    if mode is None and not args.resume:
+        mode = 'sampled'
+    if mode is not None:
+        command += ['--parameter-token-gradients', mode]
+    samples = args.parameter_token_samples
+    if samples is None and mode == 'sampled' and not args.resume:
+        samples = 64
+    if samples is not None and (args.resume or mode == 'sampled'):
+        command += ['--parameter-token-samples', str(samples)]
     if args.parameter_token_group_size is not None:
         command += ['--parameter-token-group-size', str(args.parameter_token_group_size)]
     if args.save_freq is not None:
@@ -450,8 +458,14 @@ def main():
             elif args.cpu_ids is not None:
                 raise ValueError('--cpu-ids requires Linux CPU affinity support')
         env = child_environment(plan, os.environ)
-        # CPU grading needs neither training configuration nor any visible GPUs.
-        if args.stage != 'grade':
+        if args.stage in ('eval', 'generate'):
+            # Evaluation needs just the endpoint budget, even on a one-CPU allocation.
+            from train import training_config, paired_rq4_overrides
+            _, config = training_config(ROOT / 'configs' / args.scale, plan['experiment'], plan['task'])
+            paired_rq4_overrides(config, plan['rq4_strategy'])
+            plan['resolved_training'] = dict(rounds_cap=config['trainer']['opd_pause_after_rollout_rounds'],
+                updates_per_round=config['actor_rollout_ref']['actor']['policy_loss']['jump_reuse_updates'])
+        elif args.stage != 'grade':
             resolved = subprocess.run(plan['train'] + ['--dry-run'], cwd=ROOT, env=env,
                                       check=True, capture_output=True, text=True, encoding='utf-8')
             plan['resolved_training'] = json.loads(resolved.stdout)

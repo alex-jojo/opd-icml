@@ -206,3 +206,47 @@ def test_existing_training_output_is_never_overwritten(tmp_path, monkeypatch):
         h200.execute(args, plan, h200.child_environment(plan, {}))
     assert saved.read_text() == 'existing run'
 
+
+def dry_run(run, *options):
+    return subprocess.run([sys.executable, str(ROOT / 'scripts/run_h200_experiment.py'),
+                           '--scale', '1.7b', '--devices', '0', '--output', str(run), '--dry-run', *options],
+                          capture_output=True, text=True, encoding='utf-8')
+
+
+def test_resume_restores_saved_hydra_settings_and_rejects_conflicts(tmp_path):
+    saved = tmp_path / 'training/hydra/.hydra/config.yaml'
+    saved.parent.mkdir(parents=True)
+    protocol = dict(enabled=True, mode='kl_stratified', sample_size=256, graph_group_size=2, seed=83)
+    saved.write_text(json.dumps(dict(trainer=dict(save_freq=10), actor_rollout_ref=dict(actor=dict(
+        policy_loss=dict(gradient_study=dict(parameter_tokens=protocol)))))))
+    resumed = dry_run(tmp_path, '--resume')
+    assert resumed.returncode == 0, resumed.stderr
+    actual = json.loads(resumed.stdout)['resolved_training']
+    assert actual['parameter_token_gradients'] == protocol
+    assert '++trainer.save_freq=10' in actual['command']
+    assert '++trainer.opd_final_model_only_checkpoint=false' in actual['command']
+    for option, value in [('--parameter-token-samples', '64'), ('--save-freq', '106'),
+                          ('--parameter-token-gradients', 'off'), ('--parameter-token-group-size', '4')]:
+        result = dry_run(tmp_path, '--resume', option, value)
+        assert result.returncode != 0 and option + ' conflicts' in result.stderr
+
+
+def test_resume_without_hydra_requires_explicit_protocol(tmp_path):
+    result = dry_run(tmp_path, '--resume')
+    assert result.returncode != 0 and 'Missing saved training configuration' in result.stderr
+    result = dry_run(tmp_path, '--resume', '--save-freq', '10', '--parameter-token-samples', '256')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['resolved_training']['parameter_token_gradients']['sample_size'] == 256
+
+
+@pytest.mark.parametrize('stage,strategy,cap,updates', [('eval', 'full', 106, 1), ('generate', 'reuse', 53, 2)])
+def test_evaluation_endpoint_needs_only_one_cpu(tmp_path, stage, strategy, cap, updates):
+    result = dry_run(tmp_path, '--stage', stage, '--rq4-strategy', strategy, '--ray-num-cpus', '1')
+    assert result.returncode == 0, result.stderr
+    plan = json.loads(result.stdout)
+    assert plan['ray_cpus'] == 1
+    assert plan['resolved_training'] == dict(rounds_cap=cap, updates_per_round=updates)
+    assert not list(tmp_path.iterdir())
+    train = dry_run(tmp_path, '--stage', 'train', '--ray-num-cpus', '1')
+    assert train.returncode != 0 and 'at least 2 Ray CPUs' in train.stderr
+

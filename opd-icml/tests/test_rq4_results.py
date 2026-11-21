@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT/'scripts'))
 import rq4_results as rq4
 import run_h200_experiment as h200
 import run_h200_suite as suite
+import cpu_resources
 from package_results import package_results
 from test_h200_experiments import checkpoint_fixture
 sys.path.insert(0, str(ROOT/'runtime/verl/trainer/ppo'))
@@ -92,8 +93,11 @@ def test_adaptive_window_published_with_decision(tmp_path):
 
 
 def test_suite_rq4_handoff_scores_and_zip(tmp_path, monkeypatch):
+    cpus = list(range(64))
+    monkeypatch.setattr(cpu_resources, 'allowed_cpu_ids', lambda: cpus)
+    monkeypatch.setattr(cpu_resources, 'cpu_quota', lambda: None)
     plan = suite.build_suite(suite.parser().parse_args(['--output', str(tmp_path/'suite')]),
-                             {}, list(range(64)), 512)
+                             {}, cpus, 512)
     paths = []
     base_runs = []
     early_evals = []
@@ -336,7 +340,7 @@ def test_matched_real_hydra_config(scale, strategy):
     assert policy.replication17.rounds == cfg.trainer.opd_pause_after_rollout_rounds == cfg.trainer.total_training_steps
     assert cfg.trainer.total_training_steps*policy.jump_reuse_updates == 106
     assert cfg.data.train_batch_size == cfg.actor_rollout_ref.actor.ppo_mini_batch_size == 128
-    assert policy.gradient_study.parameter_tokens.sample_size == 256 and policy.fixed_heldout_probe_size == 0
+    assert policy.gradient_study.parameter_tokens.sample_size == 64 and policy.fixed_heldout_probe_size == 0
     assert policy.replication17.enabled and policy.replication17.mode == 'full'
     assert policy.replication17.freeze_step == 10 and policy.replication17.rank == 128
     assert policy.gradient_study.enabled and policy.gradient_study.validation_interval == 10
