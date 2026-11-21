@@ -39,13 +39,13 @@ def worker(rank, address):
         counts = {}
         vector_bytes = sum(p.numel() * 4 for p in layout.params)
         for mode in ('replay', 'partial', 'cache', 'mixed_capacity', 'one_rank_low_memory'):
-            units = {'replay': 0, 'partial': 4.1, 'cache': 5.1,
-                     'mixed_capacity': 4.1 if rank == 1 else 5.1,
-                     'one_rank_low_memory': 0 if rank == 1 else 5.1}[mode]
+            units = {'replay': 0, 'partial': 3.1, 'cache': 4.1,
+                     'mixed_capacity': 3.1 if rank == 1 else 4.1,
+                     'one_rank_low_memory': 0 if rank == 1 else 4.1}[mode]
             os.environ['OPD_GRADIENT_CACHE_MAX_GIB'] = str(units * vector_bytes * 2 / 1024**3)
             gram, calls = study.exact_gram(lambda i: study.gradient(actor, batches[i], basis)[0], layout, 4)
             counts[mode] = calls
-            assert calls == {'replay': 10, 'partial': 5, 'cache': 4, 'mixed_capacity': 5, 'one_rank_low_memory': 10}[mode]
+            assert calls == {'replay': 7, 'partial': 5, 'cache': 4, 'mixed_capacity': 5, 'one_rank_low_memory': 7}[mode]
             if reference is None: reference = gram
             for group in reference: np.testing.assert_array_equal(gram[group], reference[group])
             assert all(p.grad is None for p in actor.actor_module.parameters())

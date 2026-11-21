@@ -13,7 +13,7 @@ from test_parameter_tokens import audit_module, make_actor, make_data, optimizer
 study = importlib.import_module(audit_module.__package__ + '.opd_gradient_study')
 
 
-@pytest.mark.parametrize('slots,expected_calls', [(0, 10), (1, 7), (2, 5), (3, 4)])
+@pytest.mark.parametrize('slots,expected_calls', [(0, 7), (1, 7), (2, 5), (3, 4)])
 def test_partial_cache_preserves_real_gradients_and_next_update(monkeypatch, slots, expected_calls):
     torch.manual_seed(314)
     actor, data = make_actor(tied=True), make_data()
@@ -34,12 +34,12 @@ def test_partial_cache_preserves_real_gradients_and_next_update(monkeypatch, slo
         return study.gradient(actor, batches[i], basis)[0]
     monkeypatch.setattr(study, '_gradient_cache_slots', lambda *_: 0)
     expected, count = study.exact_gram(oracle, layout, 4)
-    assert count == 10
+    assert count == 7
     requested.clear()
     monkeypatch.setattr(study, '_gradient_cache_slots', lambda *_: slots)
     actual, count = study.exact_gram(oracle, layout, 4)
     assert count == len(requested) == expected_calls
-    assert requested[:4] == [0, 1, 2, 3]
+    assert list(dict.fromkeys(requested)) == [0, 1, 2, 3]
     assert actual.keys() == expected.keys()
     for key in expected: np.testing.assert_array_equal(actual[key], expected[key])
     assert torch.equal(rng, torch.random.get_rng_state())
@@ -64,11 +64,11 @@ def memory_context(monkeypatch, parameters, free_gib, cap='64', world=1):
 
 
 @pytest.mark.parametrize('parameters,free_gib,cap,world,slots', [
-    (4_000_000_000, 512, '64', 1, 2),
+    (4_000_000_000, 512, '64', 1, 3),
     (4_000_000_000, 512, '128', 1, 3),
     (4_000_000_000, 128, '64', 1, 0),
     (1_700_000_000, 160, '64', 1, 3),
-    (1_000_000_000, 512, '64', 4, 2),
+    (1_000_000_000, 512, '64', 4, 3),
     (10, 512, '0', 1, 0),
     (10, 512, 'bad', 1, 0),
     (10, 512, 'nan', 1, 0),

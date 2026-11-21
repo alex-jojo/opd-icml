@@ -152,8 +152,9 @@ class ParameterLayout:
 def _gradient_cache_slots(layout, count):
     """Choose a common number of retained tail gradients within the CPU budget.
 
-    Account for cached vectors, the working anchor/other vectors, and one
-    capture scratch vector. The last gradients are reused most often. Missing
+    Account for cached vectors and working anchor/other vectors. capture()
+    allocates the returned CPU tensors directly, with no full-vector scratch.
+    The last gradients are reused most often. Missing
     memory information disables caching; every rank uses the smallest capacity.
     """
     local_slots = 0
@@ -179,7 +180,7 @@ def _gradient_cache_slots(layout, count):
                 # If at most two indices are uncached, no uncached pair is
                 # revisited after the tail cache fills. Only the anchor is extra.
                 working = 1 if count - slots <= 2 else 2
-                required = (slots + working + 1) * vector_bytes
+                required = (slots + working) * vector_bytes
                 if required <= budget:
                     local_slots = slots
     except (ImportError, OSError, ValueError, AttributeError, OverflowError):
@@ -187,9 +188,38 @@ def _gradient_cache_slots(layout, count):
     return min(dp.gather(local_slots))
 
 
+def _two_buffer_gram(oracle, layout, count):
+    """Reuse either endpoint of each pair; never retain more than two vectors.
+
+    K4 edge order covers all six pairs in seven gradient calls (formerly ten).
+    A discarded buffer is released BEFORE the next oracle/capture allocation.
+    """
+    edges = {2: [(0,1)], 3: [(0,1),(0,2),(1,2)],
+             4: [(0,1),(0,2),(1,2),(1,3),(2,3),(0,3)]}[count]
+    buffers = {}; matrices = {}; diagonals = set(); calls = 0
+    def record(indices):
+        pairs = [(buffers[i], buffers[j]) for i,j in indices]
+        values = (layout.dot_many(pairs) if hasattr(layout, 'dot_many') else
+                  [layout.dot(a,b) for a,b in pairs])
+        for (i,j), groups in zip(indices, values):
+            for group, value in groups.items():
+                matrix = matrices.setdefault(group,np.zeros((count,count),np.float64))
+                matrix[i,j] = matrix[j,i] = value
+    for edge in edges:
+        for old in list(buffers):
+            if old not in edge:del buffers[old]
+        for i in edge:
+            if i not in buffers:
+                buffers[i] = oracle(i); calls += 1
+        indices = [(i,i) for i in edge if i not in diagonals] + [edge]
+        record(indices)
+        diagonals.update(edge)
+    return matrices, calls
+
+
 def exact_gram(oracle,layout,count):
-    """Reuse as many exact FP32 gradients as fit; retain original pair ordering."""
-    # Keep the same dot product implementation, ordering and parameter groups.
+    """Reuse exact FP32 gradients; preserve every Gram entry and its reduction."""
+    # Keep each dot product's reduction order and parameter groups.
     # The cache lives only for this invocation at one fixed checkpoint.
     if getattr(layout,'replicated_adapter',None) is not None:
         vectors=[oracle(i) for i in range(count)];matrices={}
@@ -202,6 +232,10 @@ def exact_gram(oracle,layout,count):
     slots=_gradient_cache_slots(layout,count)
     if dp.primary():
         print(f'[gradient Gram] retaining {slots}/{max(0,count-1)} reusable gradients',flush=True)
+    if slots == 0 and count in (2,3,4):
+        result,calls = _two_buffer_gram(oracle,layout,count)
+        if dp.primary():print(f'[gradient Gram] {count} subsets, {calls} gradient evaluations, 2 live vectors',flush=True)
+        return result,calls
     if slots >= count - 1 and hasattr(layout, 'dot_many'):
         # The same budget already permits these retained vectors. Convert each
         # CPU block once for all pairings, and gather all Gram entries together.
@@ -213,6 +247,7 @@ def exact_gram(oracle,layout,count):
             for group, value in groups.items():
                 matrix = matrices.setdefault(group, np.zeros((count,count),np.float64))
                 matrix[i,j] = matrix[j,i] = value
+        if dp.primary():print(f'[gradient Gram] {count} subsets, {count} gradient evaluations, {count} live vectors',flush=True)
         return matrices, count
     matrices={};calls=0;cache={}
     cache_start=count-slots
@@ -236,6 +271,7 @@ def exact_gram(oracle,layout,count):
                 matrices[group][j,i]=value
             if i!=j:del other
         del anchor
+    if dp.primary():print(f'[gradient Gram] {count} subsets, {calls} gradient evaluations, tail-cache path',flush=True)
     return matrices,calls
 
 
@@ -305,8 +341,12 @@ def hidden_route(actor,basis,route):
     finally:handle.remove()
 
 
-def gradient(actor,data,basis,route='full',normalization='token',capture_hidden=False):
-    """All ranks see the same diagnostic batch; gradients remain sharded."""
+def gradient(actor,data,basis,route='full',normalization='token',capture_hidden=False,collect_losses=True):
+    """All ranks see the same diagnostic batch; gradients remain sharded.
+
+    collect_losses=False skips only unused per-response readouts, never the
+    differentiated loss. Other callers transfer all requested losses together.
+    """
     if hasattr(actor,'fixed_u_adapter'):
         from .opd_adapter_diagnostics import cached_gradient
         return cached_gradient(actor,data,basis,route,normalization,capture_hidden)
@@ -338,16 +378,21 @@ def gradient(actor,data,basis,route='full',normalization='token',capture_hidden=
                 handle=_final_norm_module(actor.actor_module).register_forward_hook(hook)
             try:
                 _,z,_,_=forward(actor,x,float(data.meta_info['temperature']),x['opd_top16_ids'],diagnostics=False)
-                kl=reverse_kl(z,x['opd_teacher_top16_logits']);per=(kl*mask).sum(1)/mask.sum(1).clamp_min(1)
+                kl=reverse_kl(z,x['opd_teacher_top16_logits'])
+                per=(kl*mask).sum(1)/mask.sum(1).clamp_min(1) if collect_losses or normalization!='token' else None
                 loss=(kl*mask).sum()*factor/total if normalization=='token' else per.sum()*factor/len(data)
-                loss.backward();losses.extend(per.detach().cpu().tolist())
+                loss.backward()
+                if collect_losses:losses.append(per.detach())
                 # Release the previous microbatch's outputs before the next
                 # forward, including autograd references held by loss/per/z.
                 del z,kl,per,loss,x
             finally:
                 if handle is not None:handle.remove()
         vector=layout.capture()
-    loss=np.asarray(losses) if replicated else np.concatenate(dp.gather(np.asarray(losses)))
+    loss=None
+    if collect_losses:
+        loss=torch.cat(losses).cpu().double().numpy()
+        if not replicated:loss=np.concatenate(dp.gather(loss))
     return vector,loss,moments.finish() if moments is not None else None
 
 
@@ -362,9 +407,9 @@ def losses(actor,data):
             x={k:v.to(device) for k,v in part.batch.items()}
             _,z,_,_=forward(actor,x,float(data.meta_info['temperature']),x['opd_top16_ids'],diagnostics=False)
             mask=x['response_mask'];kl=reverse_kl(z,x['opd_teacher_top16_logits'])
-            out.extend(((kl*mask).sum(1)/mask.sum(1).clamp_min(1)).cpu().tolist())
+            out.append(((kl*mask).sum(1)/mask.sum(1).clamp_min(1)).detach())
     reshard_after_readout(actor)
-    return np.concatenate(dp.gather(np.asarray(out)))
+    return np.concatenate(dp.gather(torch.cat(out).cpu().double().numpy()))
 
 
 class GradientStudy:
@@ -418,9 +463,9 @@ class GradientStudy:
         train_rows = indices.reshape(m,size).tolist()
         batches=[train.select_idxs(rows) for rows in train_rows]
         if self.payload is not None:
-            read_gradient, layout = self.grad, self.layout
+            read_gradient, layout = partial(self.grad,collect_losses=False), self.layout
         else:
-            read_gradient = partial(gradient, self.actor, basis=basis)
+            read_gradient = partial(gradient, self.actor, basis=basis, collect_losses=False)
             layout = ParameterLayout(self.actor.actor_module)
         pool = (ThreadPoolExecutor(max_workers=1, thread_name_prefix='opd-cpu-geometry')
                 if dp.primary() and self.cfg.get('overlap_cpu_geometry', True) else nullcontext())
@@ -496,7 +541,7 @@ class GradientStudy:
             mean=None;seen=set()
             def oracle(i):
                 nonlocal mean
-                v,_,_=self.grad(items[i],normalization='response')
+                v,_,_=self.grad(items[i],normalization='response',collect_losses=False)
                 if i not in seen:
                     if mean is None:mean=[x/k for x in v]
                     else:
