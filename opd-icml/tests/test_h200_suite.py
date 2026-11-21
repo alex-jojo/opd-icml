@@ -31,11 +31,11 @@ def test_parallel_plan_has_disjoint_gpu_cpu_and_aggregate_memory_budgets(tmp_pat
     small = [q[0] for q in plan['small_queues']]
     assert [j['devices'] for j in small] == [['3'], ['1'], ['2'], ['0']]
     groups = [set(j['cpu_ids']) for j in small]+[set(plan['grade_cpus'])]
-    assert sum(map(len, groups)) == len(set.union(*groups)) == 64
+    assert sum(map(len, groups)) == len(set.union(*groups)) == 24
     for option, cap in [('--gradient-cache-gib', 64), ('--ray-object-store-gib', 16)]:
         assert sum(float(value(j['command'], option)) for j in small) <= cap
     for job in small+plan['large']:
-        assert value(job['command'], '--parameter-token-samples') == '256'
+        assert value(job['command'], '--parameter-token-samples') == '64'
         assert value(job['command'], '--stage') == 'train-generate'
     assert all(j['devices'] == ['3', '1', '2', '0'] for j in plan['large'])
 
@@ -44,7 +44,7 @@ def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     plan = plan_for(tmp_path, free=180, cpus=24)
     assert plan['small_parallelism'] == 1
     assert len(plan['small_queues'][0]) == 8
-    assert all(value(j['command'], '--parameter-token-samples') == '256' for j in plan['small_queues'][0])
+    assert all(value(j['command'], '--parameter-token-samples') == '64' for j in plan['small_queues'][0])
 
 
 @pytest.mark.parametrize('cpus', [6, 7, 8, 16, 64])
@@ -79,7 +79,7 @@ def test_profiles_resolve_through_real_launcher_without_changing_budget(scale, t
                                 capture_output=True, text=True, encoding='utf-8')
         assert result.returncode == 0, result.stderr
         actual = json.loads(result.stdout)
-        assert actual['parameter_token_gradients']['sample_size'] == 256
+        assert actual['parameter_token_gradients']['sample_size'] == 64
         assert actual['rounds_cap'] == 106 and actual['rollout_batch'] == actual['mini_batch_size'] == 128
         assert actual['updates_per_round'] == 1 and actual['learning_rate'] == 1e-5
         assert 'ray_kwargs.ray_init.address' in actual['command']

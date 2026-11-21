@@ -21,7 +21,7 @@ ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.30}"
 
 # auto uses sampled diagnostics for paired-full, inherits YAML for other arms.
 PARAMETER_TOKEN_GRADIENTS="${PARAMETER_TOKEN_GRADIENTS:-auto}" # auto | sampled | exact-all | off | inherit
-PARAMETER_TOKEN_SAMPLES="${PARAMETER_TOKEN_SAMPLES:-256}"    # sampled: 64 high-KL + 192 remaining.
+PARAMETER_TOKEN_SAMPLES="${PARAMETER_TOKEN_SAMPLES:-64}"    # sampled: 16 high-KL + 48 remaining.
 STUDENT_PATH="${STUDENT_PATH:-}"   # Empty: download/reuse the profile's pinned student.
 TEACHER_PATH="${TEACHER_PATH:-}"   # Empty: download/reuse the profile's pinned teacher.
 DATA_PATH="${DATA_PATH:-}"         # Empty: data/dapo14k_train.parquet.

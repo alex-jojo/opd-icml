@@ -9,6 +9,7 @@ import sys
 from model_assets import model_profiles, prepare_models
 from wandb_config import load_wandb_environment, apply_wandb_tracking
 from project_paths import project_absolute, project_relative
+from cpu_resources import resolve_cpu_resources, bounded_thread_environment
 
 ROOT = Path(__file__).resolve().parent
 
@@ -212,7 +213,7 @@ def main():
     parser.add_argument("--parameter-token-gradients", choices=["exact-all", "sampled", "off"],
                         help="Override full per-token parameter-gradient recording (gradient-study profiles only)")
     parser.add_argument("--parameter-token-samples", type=int,
-                        help="Sampled diagnostic token count (default 256); one quarter from the top-KL decile")
+                        help="Sampled diagnostic token count (default 64); one quarter from the top-KL decile")
     parser.add_argument('--parameter-token-group-size', type=int,
                         help='Tokens from one response sharing a diagnostic graph (default 4; 1 disables reuse)')
     parser.add_argument("--hardware", choices=["l40x4", "a100x1", "h200x1", "h200x4"],
@@ -280,10 +281,8 @@ def main():
                     # Top16 teachers deliberately bypass FSDP's per-layer CPU
                     # offload. Opt in to one explicit transfer per query stage.
                     hardware_overrides['actor_rollout_ref.ref.opd_stage_offload'] = value == 'on'
-        if args.ray_num_cpus is not None:
-            if args.ray_num_cpus < 1:
-                raise ValueError('--ray-num-cpus must be positive')
-            hardware_overrides['ray_kwargs.ray_init.num_cpus'] = args.ray_num_cpus
+        cpu = resolve_cpu_resources(int(cfg['trainer']['n_gpus_per_node']), args.ray_num_cpus)
+        hardware_overrides['ray_kwargs.ray_init.num_cpus'] = cpu['ray_cpus']
         if args.ray_object_store_gib is not None:
             if not 0 < args.ray_object_store_gib < float('inf'):
                 raise ValueError('--ray-object-store-gib must be finite and positive')
@@ -318,7 +317,7 @@ def main():
         study['parameter_tokens'] = dict(enabled=args.parameter_token_gradients != 'off',
             mode='kl_stratified' if args.parameter_token_gradients == 'sampled' else 'exact_all')
         if args.parameter_token_gradients == 'sampled':
-            study['parameter_tokens'].update(sample_size=args.parameter_token_samples or 256, seed=42)
+            study['parameter_tokens'].update(sample_size=args.parameter_token_samples or 64, seed=42)
     if args.parameter_token_group_size is not None:
         if not study.get('enabled', False) or not study.get('parameter_tokens', {}).get('enabled', False):
             parser.error('--parameter-token-group-size requires enabled parameter-token diagnostics')
@@ -338,7 +337,7 @@ def main():
         command += [prefix + key + '=' + json.dumps(value) for key,value in study['parameter_tokens'].items()]
     print(json.dumps(dict(experiment=args.experiment, rq4_strategy=args.rq4_strategy, scale=args.scale, task=args.task, gpu_count=cfg["trainer"]["n_gpus_per_node"],
                           hardware_profile=args.hardware,
-                          explicit_gpu_count=args.num_gpus,
+                          explicit_gpu_count=args.num_gpus, cpu_resources=cpu,
                           micro_batch_size_per_gpu=cfg['actor_rollout_ref']['actor']['ppo_micro_batch_size_per_gpu'],
                           teacher_micro_batch_size_per_gpu=cfg['actor_rollout_ref']['ref']['log_prob_micro_batch_size_per_gpu'],
                           optimizer_offload=cfg['actor_rollout_ref']['actor']['fsdp_config']['optimizer_offload'],
@@ -361,6 +360,8 @@ def main():
                           models=models, command=shlex.join(command)), indent=2), flush=True)
     if args.dry_run:
         return
+    if hasattr(os, 'sched_setaffinity'):
+        os.sched_setaffinity(0, set(cpu['cpu_ids']))
     if not data.is_file():
         parser.error(f"Missing training parquet: {data}. See README for the preparation command.")
     if args.task == 'code':
@@ -386,7 +387,7 @@ def main():
                 int(cfg['actor_rollout_ref']['actor']['policy_loss']['jump_reuse_updates']))
         except (ValueError, OSError) as error:
             parser.error(str(error))
-    env = tracking_env.copy()
+    env = bounded_thread_environment(tracking_env)
     if args.num_gpus is not None:
         # Ray must see the same GPU subset requested by the launcher. Preserve
         # user ordering/UUIDs, selecting a prefix rather than inventing IDs.

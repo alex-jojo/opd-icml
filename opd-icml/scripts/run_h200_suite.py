@@ -21,6 +21,7 @@ from package_results import archive_path, package_results
 from cleanup_model_artifacts import print_disk_space
 from disk_space import require_space
 import rq4_results
+from cpu_resources import available_cpu_ids, default_ray_cpus
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
 LARGE = ['8b', 'gemma3-12b', 'deepseek-coder-33b']
@@ -29,7 +30,7 @@ GIB = 1024**3
 
 def available_resources():
     import psutil
-    cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else list(range(os.cpu_count() or 1))
+    cpus = available_cpu_ids()
     available = psutil.virtual_memory().available
     for limit, used in [('/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory.current'),
                         ('/sys/fs/cgroup/memory/memory.limit_in_bytes', '/sys/fs/cgroup/memory/memory.usage_in_bytes')]:
@@ -50,7 +51,7 @@ def parser():
     p.add_argument('--max-parallel-small', type=int, choices=[1, 2, 3, 4], default=4)
     p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
     p.add_argument('--parameter-token-gradients', choices=['sampled', 'exact-all'], default='sampled')
-    p.add_argument('--parameter-token-samples', type=int, default=256)
+    p.add_argument('--parameter-token-samples', type=int, default=64)
     p.add_argument('--gradient-cache-total-gib', type=float, default=64)
     p.add_argument('--ray-object-store-total-gib', type=float, default=16)
     p.add_argument('--dry-run', action='store_true')
@@ -94,6 +95,7 @@ def build_suite(args, environment, cpus, free_gib):
         common.append('--keep-model-files')
     def job(scale, ids, cores, concurrency, strategy=None):
         spec = EXPERIMENTS[scale]
+        cores = cores[:default_ray_cpus(spec.gpus)]
         if len(cores) < spec.gpus + 1:
             raise ValueError(f'{scale} requires at least {spec.gpus + 1} training CPUs')
         name = f'{scale}-{strategy}' if strategy in ('early-stop', 'reuse') else scale

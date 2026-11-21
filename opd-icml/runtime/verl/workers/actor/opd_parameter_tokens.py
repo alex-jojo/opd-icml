@@ -173,7 +173,7 @@ class FullParameterTokenAudit:
         if self.mode not in {'exact_all', 'kl_stratified'}:
             raise ValueError('Unsupported parameter token audit mode: ' + str(self.mode))
         if self.mode == 'kl_stratified':
-            size, seed = self.cfg.get('sample_size', 256), self.cfg.get('seed', 42)
+            size, seed = self.cfg.get('sample_size', 64), self.cfg.get('seed', 42)
             if int(size) != size or int(seed) != seed or size < 2 or seed < 0:
                 raise ValueError('sample_size must be an integer >= 2 and seed a nonnegative integer')
         from .opd_top16 import _unwrap_actor_module
@@ -215,7 +215,7 @@ class FullParameterTokenAudit:
                 lp = data.batch['opd_student_top16_logits'].detach().cpu().double().log_softmax(-1)
                 lq = data.batch['opd_teacher_top16_logits'].detach().cpu().double().log_softmax(-1)
                 kl = (lp.exp() * (lp-lq)).sum(-1).clamp_min(0).numpy()[mask]
-                return stratified_plan(kl, int(self.cfg.get('sample_size', 256)),
+                return stratified_plan(kl, int(self.cfg.get('sample_size', 64)),
                                        int(self.cfg.get('seed', 42)), step, inner)
             # Every FSDP rank differentiates the exact same sampled token loss.
             sampling = dp.primary_call(choose)

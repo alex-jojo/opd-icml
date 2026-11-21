@@ -26,7 +26,7 @@ def test_explicit_micro_batch_wins_over_hardware_and_hydra_matches_report():
     assert report['micro_batch_size_per_gpu']==4 and report['mini_batch_size']==128
     assert report['rollout_batch']==128 and report['learning_rate']==2e-5
     assert report['rollout_max_num_seqs']==32 and report['rollout_gpu_memory_utilization']==.4
-    assert report['rounds_cap']==106 and report['parameter_token_gradients']['sample_size']==256
+    assert report['rounds_cap']==106 and report['parameter_token_gradients']['sample_size']==64
     command=shlex.split(report['command'])
     assert sum(c.startswith('++actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=') for c in command)==1
     overrides=[c for c in command if c.startswith('++')]

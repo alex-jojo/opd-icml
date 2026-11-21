@@ -73,7 +73,7 @@ bash scripts/h200/run_all.sh \
 
 **不用逐个下载模型、准备数据或启动七个脚本。**总入口会自动完成这些步骤。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘；33B 训练还需要充分主存。
 
-七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。默认在更新 1、5、10、…、105、106 抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量。每步的轻量 RQ1 汇总及观测步的逐 token 能量和抽样权重随结果 ZIP 保存在 `training/training_records/rq1_step_XXXX.json`；未测量步明确留空。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
+七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。默认在更新 1、5、10、…、105、106 抽样 64 个 token，计算各 token 的全模型参数梯度并估计总体能量。每步的轻量 RQ1 汇总及观测步的逐 token 能量和抽样权重随结果 ZIP 保存在 `training/training_records/rq1_step_XXXX.json`；未测量步明确留空。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
 
 RQ2 在第 1、5、10、…、105、106 次 FULL 参数更新后测量同一组固定 probe。`training/training_records/rq2/` 保存初始化的 hidden 与位置、各观测步的累计位移 RMS、特征值谱和前 128 个方向。从第 10 步起还记录固定第 10 步子空间的覆盖率和重合度。
 同目录的 `gradient_XXX.npz` 在上述 23 个观测点保存训练 token 的完整 hidden 梯度谱及其自身 top-128 能量占比。第 15 次更新起，同时保存梯度在第 10 次更新后固定的 probe 子空间 U₁₀ 内的能量占比。

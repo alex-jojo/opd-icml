@@ -50,7 +50,7 @@ def test_seven_actual_shell_entry_points_keep_train_and_evaluation_gpus_equal(na
     assert actual['hardware_profile'] == f'h200x{gpus}'
     assert actual['rollout_batch'] == actual['mini_batch_size'] == 128
     assert actual['rounds_cap'] == 106 and actual['updates_per_round'] == 1
-    assert actual['parameter_token_gradients']['sample_size'] == 256
+    assert actual['parameter_token_gradients']['sample_size'] == 64
     if task == 'code':
         assert plan['evaluate'][plan['evaluate'].index('--parallel-mode') + 1] == 'tensor'
         assert '--prompt-style' in plan['evaluate'] and 'chat' in plan['evaluate']

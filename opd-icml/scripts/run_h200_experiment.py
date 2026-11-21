@@ -19,6 +19,7 @@ from project_paths import project_absolute, project_relative, saved_path_matches
 from package_results import archive_path, package_results
 from cleanup_model_artifacts import finish_experiment, print_disk_space, temporary_early_export, register_external_models
 import rq4_results
+from cpu_resources import resolve_cpu_resources, bounded_thread_environment
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ def parser():
     p.add_argument('--rollout-gpu-memory-utilization', type=float, default=.30)
     p.add_argument('--learning-rate', type=float, default=1e-5)
     p.add_argument('--parameter-token-gradients', choices=['sampled', 'exact-all', 'off'], default='sampled')
-    p.add_argument('--parameter-token-samples', type=int, default=256)
+    p.add_argument('--parameter-token-samples', type=int, default=64)
     p.add_argument('--parameter-token-group-size', type=int)
     p.add_argument('--code-workers', type=int, default=8)
     p.add_argument('--eval-max-num-seqs', type=int, default=64)
@@ -137,12 +138,9 @@ def build_plan(args, environment):
     sequences = args.rollout_max_num_seqs if args.rollout_max_num_seqs is not None else sequences
     optimizer_offload = args.optimizer_offload or offload
     teacher_offload = args.teacher_offload or offload
-    cpus = args.ray_num_cpus or max(1, len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count() or 1)
-    if args.ray_num_cpus is not None and args.ray_num_cpus < 1:
-        raise ValueError('--ray-num-cpus must be positive')
-    if args.stage in ('all', 'train', 'train-generate') and cpus < gpus + 1:
-        raise ValueError(f'Training on {gpus} GPUs requires at least {gpus + 1} Ray CPUs '
-                         '(one per GPU worker plus one TaskRunner)')
+    cpu = resolve_cpu_resources(gpus, args.ray_num_cpus, args.cpu_ids,
+                                training=args.stage in ('all', 'train', 'train-generate'))
+    cpus = cpu['ray_cpus']
     if not 0 < args.ray_object_store_gib < float('inf') or not 0 <= args.gradient_cache_gib < float('inf'):
         raise ValueError('Ray memory must be positive and cache memory nonnegative, both finite')
     if task != 'code' and args.val_data:
@@ -236,22 +234,19 @@ def build_plan(args, environment):
         path_base='project_root', cuda_visible_devices=devices, output=project_relative(run), models=read_models(args.scale),
         checkpoints_dir=project_relative(checkpoints_root), merged_dir=project_relative(merged),
         model_artifacts=project_relative(artifacts) if artifacts else None,
-        profile=args.profile, ray_cpus=cpus, gradient_cache_gib=args.gradient_cache_gib,
+        profile=args.profile, ray_cpus=cpus, cpu_ids=cpu['cpu_ids'], cpu_resources=cpu,
+        gradient_cache_gib=args.gradient_cache_gib,
         prepare_training=prepare, prepare_evaluation=prepare_eval,
         train=command, merge=merge, evaluate=evaluation, evaluate_base=evaluate_base)
 
 
 def child_environment(plan, environment):
-    env = load_wandb_environment(environment)
+    env = bounded_thread_environment(load_wandb_environment(environment))
     env['CUDA_VISIBLE_DEVICES'] = plan['cuda_visible_devices']
     env['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
     env['PYTHONUNBUFFERED'] = '1'
     env['RAY_ADDRESS'] = 'local'
     env['OPD_GRADIENT_CACHE_MAX_GIB'] = str(plan['gradient_cache_gib'])
-    # Ray resources and BLAS threads are separate limits. Avoid nested CPU pools.
-    for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
-        env[key] = '1'
-    env['TOKENIZERS_PARALLELISM'] = 'false'
     env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(ROOT / 'runtime'), env.get('PYTHONPATH')]))
     return env
 
@@ -448,13 +443,12 @@ def main():
     p = parser()
     args = p.parse_args()
     try:
-        if args.cpu_ids:
-            selected = {int(item) for item in args.cpu_ids.split(',')}
-            if not hasattr(os, 'sched_setaffinity') or not selected or not selected <= os.sched_getaffinity(0):
-                raise ValueError('--cpu-ids must select available Linux CPUs')
-            if not args.dry_run:
-                os.sched_setaffinity(0, selected)
         plan = build_plan(args, os.environ)
+        if not args.dry_run:
+            if hasattr(os, 'sched_setaffinity'):
+                os.sched_setaffinity(0, set(plan['cpu_ids']))
+            elif args.cpu_ids is not None:
+                raise ValueError('--cpu-ids requires Linux CPU affinity support')
         env = child_environment(plan, os.environ)
         # CPU grading needs neither training configuration nor any visible GPUs.
         if args.stage != 'grade':

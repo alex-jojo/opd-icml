@@ -6,7 +6,7 @@ whole pre-update batch's cached conditional KL, not a sampled KL percentile.
 import numpy as np
 
 
-def stratified_plan(kl, sample_size=256, seed=42, step=1, inner=0):
+def stratified_plan(kl, sample_size=64, seed=42, step=1, inner=0):
     kl = np.asarray(kl, dtype=np.float64)
     if kl.ndim != 1 or not len(kl) or not np.isfinite(kl).all():
         raise ValueError('Sampling requires a nonempty finite token KL vector')

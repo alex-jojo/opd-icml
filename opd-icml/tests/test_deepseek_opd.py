@@ -103,7 +103,7 @@ def test_deepseek_code_profile_and_launcher(experiment):
     assert plan['gpu_count']==4 and plan['task']=='code'
     assert plan['rounds_cap']==(53 if experiment=='reuse' else 106)
     if experiment=='paired-full':
-        assert plan['parameter_token_gradients']=={'enabled':True,'mode':'kl_stratified','sample_size':256,'seed':42}
+        assert plan['parameter_token_gradients']=={'enabled':True,'mode':'kl_stratified','sample_size':64,'seed':42}
     assert plan['models']['teacher']['allow_patterns']==['*.json','*.safetensors','tokenizer.model']
 
 

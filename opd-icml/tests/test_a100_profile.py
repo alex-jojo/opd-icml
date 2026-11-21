@@ -43,7 +43,7 @@ def test_single_a100_preserves_experiment_and_composes_hydra(experiment):
     if experiment == 'paired-full':
         assert cfg['data']['train_batch_size'] == 128
         assert cfg['actor_rollout_ref']['actor']['policy_loss']['gradient_study']['parameter_tokens'] == {
-            'enabled': True, 'mode': 'kl_stratified', 'sample_size': 256, 'seed': 42}
+            'enabled': True, 'mode': 'kl_stratified', 'sample_size': 64, 'seed': 42}
     search = 'hydra.searchpath=' + json.dumps(['file://' + (ROOT / 'runtime/verl/trainer/config').as_posix()], ensure_ascii=False)
     with initialize_config_dir(config_dir=str(profile), version_base=None):
         composed = compose(config_name=name, overrides=[search] + [

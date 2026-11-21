@@ -22,7 +22,7 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 \
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重，各另跑一次复用训练。默认在第 1、5、10、…、105、106 次参数更新前抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重，各另跑一次复用训练。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
@@ -42,11 +42,23 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 
 流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
-`--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU线程用于判题，其余按槽分配；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
+`--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU用于判题；单卡训练槽最多分配4个CPU，四卡训练最多分配8个CPU；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
 
 `--gradient-cache-total-gib` 默认64，`--ray-object-store-total-gib` 默认16，分别还受可用主存1/8、1/16限制。单卡并行时按槽平分，四卡阶段独享；原有梯度缓存仍执行自己的内存保护。另按每个单卡任务80 GiB起始预留估计限制并行度。它们是缓冲预算和准入估计，**不是模型、优化器、checkpoint合并与判题的全过程硬内存上限**；33B尤其需要充分主存和磁盘。
 
 正式执行时先按CUDA实际设备顺序解析完整UUID，再按UUID加锁；GPU序号、完整UUID和可识别的UUID前缀共用同一把锁。不要再手动启动占同一组卡的独立任务。失败或中断只终止本套已启动进程组：即使顶层进程已经退出，也继续检查组内残留进程，宽限期后发送SIGKILL；不执行全局 `ray stop`，不删除结果。总调度不自动续训或覆盖已有目录，已完成数据保留；可用下面的单模型入口重试评测。
+
+## 容器 CPU 与 A100 单组运行
+
+入口自动读取可用 CPU affinity 和 cgroup CPU 配额，单卡默认最多 4 个 Ray CPU，四卡最多 8 个；四卡训练至少需要 5 个。自动选择容器允许的 CPU 编号，不假定一定是 0–3。启动计划的 cpu_resources 记录实际选择。Ray RPC 服务/客户端线程池各设为 2，BLAS 线程池为 1；这些设置在子进程启动前生效，避免按宿主机 CPU 数扩张。手动传入超出训练 CPU 配额的设置会在启动前报错。
+
+    python scripts/run_h200_experiment.py --scale 1.7b --devices 0 --profile conservative --parameter-token-samples 64 --save-freq 10 --output runs/a100/qwen17-run1
+
+命令自动选择 CPU，无需手写 --cpu-ids。已有完整断点时使用原 --output 加 --resume；旧的 256 样本记录保留，新观测点按 64 抽样，逐点元数据记录实际样本数。更新代码不会改变已经运行的进程。
+
+64 样本只减少诊断抽样，不改变训练 batch、loss、学习率或优化器；每个被抽中的 token 仍计算全部可训练参数的梯度。总体能量占比是加权抽样估计，样本减少通常使估计误差变大，JSON 继续保存权重、样本数及已有标准误差字段。不要把 64 样本的统计精细度写成与 256 完全相同。
+
+23 个观测点共 1,472 次额外 token backward（原来 5,888 次）。这是该项反向次数减少 75%，不是整轮训练提速 4 倍。已有的前缀裁剪、同回答计算图复用、紧凑输出头及 FP64 梯度能量规约保留。实际耗时看 parameter tokens 的 stage seconds 和各项 timing；没有新的 A100/H200 实测完成时间。
 
 ## 按模型的吞吐起始配置
 
@@ -198,7 +210,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 
 ## 重型诊断频率
 
-训练 KL、固定高 KL 阈值占比和整批 hidden 梯度能量占比继续逐次更新记录。逐 token 全模型参数梯度、固定 probe 表征及完整 hidden 梯度谱在更新 1、5、10、…、105、106 测量（23 点）；每点仍抽样 256 个 token，抽样、权重、梯度定义不变。未测量步的 RQ1 文件标记 `parameter_gradient_measurement.measured=false`，参数能量项留空，不插值、不沿用旧值。全量模式也沿用诊断步调度。
+训练 KL、固定高 KL 阈值占比和整批 hidden 梯度能量占比继续逐次更新记录。逐 token 全模型参数梯度、固定 probe 表征及完整 hidden 梯度谱在更新 1、5、10、…、105、106 测量（23 点）；每点抽样 64 个 token；保留分层抽样、加权估计和完整参数梯度定义。未测量步的 RQ1 文件标记 `parameter_gradient_measurement.measured=false`，参数能量项留空，不插值、不沿用旧值。全量模式也沿用诊断步调度。
 
 跨 batch 梯度在上述 23 点及原有 4 个验证配对诊断点测量（共 27 点）。验证集的每 10 步安排、首尾评测和 early-stop 的每 5 步检查保持原样。Reuse 使用实际 optimizer update 编号调度。
 

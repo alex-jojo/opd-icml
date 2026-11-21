@@ -204,3 +204,19 @@ def test_default_deepseek_code_and_cli_sampling_compose_without_changing_trainin
     assert OmegaConf.to_container(cfg.actor_rollout_ref.actor.policy_loss.gradient_study.parameter_tokens) == report['parameter_token_gradients']
     bad = subprocess.run(command[:-1]+['--parameter-token-samples','1','--dry-run'],capture_output=True,text=True)
     assert bad.returncode != 0
+
+
+def test_default_64_keeps_stratified_weights_and_estimation_error():
+    plan = sampling.stratified_plan(np.arange(1000, dtype=float))
+    assert plan['requested_size'] == 64
+    assert [s['sample_count'] for s in plan['strata']] == [16, 48]
+    assert len(np.unique(plan['index'])) == 64
+    assert plan['weight'].sum() == pytest.approx(1000)
+    high = plan['stratum'] == 0
+    energy = np.where(high, 9., 1.)
+    report = sampling.weighted_energy(energy, high, 100, plan)
+    assert report['share'] == pytest.approx(.5)
+    assert report['estimated'] is True
+    assert report['sample_count'] == 16
+    assert report['share_standard_error'] == pytest.approx(0.)
+    assert report['share_ci95'] == pytest.approx([.5, .5])
