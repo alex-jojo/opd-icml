@@ -94,6 +94,8 @@ class StudyReplication:
             if not dp.exists(first):
                 raise ValueError('Cannot resume RQ1 without the original step-1 KL thresholds')
             self.thresholds = dp.primary_call(lambda: json.loads(first.read_text())['thresholds'])
+        if hasattr(self, 'thresholds'):
+            self.thresholds = {k: v for k, v in self.thresholds.items() if k in ('kl_p90', 'kl_median')}
 
     def resume_basis(self):
         """Restore the observation basis at the committed update, not a future asset."""
@@ -185,7 +187,7 @@ class StudyReplication:
                     part['_population_kl'] = output_scores(z[mask], inputs['opd_teacher_top16_logits'][mask], kl_only=True)['kl'].cpu().numpy()
                     sr, sp = row[si], pos[si]
                     scores = output_scores(z[sr, sp], inputs['opd_teacher_top16_logits'][sr, sp],
-                        include_teacher_entropy=True, kl_only=not self.measure)
+                        kl_only=not self.measure)
                     part.update({k: v.cpu().numpy() for k, v in scores.items()})
                     part.update(row=(sr+cursor).cpu().numpy(), pos=sp.cpu().numpy(),
                                 token=inputs['responses'][sr, sp].cpu().numpy())
@@ -195,7 +197,7 @@ class StudyReplication:
                             relative_position=(ordinal.float()/(mask.sum(1,keepdim=True)-1).clamp_min(1))[sr, sp].cpu().numpy())
                     return
                 part.update({k:v.detach().cpu().numpy() for k,v in output_scores(
-                    z[mask],inputs['opd_teacher_top16_logits'][mask],include_teacher_entropy=True,
+                    z[mask],inputs['opd_teacher_top16_logits'][mask],
                     kl_only=not self.measure).items()})
                 part.update(row=(row+cursor).cpu().numpy(),pos=pos.cpu().numpy(),token=inputs['responses'][mask].cpu().numpy())
                 if self.measure:
@@ -395,8 +397,7 @@ class StudyReplication:
             sample=dp.merge_fields(dp.gather(dict(g=np.concatenate(samples),row=np.concatenate(sample_rows),pos=np.concatenate(sample_pos))))
             atomic_npz(self.output/'gradient_moments'/f'token_sample_{self.step:03d}_{inner+1}.npz',sample)
         if not hasattr(self,'thresholds'):
-            self.thresholds=dict(kl_p90=float(np.quantile(merged['kl'],.9)),kl_median=float(np.median(merged['kl'])),
-                                 entropy_median=float(np.median(merged['entropy'])))
+            self.thresholds=dict(kl_p90=float(np.quantile(merged['kl'],.9)),kl_median=float(np.median(merged['kl'])))
             atomic_json(self.threshold_file,self.thresholds)
         z=merged.pop('g_u')
         model_config=getattr(_unwrap_actor_module(self.actor.actor_module),'config',None)
@@ -439,8 +440,6 @@ class StudyReplication:
         token_report.update(basis_reference=self.reference,old_validation_banks_removed=True)
         token_report['full_u_outside_kl_groups']=group_report
         self.metrics.update({'token_audit/high_kl_fraction':token_report['groups']['kl_above_step1_p90']['fraction'],
-            'token_audit/student_entropy_mean':float(merged['entropy'].mean()),
-            'token_audit/teacher_entropy_mean':float(merged['teacher_entropy'].mean()),
             'token_audit/logratio_variance_mean':float(merged['logratio_variance'].mean()),
             'token_audit/valid_learned_u':float(self.reference['valid_u128'])})
         for label,entry in group_report['groups'].items():
@@ -458,13 +457,9 @@ class StudyReplication:
         self.parts = []
         plan = self.token_sample.plan
         if not hasattr(self, 'thresholds'):
-            # KL thresholds remain exact population quantiles. Entropy uses the
-            # weighted sample; persist once so restarts retain the same threshold.
-            order = np.argsort(fields['entropy'], kind='stable')
-            middle = np.searchsorted(np.cumsum(plan['weight'][order]), plan['population_count']*.5)
+            # Preserve exact population KL thresholds across restarts.
             self.thresholds = dict(kl_p90=float(np.quantile(population_kl, .9)),
-                kl_median=float(np.median(population_kl)), entropy_median=float(fields['entropy'][order[middle]]),
-                entropy_median_estimated=True)
+                kl_median=float(np.median(population_kl)))
             dp.primary_call(lambda: atomic_json(self.threshold_file, self.thresholds))
         if self.measure:
             model_config=getattr(_unwrap_actor_module(self.actor.actor_module),'config',None)
@@ -516,8 +511,7 @@ class StudyReplication:
         if metadata is not None:self.record_parameter_metrics(report, metadata)
         self.parameter_measurement = None
         if not self.measure:return
-        for metric, field in (('student_entropy_mean','entropy'),('teacher_entropy_mean','teacher_entropy'),
-                              ('logratio_variance_mean','logratio_variance')):
+        for metric, field in (('logratio_variance_mean','logratio_variance'),):
             self.metrics['token_audit/'+metric] = float(plan['weight'] @ fields[field]/plan['population_count'])
         self.metrics['token_audit/valid_learned_u'] = float(self.reference['valid_u128'])
         for label, entry in group_report['groups'].items():

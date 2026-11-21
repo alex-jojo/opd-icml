@@ -241,9 +241,16 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 启动命令不变。默认 sampled 参数诊断模式下，token 分数、hidden 能量和高／中／低 KL 分组分析改为每次更新全局抽128个位置；各 GPU 合计128个，不是每卡128个。64个参数梯度样本包含在这128个位置内，参数样本和额外反向次数不变。有效位置不足128时全部统计。
 
 - 按缓存 KL 的两个层分别无放回抽样，使用各自的逆包含概率权重。不能直接拿128个样本的能量相加当作总体占比。
-- 当前训练 KL 仍在全部有效位置计算，固定阈值比例与当前 KL 最高十分位的成员、数量保持全量口径；其他分数的排名、分位点和 TIP 归一化改为样本估计。
+- 当前训练 KL 仍在全部有效位置计算，固定阈值比例与当前 KL 最高十分位的成员、数量保持全量口径；其他保留分数的排名和分位点使用样本估计。
 - `rq1_step_XXXX.json` 的 `token_statistics_measurement` 记录128样本的口径；原 `samples` 继续只保存64个配对参数样本。`rq1_hidden_sample_XXXX.npz` 单独保存128个位置、训练 KL、hidden 能量、分层和权重；全部自动进入结果包。CSV 导出也包含 hidden 抽样标记、样本数和区间。
 - `token_group_scopes` 的分组谱来自128个样本内的对应组，注明实际样本数和秩上限。以最多128×128的行 Gram 求谱，省去分组的全 hidden 维度矩阵分解与全 batch 梯度搬运。分组谱的 Top-128 不能当作总体 Top-128 使用。
 - RQ2 的 `training_records/rq2/gradient_XXX.npz` 与 `gradient_scopes` 继续使用全部有效 token 的梯度矩阵。其完整谱、effective rank、自身 Top-128 覆盖率和早期 U 覆盖率仍按全量计算。固定表征 probe、跨 batch 参数梯度和验证诊断不变。
 
 抽样能量和非线性谱摘要会有抽样误差，保留统计项目不代表与此前全量数值完全相同。只有实际训练更新与上述全量 RQ2 统计保持原口径。配置 `gradient_study.token_statistics_sample_size=0` 可恢复全量 token 描述统计；显式 `exact-all` 参数模式也保留原全量路径。正在运行的进程不会被本次代码更新改变。
+
+
+## 保留的 token 分数比较
+
+仅保留 KL、log-ratio variance 和 U 内 hidden 梯度能量保留率（alignment）三种分数。每种比较 Top 1%、5%、10%、20% 的能量占比，共12组排名比较。KL 组按全部有效 token 排名，其余按128个样本的加权分位点划分；参数能量仍由64个全模型梯度样本估计。
+
+TIP、IER、Priority、TV、token Entropy 已停止计算和输出（包括学生和教师的 token entropy），同时删除 TIP 四象限、IER noise/有效比例、Priority 加权二阶矩及其谱，以及旧观察器中的 Priority 相关输出。谱的 effective rank / singular-entropy rank 保留。历史结果不删除。全量 RQ2 谱、64个参数梯度样本、训练目标和观测频率保持不变。

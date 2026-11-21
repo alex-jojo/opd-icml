@@ -98,6 +98,12 @@ def test_sampling_retains_full_moment_parameter_sample_and_adamw(tmp_path):
     np.testing.assert_allclose(observer.pending_gradient['second'],g.T@g/200,rtol=2e-5,atol=1e-8)
     assert observer.pending_gradient['count']==200
     record=json.loads((tmp_path/'training_records/rq1_step_0001.json').read_text())
+    from test_opd_statistics_reuse import assert_no_removed_scores
+    detailed=json.loads((tmp_path/'replication/token_audit/step_001_inner_1.json').read_text())
+    assert_no_removed_scores(detailed)
+    assert sum('_top' in key for key in detailed['groups'])==12
+    with np.load(tmp_path/'replication/token_audit/step_001_inner_1.npz') as saved:
+        assert_no_removed_scores({key: None for key in saved.files})
     assert record['token_statistics_measurement']['sample_count']==128
     assert record['parameter_gradient_measurement']['token_count']==64
     assert record['parameter_gradient_measurement']['population_token_count']==200

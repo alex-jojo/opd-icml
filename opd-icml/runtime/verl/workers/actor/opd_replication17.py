@@ -222,8 +222,7 @@ class Replication:
         if self.full:self.audit.training_bank=bank
         else:
             self.bank_before['train']=bank
-            self.thresholds=dict(kl_p90=float(np.quantile(bank['kl'],.9)),kl_median=float(np.median(bank['kl'])),
-                                 entropy_median=float(np.median(bank['entropy'])))
+            self.thresholds=dict(kl_p90=float(np.quantile(bank['kl'],.9)),kl_median=float(np.median(bank['kl'])))
             for k,v in self.bank_before.items():atomic_npz(self.output/f'round_{self.step:03d}'/f'{k}_before.npz',compact_bank(v))
         self.extra+=time.perf_counter()-started+self.capture_cost.pop('seconds',0.)
 
@@ -309,7 +308,7 @@ class Replication:
                 if not self.capture_train or k!='train'}
             if not self.capture_train:
                 self.thresholds=dict(kl_p90=float(np.quantile(self.bank_before['train']['kl'],.9)),
-                    kl_median=float(np.median(self.bank_before['train']['kl'])),entropy_median=float(np.median(self.bank_before['train']['entropy'])))
+                    kl_median=float(np.median(self.bank_before['train']['kl'])))
                 for k,v in self.bank_before.items():atomic_npz(self.output/f'round_{step:03d}'/f'{k}_before.npz',compact_bank(v))
         if not self.full and step==1:
             self.fixed=select(heldout,range(len(heldout)))

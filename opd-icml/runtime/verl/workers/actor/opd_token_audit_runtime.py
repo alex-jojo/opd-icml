@@ -196,6 +196,8 @@ class TokenAudit(Observer):
         if not hasattr(self,'thresholds'):
             state=self.directory/'thresholds.json'
             self.thresholds=json.loads(state.read_text()) if state.exists() else None
+            if self.thresholds is not None:
+                self.thresholds={k:v for k,v in self.thresholds.items() if k in ('kl_p90','kl_median')}
             if self.thresholds is None and step!=1: raise ValueError('missing step-1 thresholds on resume')
             self.fixed=None;self.labels={}
             self.tokenizer=None
@@ -234,13 +236,7 @@ class TokenAudit(Observer):
 
     def record_outputs(self,student,teacher,mask,kl):
         values=output_scores(student,teacher);valid=mask.bool()
-        # Compute these once, retaining the same FP64 score definitions.
-        with torch.no_grad():
-            lq=teacher.detach().double().log_softmax(-1)
-            teacher_entropy=-(lq.exp()*lq).sum(-1)
-            for name,value in [('kl',values['kl']),('tv',values['tv']),
-                               ('student_entropy',values['entropy']),('teacher_entropy',teacher_entropy)]:
-                self.token_fields[name].append(value[valid].cpu())
+        self.token_fields['kl'].append(values['kl'][valid].cpu())
         self.scores.append({k:v[valid].cpu().numpy() for k,v in values.items()})
 
     def before_update(self):
@@ -251,8 +247,7 @@ class TokenAudit(Observer):
         if len(z)!=int(self.train.batch['response_mask'].sum()):raise RuntimeError('token count mismatch')
         f=self.decorate(f)
         if self.thresholds is None:
-            self.thresholds=dict(kl_p90=float(np.quantile(f['kl'],.9)),kl_median=float(np.median(f['kl'])),
-                                 entropy_median=float(np.median(f['entropy'])))
+            self.thresholds=dict(kl_p90=float(np.quantile(f['kl'],.9)),kl_median=float(np.median(f['kl'])))
             atomic_json(self.directory/'thresholds.json',self.thresholds)
         from .opd_distributed import primary_call
         report,arrays=primary_call(lambda:training_summary(f,z,self.thresholds))

@@ -1,4 +1,4 @@
-"""Two-rank CPU DDP: shared full/sample groups, entropy and unchanged gradients."""
+"""Two-rank CPU DDP: shared full/sample groups, score removal and unchanged gradients."""
 from datetime import timedelta
 import json
 from pathlib import Path
@@ -59,9 +59,7 @@ def worker(rank, address, output):
                 runtime.after_inner(1)
                 dist.barrier()
                 with np.load(directory/'token_audit/step_001_inner_1.npz') as saved:
-                    teacher = data.batch['opd_teacher_top16_logits'][data.batch['response_mask'].bool()]
-                    log_q = teacher.double().log_softmax(-1)
-                    np.testing.assert_array_equal(saved['teacher_entropy'], (-(log_q.exp()*log_q).sum(-1)).numpy())
+                    assert not {'entropy','teacher_entropy','tv','tip','ier','priority'} & set(saved.files)
                     assert len(saved['row']) == 5
                 # Unequal local token counts on an ordinary (non-legacy) step.
                 runtime.begin(data, None, 2)
@@ -84,7 +82,7 @@ def worker(rank, address, output):
                     np.testing.assert_allclose(saved['eigenvalues'], torch.linalg.svdvals(g).square()/5,
                                                rtol=2e-4, atol=1e-8)
                 if rank == 0:
-                    print(f'PASS: two-rank {mode}; one shared grouping, identical FP64 entropy and unchanged gradients', flush=True)
+                    print(f'PASS: two-rank {mode}; one shared grouping, removed optional scores and unchanged gradients', flush=True)
             finally:
                 study_module.prepare_groups = original_prepare
         # The validation array is gathered in rank order; keep source IDs aligned
@@ -106,13 +104,6 @@ def worker(rank, address, output):
         assert [row['source_index'] for row in saved['responses']] == [71, 32]
         np.testing.assert_allclose([row['kl_before'] for row in saved['responses']], before, atol=1e-6)
         np.testing.assert_allclose([row['kl_after'] for row in saved['responses']], after, atol=1e-6)
-        # Replay the same partition on both ranks, including the compact training-only path.
-        train = data.select_idxs([0, 1]*8)
-        basis = torch.eye(4)[:, :2]
-        compact = study.cross_batch(train, basis, 11)
-        study.start(train, basis, dict(validation=validation, geometry=True), 11)
-        assert compact == study.subset_alignment and len(compact['pairs']) == 6
-        assert all(p.grad is None for p in actor.actor_module.parameters())
     finally:
         dist.destroy_process_group()
 

@@ -1,4 +1,4 @@
-"""Statistics reuse preserves stable ties, report values and FP64 entropy."""
+"""Statistics reuse preserves stable ties, report values and FP64 remaining scores."""
 import copy
 import importlib
 
@@ -37,26 +37,62 @@ def test_group_grams_visit_each_row_once_and_preserve_spectra(monkeypatch):
 
 audit = importlib.import_module(audit_module.__package__ + '.opd_token_audit')
 sampling = importlib.import_module(audit_module.__package__ + '.opd_parameter_sampling')
-SCORES = ('kl', 'tv', 'entropy', 'tip', 'logratio_variance', 'ier', 'alignment', 'priority')
-THRESHOLDS = dict(kl_p90=.3, kl_median=.2, entropy_median=1.)
+SCORES = ('kl', 'logratio_variance', 'alignment')
+THRESHOLDS = dict(kl_p90=.3, kl_median=.2)
 
 
-def fields(count, valid_ier=True):
+def assert_no_removed_scores(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            assert not any(key.lower()==word or key.lower().startswith(word+'_')
+                           for word in ('tip', 'ier', 'priority', 'need_alignment', 'tv', 'entropy_median', 'teacher_entropy', 'student_entropy'))
+            assert key!='entropy'
+            assert_no_removed_scores(item)
+
+
+def test_removed_scores_have_no_computation_or_output():
+    torch.manual_seed(917)
+    student, teacher = torch.randn(160,16), torch.randn(160,16)
+    result = audit.output_scores(student, teacher)
+    assert set(result)=={'kl','logratio_variance','top1_disagree'}
+    lp, lq = student.double().log_softmax(-1), teacher.double().log_softmax(-1)
+    p = lp.exp(); kl=(p*(lp-lq)).sum(-1)
+    torch.testing.assert_close(result['kl'], kl.clamp_min(0), rtol=0, atol=0)
+    torch.testing.assert_close(result['logratio_variance'], (p*(lp-lq-kl[:,None]).square()).sum(-1), rtol=0, atol=0)
+    f=fields(160)
+    f['token']=np.arange(160)
+    report, arrays = audit.training_summary(f, np.ones((160,3)), THRESHOLDS)
+    assert_no_removed_scores(report); assert_no_removed_scores(arrays)
+    assert sum('_top' in key for key in report['groups'])==12
+
+
+def test_legacy_observer_retains_alignment_without_priority():
+    geometry=importlib.import_module(audit_module.__package__+'.opd_response_geometry')
+    observer=object.__new__(geometry.Observer)
+    observer.token_fields={'raw_gradient_energy':[torch.tensor([2.,0.,4.])],
+                           'projected_gradient_energy':[torch.tensor([1.,0.,1.])]}
+    observer.count=3;observer.raw_z=[];observer.metrics={}
+    observer.step=2;observer.anchors=[];observer.pending=None
+    observer.before_update()
+    np.testing.assert_array_equal(observer.fields['alignment'],[.5,0.,.25])
+    assert_no_removed_scores(observer.fields)
+    assert not hasattr(observer,'priority')
+
+
+def fields(count):
     rng = np.random.default_rng(81)
     result = {key: rng.integers(0, 4, count).astype(float)/10 for key in SCORES}
     result.update(row=np.arange(count)//7, pos=np.arange(count)%7,
                   boundary=np.arange(count)%7 == 0,
                   relative_position=(np.arange(count)%7)/6,
-                  ier_valid=(np.arange(count)%3 != 0) if valid_ier else np.zeros(count, bool),
                   raw_gradient_energy=rng.uniform(1., 3., count),
                   projected_gradient_energy=rng.uniform(.1, .9, count))
     return result
 
 
 @pytest.mark.parametrize('count', [0, 1, 2, 5, 11, 100])
-@pytest.mark.parametrize('valid_ier', [False, True])
-def test_top_percent_masks_keep_stable_ties_and_sort_each_valid_score_once(monkeypatch, count, valid_ier):
-    f = fields(count, valid_ier)
+def test_top_percent_masks_keep_stable_ties_and_sort_each_valid_score_once(monkeypatch, count):
+    f = fields(count)
     calls = []
     original_sort = np.argsort
 
@@ -66,11 +102,11 @@ def test_top_percent_masks_keep_stable_ties_and_sort_each_valid_score_once(monke
 
     monkeypatch.setattr(np, 'argsort', argsort)
     masks = audit.groups(f, THRESHOLDS)
-    expected_sorts = 7+int(f['ier_valid'].any()) if count else 0
+    expected_sorts = len(SCORES) if count else 0
     assert calls == ['stable']*expected_sorts
     for score in SCORES:
         # Python's stable sort is independent of NumPy's ranking implementation.
-        eligible = [i for i in range(count) if score != 'ier' or f['ier_valid'][i]]
+        eligible = list(range(count))
         ranking = sorted(eligible, key=lambda i: -f[score][i])
         for fraction in (.01, .05, .1, .2):
             chosen = set(ranking[:max(1, int(np.ceil(len(ranking)*fraction)))])
@@ -122,7 +158,7 @@ def test_shared_grouping_preserves_full_and_sampled_report_and_array_values(monk
 
 
 @pytest.mark.parametrize('dtype', [torch.float16, torch.float32, torch.float64])
-def test_training_hook_reuses_teacher_log_probability_with_identical_entropy(monkeypatch, dtype):
+def test_training_hook_keeps_remaining_scores_and_two_log_softmax_calls(monkeypatch, dtype):
     torch.manual_seed(83)
     actor, data = make_actor(), make_data()
     data.batch['opd_teacher_top16_logits'] = (data.batch['opd_teacher_top16_logits']*10).to(dtype)
@@ -132,8 +168,6 @@ def test_training_hook_reuses_teacher_log_probability_with_identical_entropy(mon
         _, logits, _, _ = opd.forward(actor, inputs, 1., inputs['opd_top16_ids'], diagnostics=False)
     teacher = inputs['opd_teacher_top16_logits'][mask]
     expected = audit.output_scores(logits[mask], teacher)
-    log_q = teacher.detach().double().log_softmax(-1)
-    expected_entropy = -(log_q.exp()*log_q).sum(-1)
     assert 'teacher_entropy' not in expected  # existing callers keep their schema
     original_log_softmax = torch.Tensor.log_softmax
     calls = []
@@ -144,11 +178,11 @@ def test_training_hook_reuses_teacher_log_probability_with_identical_entropy(mon
 
     monkeypatch.setattr(torch.Tensor, 'log_softmax', log_softmax)
     runtime = object.__new__(study_module.StudyReplication)
-    runtime.actor, runtime.measure, runtime.parts = actor, True, []
+    runtime.actor, runtime.measure, runtime.parts, runtime.token_sample = actor, True, [], None
     with runtime.watch_training(inputs, 0, 0), torch.no_grad():
         opd.forward(actor, inputs, 1., inputs['opd_top16_ids'], diagnostics=False)
     assert calls == [torch.float64, torch.float64]  # student and teacher, once each
     part = runtime.parts[0]
     for key, value in expected.items():
         np.testing.assert_array_equal(part[key], value.numpy())
-    np.testing.assert_array_equal(part['teacher_entropy'], expected_entropy.numpy())
+    assert_no_removed_scores(part)

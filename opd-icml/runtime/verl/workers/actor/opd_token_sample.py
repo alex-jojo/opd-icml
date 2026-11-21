@@ -94,10 +94,10 @@ def grouping_for(fields, population_kl, thresholds, plan, detailed):
     if detailed:
         grouping = prepare_groups(fields, thresholds)
         masks = grouping['masks']
-        for score in ('tv', 'entropy', 'tip', 'logratio_variance', 'ier', 'alignment', 'priority'):
+        for score in ('logratio_variance', 'alignment'):
             for fraction in (.01, .05, .1, .2):
                 masks[f'{score}_top{int(fraction*100)}'] = weighted_top(
-                    fields[score], w, fraction, fields['ier_valid'].astype(bool) if score == 'ier' else None)
+                    fields[score], w, fraction)
     else:
         grouping = dict(masks={}, kl_parts={})
         masks = grouping['masks']
@@ -194,7 +194,7 @@ def projected_summary(e):
 def make_report(fields, population_kl, thresholds, plan, basis, measurement, detailed, response_count):
     w, n = plan['weight'], plan['population_count']
     grouping = grouping_for(fields, population_kl, thresholds, plan, detailed)
-    quantities = ('kl', 'tv', 'raw_gradient_energy', 'projected_gradient_energy', 'logratio_variance') if detailed else ('raw_gradient_energy',)
+    quantities = ('kl', 'raw_gradient_energy', 'projected_gradient_energy', 'logratio_variance') if detailed else ('raw_gradient_energy',)
     groups = {}
     for name, mask in grouping['masks'].items():
         count = grouping['population_counts'][name]
@@ -217,7 +217,7 @@ def make_report(fields, population_kl, thresholds, plan, basis, measurement, det
         seed_components=plan['seed_components'], estimated=len(w)!=n,
         estimator='inverse inclusion weighted totals and ratios; nonlinear summaries are plug-in estimates',
         current_kl_ranking='ALL valid tokens; exact group sizes',
-        other_score_ranking='weighted sample quantiles; TIP min/max from sample',
+        other_score_ranking='weighted sample quantiles',
         rq2_overall_hidden_spectrum='ALL valid tokens, collected separately without subsampling',
         grouped_spectrum='sampled weighted spectra; rank limited by sampled group size',
         extra_forwards=0, extra_backwards=0, extra_teacher_calls=0)
@@ -241,9 +241,9 @@ def make_report(fields, population_kl, thresholds, plan, basis, measurement, det
             gradient_rms_u=float(np.sqrt(kept/n)), gradient_frobenius_u=float(np.sqrt(kept)),
             gradient_l2_mean_u=float(w @ np.sqrt(fields['projected_gradient_energy'])/n),
             signed_mean_energy=float(mean@mean), signed_mean_fraction=float(mean@mean/max(e.sum(), 1e-30)),
-            concentration={k: concentration(fields[k], w) for k in ('kl','tv','entropy','tip','logratio_variance',
-                'ier','alignment','priority','raw_gradient_energy','projected_gradient_energy')},
-            ier_valid_fraction=float(w @ fields['ier_valid']/n), teachability_available=False,
+            concentration={k: concentration(fields[k], w) for k in ('kl','logratio_variance',
+                'alignment','raw_gradient_energy','projected_gradient_energy')},
+            teachability_available=False,
             teachability_reason='Full-vocabulary teacher normalization / student support mass not recorded',
             kl_high_middle_low={})
         arrays.update(gradient_second=matrix, eigenvalues=e, Q=q, gradient_mean=mean)
@@ -270,13 +270,6 @@ def make_report(fields, population_kl, thresholds, plan, basis, measurement, det
             definition='Exact global KL low10/middle80/high10 membership; weighted sampled hidden spectra',
             matched_definition='Equal observed sample counts, evenly spaced sample indices in KL order; descriptive only',
             transformer_replays=0, sample_count=len(w))
-        priority = w*fields['priority']
-        weighted = z.T @ (priority[:, None]*z)/priority.sum() if priority.sum()>1e-30 else np.zeros_like(matrix)
-        we, wq, ws = spectrum(weighted)
-        report['need_alignment_geometry'] = dict(available=bool(priority.sum()>1e-30), spectrum=ws,
-            need='TIP entropy/KL soft-OR using sample extrema', alignment='U retained energy fraction',
-            priority='need * alignment', used_for_training=False, estimated=True)
-        arrays.update(need_alignment_second=weighted, need_alignment_eigenvalues=we, need_alignment_Q=wq)
     parameter_metadata, paired = None, {}
     if measurement is not None:
         parameter_metadata, paired = add_sampled_report(report, fields, measurement, thresholds,

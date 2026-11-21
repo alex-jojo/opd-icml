@@ -18,7 +18,6 @@ import torch.nn.functional as F
 from .opd_top16 import forward, reverse_kl, _final_norm_module, _unwrap_actor_module
 from .opd_plasticity import atomic_npz, atomic_json
 from .opd_focus_stats import concentration, allocation, distribution_pair
-from .opd_priority_stats import analyze_priority
 
 
 def select(data, indices):
@@ -256,7 +255,7 @@ def response_metrics(before, after, basis):
     if 'supervision_energy' in before:
         result['focus']['actual_training_gradient_to_improvement']=allocation(before['supervision_energy'].numpy(),gain)
         result['focus']['actual_training_gradient_to_output_change']=allocation(before['supervision_energy'].numpy(),fisher)
-    for name in ('need', 'alignment', 'priority'):
+    for name in ('alignment',):
         if name in before:
             signal=before[name].numpy()
             result['focus'][name+'_to_signed_improvement']=allocation(signal,gain)
@@ -322,17 +321,12 @@ class Observer:
         self.second = torch.zeros(basis.shape[1], basis.shape[1], device=basis.device)
         self.count = 0
         self.expected = None
-        self.token_fields = {k:[] for k in ('kl','tv','student_entropy','teacher_entropy','raw_gradient_energy','projected_gradient_energy','row','pos','token','boundary','relative_position')}
+        self.token_fields = {k:[] for k in ('kl','raw_gradient_energy','projected_gradient_energy','row','pos','token','boundary','relative_position')}
         self.cursor = 0
 
     def record_outputs(self, student, teacher, mask, kl):
         with torch.no_grad():
-            p=student.detach().float().softmax(-1);q=teacher.detach().float().softmax(-1)
-            valid=mask.bool()
-            for name,value in [('kl',kl.detach()),('tv',.5*(p-q).abs().sum(-1)),
-                               ('student_entropy',-(p*p.clamp_min(1e-30).log()).sum(-1)),
-                               ('teacher_entropy',-(q*q.clamp_min(1e-30).log()).sum(-1))]:
-                self.token_fields[name].append(value[valid].cpu())
+            self.token_fields['kl'].append(kl.detach()[mask.bool()].cpu())
 
     def consume_raw(self, gradient):
         mask=self.active_mask; n=mask.shape[1]
@@ -389,12 +383,11 @@ class Observer:
         start = time.perf_counter()
         self.fields={k:torch.cat(v).numpy() for k,v in self.token_fields.items()}
         if any(len(v)!=self.count for v in self.fields.values()):
-            raise RuntimeError('unaligned priority token statistics')
-        z=torch.cat(self.raw_z).numpy()
-        self.priority,self.priority_arrays=analyze_priority(z,self.fields)
+            raise RuntimeError('unaligned token statistics')
+        raw = self.fields['raw_gradient_energy']
+        self.fields['alignment'] = np.divide(self.fields['projected_gradient_energy'], raw,
+            out=np.zeros(len(raw), dtype=float), where=raw>1e-30)
         self.raw_z.clear()
-        del z
-        self.metrics['timing/priority_statistics_seconds']=time.perf_counter()-start
         if self.step in self.anchors:
             self.anchor()
         elif self.pending is not None and self.step-self.pending['step'] in self.lags:
@@ -409,7 +402,7 @@ class Observer:
             training_rows=torch.cat(self.token_fields['row'])
             training_energy=torch.cat(self.token_fields['projected_gradient_energy'])
             before['train']['supervision_energy']=torch.cat([training_energy[training_rows==int(i)] for i in indices])
-            for name in ('need','alignment','priority'):
+            for name in ('alignment',):
                 before['train'][name]=torch.from_numpy(np.concatenate([
                     self.fields[name][self.fields['row']==int(i)] for i in indices]))
             base_delta, norm, factor = adam_preview(params, original, normal_gradient, self.actor.actor_optimizer, self.actor.config.grad_clip)
@@ -446,7 +439,7 @@ class Observer:
                     arrays[f'{bank}_before_{key}'] = value[key].numpy()
                 if 'supervision_energy' in value:
                     arrays[f'{bank}_training_supervision_energy']=value['supervision_energy'].numpy()
-                    for name in ('need','alignment','priority'):
+                    for name in ('alignment',):
                         arrays[f'{bank}_training_{name}']=value[name].numpy()
                 arrays[f'{bank}_before_h_u'] = (value['h'] @ self.basis.float().cpu()).numpy()
                 for name, after in responses.items():
@@ -509,7 +502,7 @@ class Observer:
         if any(len(v)!=self.count for v in fields.values()):
             raise RuntimeError('unaligned token pressure/gradient statistics')
         second=(self.second/self.count).cpu().numpy()
-        focus={k:concentration(fields[k].clip(0)) for k in ('kl','tv','raw_gradient_energy','projected_gradient_energy')}
+        focus={k:concentration(fields[k].clip(0)) for k in ('kl','raw_gradient_energy','projected_gradient_energy')}
         focus['direction_energy_fixed_basis']=concentration(second.diagonal().clip(0))
         eigen=torch.linalg.eigvalsh(self.second/self.count).clamp_min(0).cpu().numpy()
         focus['direction_spectrum_basis_invariant']=concentration(eigen)
@@ -531,17 +524,6 @@ class Observer:
         row=fields['row'];rows=np.arange(len(self.train))
         focus['sequence_mean_kl']=concentration(np.asarray([fields['kl'][row==r].mean() if (row==r).any() else 0. for r in rows]).clip(0))
         atomic_json(self.directory/f'focus_{self.step:03d}.json',focus)
-        atomic_json(self.directory/f'priority_{self.step:03d}.json',self.priority)
-        atomic_npz(self.directory/f'priority_{self.step:03d}.npz',self.priority_arrays)
-        for name in ('need','alignment','priority'):
-            stats=self.priority['score_concentration'][name]
-            if stats['available']:
-                self.metrics[f'priority/{name}_top10_share']=stats['top_shares']['0.1']
-                self.metrics[f'priority/{name}_effective_fraction']=stats['effective_fraction']
-        self.metrics['priority/mean_alignment']=float(fields['alignment'].mean())
-        self.metrics['priority/joint_weight_signal_norm_ratio']=self.priority['sharpening']['0.0']['raw_signal_norm_ratio']
-        rank=self.priority['weighted_geometry']['joint']['effective_rank']
-        if rank is not None:self.metrics['priority/joint_effective_rank']=rank
         atomic_npz(self.directory/f'step_{self.step:03d}.npz', {
             'step': np.asarray(self.step), 'gradient_second': (self.second/self.count).cpu().numpy(),
             'valid_train_tokens': np.asarray(self.count), 'train_sequences': np.asarray(len(self.train)),
