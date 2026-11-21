@@ -166,6 +166,10 @@ def rq1_only_report(fields, measurement, thresholds):
     report = dict(groups=summarize(fields, masks, {'raw_gradient_energy': energy}),
                   gradient_rms_full=float(np.sqrt(energy.mean())),
                   gradient_frobenius_full=float(np.sqrt(energy.sum())))
+    if measurement is None:
+        # Cheap all-token observations remain available at every update.
+        # Missing full-parameter measurements are absent/null, never zero or carried forward.
+        return report, None, {}
     metadata, arrays = add_sampled_report(report, fields, measurement, thresholds,
                                           grouping={'masks': masks, 'kl_parts': {}})
     return report, metadata, arrays

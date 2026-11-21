@@ -46,8 +46,9 @@ def subset_reference(actor, batch, rows):
     return torch.cat([p.flatten() for p in param]).double(), g.mean(0), axes
 
 
+@pytest.mark.parametrize('interval', [1, 5])
 @pytest.mark.parametrize('reuse', [1, 2], ids=['full', 'reuse'])
-def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch, reuse):
+def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch, reuse, interval):
     torch.manual_seed(27)
     run = tmp_path/'training'
     cfg = json.loads((ROOT/'configs/1.7b/paired-full.yaml').read_text())['actor_rollout_ref']['actor']['policy_loss']['gradient_study']
@@ -61,7 +62,7 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch, reuse):
     actor.actor_optimizer = torch.optim.AdamW(model.parameters(), lr=.001)
     actor.config.ppo_micro_batch_size_per_gpu = 32
     configure(actor, run, rounds=106//reuse, reuse=reuse)
-    actor.config.policy_loss.update(gradient_study={**cfg, 'parameter_tokens': {}}, jump_reuse_updates=reuse)
+    actor.config.policy_loss.update(gradient_study={**cfg, 'subset_alignment_interval': interval, 'parameter_tokens': {}}, jump_reuse_updates=reuse)
     replication = study_module.StudyReplication(actor)
     study = replication.study
     subset_checks = []
@@ -118,11 +119,14 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch, reuse):
         calls_before_readout = study.calls
         replication.after_inner(inner+1)
         assert study.calls == calls_before_readout
-        cross = json.loads(alignment_path.read_text())
-        assert (cross['checkpoint_before'], cross['optimizer_update']) == (checkpoint, update)
-        assert (cross['rollout_round'], cross['inner']) == (trainer.global_steps, inner+1)
-        assert cross['subset_train_rows'] == partition and len(cross['pairs']) == 6
-        if check_values:
+        expected_alignment = update == 1 or update == 106 or update % interval == 0 or checkpoint in cfg['geometry_steps']
+        assert alignment_path.exists() == expected_alignment
+        cross = json.loads(alignment_path.read_text()) if expected_alignment else None
+        if cross is not None:
+            assert (cross['checkpoint_before'], cross['optimizer_update']) == (checkpoint, update)
+            assert (cross['rollout_round'], cross['inner']) == (trainer.global_steps, inner+1)
+            assert cross['subset_train_rows'] == partition and len(cross['pairs']) == 6
+        if check_values and cross is not None:
             for pair, (a, b) in zip(cross['pairs'], combinations(range(4), 2), strict=True):
                 assert (pair['subset_a'], pair['subset_b']) == (a, b)
                 pa, ma, va = references[a]
@@ -155,14 +159,15 @@ def test_compact_rq3_on_106_update_schedule(tmp_path, monkeypatch, reuse):
             assert all(cross[key] == value for key, value in record['subset_alignment'].items())
     fixed.terminal(trainer)
     assert readouts == [*range(0, 101, 10), 106]
-    assert subset_checks == [(i, i in cfg['geometry_steps']) for i in range(106)]
+    assert subset_checks == [(i, i in cfg['geometry_steps']) for i in range(106)
+                             if i == 0 or i == 105 or (i+1) % interval == 0 or i in cfg['geometry_steps']]
     detailed_files = list((run/'replication/gradient_study').glob('checkpoint_*/train_batch_*_hidden_moments.npz'))
     assert len(detailed_files) == len(cfg['geometry_steps'])*cfg['batches']
     with ZipFile(package_results(run)) as archive:
         prefix = 'training/training_records/rq3/'
         assert sorted(n for n in archive.namelist() if n.startswith(prefix)) == [
             f'{prefix}checkpoint_{i:03d}.json' for i in range(0, 101, 10)] + [
-            f'{prefix}subset_alignment_{i:03d}.json' for i in range(1, 107)]
+            f'{prefix}subset_alignment_{i+1:03d}.json' for i, _ in subset_checks]
 
 
 def test_undefined_pairs_are_preserved_and_excluded_from_means():

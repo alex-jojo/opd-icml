@@ -24,7 +24,7 @@ bash scripts/setup_h200.sh
 完整七组包括 Gemma，需要 Hugging Face 账号已取得对应模型访问权限：
 
 ```bash
-export HF_TOKEN='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'
+export HF_TOKEN='<YOUR_HF_TOKEN>'
 ```
 
 在当前终端执行上述命令后，模型下载和训练脚本会自动读取 `HF_TOKEN`。重新登录服务器后需要重新执行。
@@ -32,7 +32,7 @@ export HF_TOKEN='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'
 直接执行以下命令设置 W&B，无需创建配置文件或交互输入：
 
 ```bash
-export WANDB_API_KEY='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'
+export WANDB_API_KEY='<YOUR_WANDB_API_KEY>'
 export WANDB_MODE=online
 export WANDB_PROJECT=opd-icml
 ```
@@ -73,10 +73,10 @@ bash scripts/h200/run_all.sh \
 
 **不用逐个下载模型、准备数据或启动七个脚本。**总入口会自动完成这些步骤。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘；33B 训练还需要充分主存。
 
-七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。默认每次更新抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量。每步的 RQ1 汇总、首步 KL 阈值、逐 token 能量和抽样权重随结果 ZIP 保存在 `training/training_records/rq1_step_XXXX.json`。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
+七组均为 `paired-full`，106 轮、batch 128、学习率 1e-5。默认在更新 1、5、10、…、105、106 抽样 256 个 token，计算各 token 的全模型参数梯度并估计总体能量。每步的轻量 RQ1 汇总及观测步的逐 token 能量和抽样权重随结果 ZIP 保存在 `training/training_records/rq1_step_XXXX.json`；未测量步明确留空。Code 评测 pass@8，Math 评测六项 Mean@8。H200 吞吐与显存峰值尚未实测。
 
-RQ2 在每次 FULL 参数更新后测量同一组固定 probe。`training/training_records/rq2/` 保存初始化的 hidden 与位置、每步的累计位移 RMS、特征值谱和前 128 个方向。从第 10 步起还记录固定第 10 步子空间的覆盖率和重合度。
-同目录的 `gradient_XXX.npz` 保存每次更新所用训练 token 的完整 hidden 梯度谱及其自身 top-128 能量占比。第 11 次更新起，同时保存梯度在第 10 次更新后固定的 probe 子空间 U₁₀ 内的能量占比。
+RQ2 在第 1、5、10、…、105、106 次 FULL 参数更新后测量同一组固定 probe。`training/training_records/rq2/` 保存初始化的 hidden 与位置、各观测步的累计位移 RMS、特征值谱和前 128 个方向。从第 10 步起还记录固定第 10 步子空间的覆盖率和重合度。
+同目录的 `gradient_XXX.npz` 在上述 23 个观测点保存训练 token 的完整 hidden 梯度谱及其自身 top-128 能量占比。第 15 次更新起，同时保存梯度在第 10 次更新后固定的 probe 子空间 U₁₀ 内的能量占比。
 
 RQ3 的 `training/training_records/rq3/checkpoint_XXX.json` 按更新前的检查点编号。0、10、…、100 各存 128 条验证回答在下一次更新前后的配对 KL；10、30、60、100 另存图 7(b、c) 的六对子集明细和均值。
 
@@ -106,3 +106,5 @@ ZIP 包含训练统计、表征和参数梯度数据、生成回答、评测结�
 - [单模型运行、调参、重试评测和资源设置](scripts/h200/README.md)
 - [实验协议、历史配置、数据分析和论文说明](docs/REFERENCE.md)
 
+
+重型诊断改为每 5 次参数更新，另保留首尾及原有验证诊断点；轻量 RQ1 逐步记录。完整调度与缺测字段见[重型诊断频率](scripts/h200/README.md#重型诊断频率)。

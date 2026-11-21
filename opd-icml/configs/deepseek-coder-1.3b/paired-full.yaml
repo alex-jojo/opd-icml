@@ -94,6 +94,7 @@
         "fixed_heldout_probe_size": 0,
         "gradient_study": {
           "subset_alignment_every_update": true,
+          "subset_alignment_interval": 5,
           "parameter_tokens": {
             "enabled": true,
             "mode": "exact_all"
@@ -157,6 +158,7 @@
         },
         "ppo_kl_coef": 0.1,
         "replication17": {
+          "diagnostic_interval": 5,
           "adaptive_stability": {
             "adjacent_overlap": 0.98,
             "enabled": false,

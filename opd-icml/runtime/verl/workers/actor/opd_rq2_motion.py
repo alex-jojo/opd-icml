@@ -35,6 +35,7 @@ class MotionRecorder:
             atomic_npz(early_path, dict(unit_hidden=unit.numpy()))
         result = dict(increment_normalization='unit hidden per probe position',
                       since_step10_available=self.early_hidden is not None and update >= self.reference_step,
+                      previous_observation_available=self.previous_step is not None,
                       previous_step_available=self.previous_step == update-1)
 
         def summarize(prefix, old):
@@ -59,6 +60,15 @@ class MotionRecorder:
         if result['previous_step_available']:
             result['previous_checkpoint'] = self.previous_step
             summarize('previous_step', self.previous_hidden)
+        if result['previous_observation_available']:
+            result['previous_observation_checkpoint'] = self.previous_step
+            result['previous_observation_update_gap'] = update - self.previous_step
+            if result['previous_step_available']:
+                for key, value in list(result.items()):
+                    if key.startswith('previous_step_') and key != 'previous_step_available':
+                        result[key.replace('previous_step_', 'previous_observation_', 1)] = value
+            else:
+                summarize('previous_observation', self.previous_hidden)
         self.previous_step = update
         self.previous_hidden = unit
         return result

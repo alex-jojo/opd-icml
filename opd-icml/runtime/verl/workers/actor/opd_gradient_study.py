@@ -360,13 +360,21 @@ class GradientStudy:
         self.rq3_directory = Path(output).parent / 'training_records' / 'rq3'
         self.calls=0
 
+    def subset_due(self, update, final=None):
+        if not self.cfg.get('subset_alignment_every_update', False):
+            return False
+        interval = int(self.cfg.get('subset_alignment_interval', 1))
+        if interval < 1:
+            raise ValueError('subset_alignment_interval must be positive')
+        return update == 1 or update == final or update % interval == 0
+
     def start(self,train,basis,payload,checkpoint):
         self.started=time.perf_counter();self.diagnostic_seconds=0.;self.checkpoint=checkpoint;self.basis=basis.float()
         self.payload=payload;self.directory=self.output/f'checkpoint_{checkpoint:03d}'
         self.layout=ParameterLayout(self.actor.actor_module);self.calls=0;self.report={}
         self.subset_alignment = None
         detailed = payload.get('geometry', False)
-        if detailed or self.cfg.get('subset_alignment_every_update', False):
+        if detailed or self.subset_due(checkpoint + 1):
             self.subset_alignment = self.cross_batch(train, basis, checkpoint, detailed=detailed)
         if payload.get('paths') is not None:self.path_variance(payload['paths'])
         self.validation=payload['validation']

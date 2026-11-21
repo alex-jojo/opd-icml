@@ -22,23 +22,23 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 \
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重，各另跑一次复用训练。默认每一步抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重，各另跑一次复用训练。默认在第 1、5、10、…、105、106 次参数更新前抽样 256 个 token（64 个来自缓存 KL 最高的十分位，另 192 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 256 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出整批 hidden 梯度能量占比和抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
-RQ2 的 `training/training_records/rq2/probe_initial.npz` 保存固定回答的输入、掩码、位置及初始化 hidden。`row` 和 `response_position` 标识每行 hidden 所预测的回答 token。FULL 每次实际更新后生成 `step_001.npz` 至 `step_106.npz`。各步基于同一 probe，`raw_displacement_rms` 和 `unit_displacement_rms` 均以初始化为参照。归一化位移的二阶矩按降序保存 `eigenvalues`；`cumulative_energy_coverage[r-1]` 给出前 r 个方向的能量占比。`basis` 的列是当前前 128 个方向，任意两个检查点的重合度可用 `np.linalg.norm(Ua.T @ Ub, 'fro')**2 / Ua.shape[1]` 复算。
+RQ2 的 `training/training_records/rq2/probe_initial.npz` 保存固定回答的输入、掩码、位置及初始化 hidden。`row` 和 `response_position` 标识每行 hidden 所预测的回答 token。FULL 在第 1、5、10、…、105、106 次更新后生成对应的 `step_XXX.npz`，共 23 个观测点。各步基于同一 probe，`raw_displacement_rms` 和 `unit_displacement_rms` 均以初始化为参照。归一化位移的二阶矩按降序保存 `eigenvalues`；`cumulative_energy_coverage[r-1]` 给出前 r 个方向的能量占比。`basis` 的列是当前前 128 个方向，任意两个检查点的重合度可用 `np.linalg.norm(Ua.T @ Ub, 'fro')**2 / Ua.shape[1]` 复算。
 
-第 10 步冻结 RQ2 参考基。从该步起，`fixed_u10_coverage` 记录它对当前位移能量的覆盖率，`fixed_u10_overlap` 记录它与当前前 128 个方向的重合度。若没有可测位移，RMS 和特征值照常记录，方向和累计覆盖率数组为空；参考基不可用时 `fixed_u10_available` 为假。每个 `post_update_XXXX.json` 也记录 RQ2 标量及 `timing/rq2_motion_seconds`。早停按原配置每 5 步检查一次。
+第 10 步冻结 RQ2 参考基。从该步起，`fixed_u10_coverage` 记录它对当前位移能量的覆盖率，`fixed_u10_overlap` 记录它与当前前 128 个方向的重合度。若没有可测位移，RMS 和特征值照常记录，方向和累计覆盖率数组为空；参考基不可用时 `fixed_u10_available` 为假。观测步的 `post_update_XXXX.json` 也记录 RQ2 标量及 `timing/rq2_motion_seconds`。早停按原配置每 5 步检查一次。
 
-同一目录下的 `gradient_001.npz` 至 `gradient_106.npz` 记录产生每次 FULL 更新的 hidden 梯度。`optimizer_update` 是这次更新的编号，`checkpoint_before` 是计算梯度时已完成的更新数。令 G 的每一行是当前训练 batch 中一个有效 token 的 KL 损失对最后一层归一化输出的梯度，N 为跨卡汇总的 `valid_tokens`。`eigenvalues` 是未中心化二阶矩 GᵀG/N 的完整降序谱，`own_top128_coverage` 是前 128 项占全谱之和的比例。
+同一目录下的 `gradient_XXX.npz` 在相同 23 个观测步记录该次 FULL 更新的 hidden 梯度。`optimizer_update` 是这次更新的编号，`checkpoint_before` 是计算梯度时已完成的更新数。令 G 的每一行是当前训练 batch 中一个有效 token 的 KL 损失对最后一层归一化输出的梯度，N 为跨卡汇总的 `valid_tokens`。`eigenvalues` 是未中心化二阶矩 GᵀG/N 的完整降序谱，`own_top128_coverage` 是前 128 项占全谱之和的比例。
 
-从 `gradient_011.npz` 起，`fixed_u10_coverage` 给出 ‖G U₁₀‖²_F / ‖G‖²_F。U₁₀ 取自同一训练轨迹的 `step_010.npz` 的 `basis`，在第 10 次更新完成后产生。后续更新和断点续跑都沿用这组方向。`fixed_u10_available` 标记参考基是否可用。梯度总能量为零时保留全零谱，省略无定义的占比。非零梯度的占比也会写入训练指标 `rq2/gradient_own_top128_coverage` 和可用时的 `rq2/gradient_fixed_u10_coverage`。
+从 `gradient_015.npz` 起，`fixed_u10_coverage` 给出 ‖G U₁₀‖²_F / ‖G‖²_F。U₁₀ 取自同一训练轨迹的 `step_010.npz` 的 `basis`，在第 10 次更新完成后产生。后续更新和断点续跑都沿用这组方向。`fixed_u10_available` 标记参考基是否可用。梯度总能量为零时保留全零谱，省略无定义的占比。非零梯度的占比也会写入训练指标 `rq2/gradient_own_top128_coverage` 和可用时的 `rq2/gradient_fixed_u10_coverage`。
 
 RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`。在默认 106 步 FULL 训练中，0、10、…、100 是更新前的检查点，分别对应第 1、11、…、101 次实际更新。每个文件的 `responses` 有 128 行，同一行内的 `kl_before` 和 `kl_after` 使用相同的生成回答和教师目标，`gain = kl_before - kl_after`。`positive_fraction` 是 `gain > gain_epsilon` 的回答比例。`source_index` 标识验证题，`response_row` 可定位同一检查点 `validation128/checkpoint_XXX.json` 中的回答。`response_sha256` 对有效回答 token ID 按小端 int64 顺序求 SHA-256。第 106 步的终点评估保存在 `validation128/checkpoint_106.json`。
 
-图 7b、7c 在七组 H200 实验中按实际参数更新编号写入 `training/training_records/rq3/subset_alignment_001.json` 至 `subset_alignment_106.json`。例如 `subset_alignment_011.json` 测量第 10 步模型在第 11 次更新前的梯度。复用组同一轮的两次更新分别测量，`rollout_round` 和 `inner`（从 1 开始）标出对应位置。图 5、6、7a 共用原有的每 10 步验证安排，图 5 另有终点读数。
+图 7b、7c 在第 1、5、10、…、105、106 次更新及原有详细诊断点（更新前 checkpoint 10、30、60、100，对应更新 11、31、61、101）测量，共 27 个观测点，按实际参数更新编号写入 `training/training_records/rq3/subset_alignment_XXX.json`。例如 `subset_alignment_011.json` 测量第 10 步模型在第 11 次更新前的梯度。按实际参数更新编号调度，复用组同一轮的两次更新分别判断是否观测；`rollout_round` 和 `inner`（从 1 开始）标出对应位置。图 5、6、7a 共用原有的每 10 步验证安排，图 5 另有终点读数。
 
-每次测量用该步的种子把已有的 128 条训练回答分为 4 组，每组 32 条。`subset_train_rows` 给出各组的 batch 行号。`pairs` 保存六对不同子集的全模型参数梯度余弦、完整 hidden 空间内的平均 token 梯度余弦，以及中心化 hidden 梯度协方差前 4 个方向的重合度 ‖VₐᵀVᵦ‖²_F / 4。`means` 和 `valid_pairs` 分别给出三项指标的均值和有效对子数。零范数的余弦、有效秩不足 4 的重合度记为 `null`，计算均值时跳过。每步的 JSON 自动进入结果 ZIP。较大的训练子集矩阵只在更新前检查点 10、30、60、100 保存，这四处直接复用详细诊断的计算结果。
+每次测量用该步的种子把已有的 128 条训练回答分为 4 组，每组 32 条。`subset_train_rows` 给出各组的 batch 行号。`pairs` 保存六对不同子集的全模型参数梯度余弦、完整 hidden 空间内的平均 token 梯度余弦，以及中心化 hidden 梯度协方差前 4 个方向的重合度 ‖VₐᵀVᵦ‖²_F / 4。`means` 和 `valid_pairs` 分别给出三项指标的均值和有效对子数。零范数的余弦、有效秩不足 4 的重合度记为 `null`，计算均值时跳过。各观测点的 JSON 自动进入结果 ZIP。较大的训练子集矩阵只在更新前检查点 10、30、60、100 保存，这四处直接复用详细诊断的计算结果。
 
 流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
@@ -195,3 +195,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 默认保留原统计频率和参数梯度抽样数。对称矩阵无损保存上三角，结果 ZIP 自带 `READ_MOMENTS.py` 读取工具；不再默认保存完整 hidden 梯度样本向量。新增 step-10 之后及相邻步的表征变化统计，以及已有验证诊断时点的参数变化比例、大小和层分布，不新增模型前向、反向或 SVD。验证结果固定写入训练输出目录，外置权重目录也会在完整评测成功后按归属记录清理。已有未知外置目录不会自动删除。
 
 保存字段、断点恢复边界及读取方法见 [诊断保存说明](../../docs/diagnostic_storage.md)。新增 CPU 汇总耗时单独记录，不承诺零运行开销。
+
+## 重型诊断频率
+
+训练 KL、固定高 KL 阈值占比和整批 hidden 梯度能量占比继续逐次更新记录。逐 token 全模型参数梯度、固定 probe 表征及完整 hidden 梯度谱在更新 1、5、10、…、105、106 测量（23 点）；每点仍抽样 256 个 token，抽样、权重、梯度定义不变。未测量步的 RQ1 文件标记 `parameter_gradient_measurement.measured=false`，参数能量项留空，不插值、不沿用旧值。全量模式也沿用诊断步调度。
+
+跨 batch 梯度在上述 23 点及原有 4 个验证配对诊断点测量（共 27 点）。验证集的每 10 步安排、首尾评测和 early-stop 的每 5 步检查保持原样。Reuse 使用实际 optimizer update 编号调度。
+
+表征增量的 `previous_observation_*` 表示相对上一个实际观测点的变化，`previous_observation_checkpoint` 和 `previous_observation_update_gap` 标明区间；`previous_step_*` 仅在相邻更新都有观测时存在。恢复后若没有上一个观测的 hidden，则相应可用标记为 false。
+
+降低观测频率减少时间采样密度，保留点的测量算法不变；不等于总训练速度提高 4.61 倍。正在运行的 Python 进程不会因拉取新提交而自动改变频率。

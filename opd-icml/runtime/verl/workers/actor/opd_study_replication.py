@@ -24,6 +24,9 @@ class StudyReplication:
         self.output=Path(self.cfg['output_dir']);self.asset=Path(actor.config.policy_loss['hidden_projection']['asset_path'])
         self.dimension=int(_final_norm_module(actor.actor_module).weight.numel());self.rank=int(self.cfg.get('rank',128))
         self.full=self.cfg['mode']=='full';self.freeze=int(self.cfg.get('freeze_step',10));self.interval=int(self.cfg.get('interval',5))
+        self.diagnostic_interval = int(self.cfg.get('diagnostic_interval', 1))
+        if self.diagnostic_interval < 1:
+            raise ValueError('diagnostic_interval must be positive')
         self.study=GradientStudy(actor,self.study_cfg,self.output);self.stability=None
         self.snapshot_only = self.cfg.get('adaptive_stability', {}).get('snapshot_only', False)
         self.parameter_tokens=None;self.parameter_measurement=None
@@ -123,8 +126,22 @@ class StudyReplication:
         payload['basis_reference']=self.reference
         self.study.start(self.train,self.u,payload,self.completed)
 
+    def diagnostic_due(self, update):
+        final = int(self.cfg['rounds']) * int(self.cfg.get('reuse', 1))
+        return (update == 1 or update == final or update == self.freeze or
+                update % self.diagnostic_interval == 0 or update % self.interval == 0)
+
     def before_inner(self,inner):
-        if self.study_cfg.get('subset_alignment_every_update', False):
+        update = self.completed + inner + 1
+        # A reuse round has multiple updates: never carry a measured value into
+        # an unmeasured inner update's metrics.
+        for key in list(self.metrics):
+            if key.startswith(('token_audit/parameter_', 'token_audit/kl_top10_parameter_', 'timing/parameter_token_', 'rq2/', 'timing/rq2_')):
+                self.metrics.pop(key)
+        self.pending_subset_alignment = None
+        final = int(self.cfg['rounds']) * int(self.cfg.get('reuse', 1))
+        subset_due = self.study.subset_due(update, final)
+        if subset_due or (self.study.payload is not None and self.study.subset_alignment is not None):
             if self.study.payload is not None:
                 self.pending_subset_alignment = self.study.subset_alignment
             else:
@@ -136,7 +153,7 @@ class StudyReplication:
             self.measure = (update == 1 or update % self.interval == 0 or
                             update == int(self.cfg['rounds']) * int(self.cfg['reuse']))
         self.parameter_measurement=None
-        if self.parameter_tokens is not None and (self.measure or self.sample_rq1):
+        if self.parameter_tokens is not None and (self.measure or (self.sample_rq1 and self.diagnostic_due(update))):
             self.parameter_measurement=self.parameter_tokens.measure(self.train,self.step,inner)
 
     @contextmanager
@@ -166,13 +183,14 @@ class StudyReplication:
     @contextmanager
     def watch_gradient_scopes(self,inputs,inner,state):
         if not (self.full or self.measure):yield;return
-        if self.moments is None:
+        collect_moments = self.measure or (self.full and self.diagnostic_due(self.completed + inner + 1))
+        if collect_moments and self.moments is None:
             self.moments = HiddenMoments(self.u if self.measure else None)
         n=inputs['responses'].shape[1];mask=inputs['response_mask'].bool();total=int(self.train.batch['response_mask'].sum())
         def consume(gradient):
             row,pos=mask.nonzero(as_tuple=True);count=len(row)
             energy = np.empty(count, dtype=np.float32) if self.measure or self.sample_rq1 else None
-            if count == 0:
+            if count == 0 and self.moments is not None:
                 # An all-padding local shard contributes a zero Gram to the global reduction.
                 self.moments.add(gradient.new_empty((0, gradient.shape[-1])))
             if self.measure:
@@ -185,7 +203,8 @@ class StudyReplication:
                 hi=min(count,lo+HiddenMoments.chunk_tokens)
                 g=gradient[row[lo:hi],pos[lo:hi]+start].detach().float()
                 g.mul_(total/dp.size())
-                self.moments.add(g)
+                if self.moments is not None:
+                    self.moments.add(g)
                 if energy is not None:
                     energy[lo:hi]=g.square().sum(1).cpu().numpy()
                 if not self.measure:
@@ -225,10 +244,10 @@ class StudyReplication:
         groups = {}
         for name in ('kl_top10', 'kl_above_step1_p90'):
             group = report['groups'][name]
-            quantities = {key: group['quantities'][key] for key in ('raw_gradient_energy', 'parameter_gradient_energy')}
+            quantities = {key: group['quantities'][key] for key in ('raw_gradient_energy', 'parameter_gradient_energy') if key in group['quantities']}
             groups[name] = dict(count=group['count'], fraction=group['fraction'], quantities=quantities)
         step = self.completed + inner + 1
-        metadata = report['parameter_gradient_measurement']
+        metadata = report.get('parameter_gradient_measurement')
         hidden = groups['kl_top10']['quantities']['raw_gradient_energy']
         self.metrics.update({'token_audit/step1_kl_p90': self.thresholds['kl_p90'],
                              'token_audit/kl_top10_hidden_energy_share': hidden['share'] or 0.})
@@ -236,11 +255,11 @@ class StudyReplication:
         sample_keys = ('row', 'pos', 'token', 'kl', 'in_current_kl_top10', 'sampling_stratum',
                        'sampling_weight', 'raw_gradient_energy', 'parameter_gradient_energy', 'diagnostic_kl')
         record = dict(step=step, round=self.step, inner=inner+1, thresholds=self.thresholds,
-                      groups=groups, parameter_gradient_measurement=metadata,
-                      samples={key: arrays[key].tolist() for key in sample_keys})
+                       groups=groups, parameter_gradient_measurement=metadata or {'measured': False},
+                      samples={key: arrays[key].tolist() for key in sample_keys if key in arrays})
         for key in ('gradient_rms_full', 'gradient_frobenius_full', 'parameter_gradient_rms',
                     'parameter_gradient_frobenius'):
-            record[key] = report[key]
+            record[key] = report.get(key)
         atomic_json(self.records / f'rq1_step_{step:04d}.json', record)
 
     def record_parameter_metrics(self, report, metadata):
@@ -256,7 +275,7 @@ class StudyReplication:
         if self.study.payload is not None and inner==0:self.study.before_update()
         started = time.perf_counter()
         moment = None
-        if self.full and self.moments is None:
+        if self.full and self.diagnostic_due(self.completed + inner + 1) and self.moments is None:
             raise ValueError('Missing training hidden gradients for this FULL update')
         if self.moments is not None:
             moment = self.moments.finish()
@@ -274,7 +293,8 @@ class StudyReplication:
                 lambda: rq1_only_report(fields, self.parameter_measurement, self.thresholds))
             self.parameter_measurement = None
             self.save_rq1(inner, report, arrays)
-            self.record_parameter_metrics(report, metadata)
+            if metadata is not None:
+                self.record_parameter_metrics(report, metadata)
             self.metrics['token_audit/high_kl_fraction'] = report['groups']['kl_above_step1_p90']['fraction']
         if not self.measure or moment is None:
             self.extra += time.perf_counter() - started
@@ -381,6 +401,8 @@ class StudyReplication:
             self.pending_subset_alignment = None
         if self.study.payload is not None and inner==1:self.metrics.update(self.study.after_update())
         if not self.full:return
+        if not self.diagnostic_due(update):
+            return
         started = time.perf_counter()
         current = panel_hidden(self.actor, self.panel)
         reshard_after_readout(self.actor)
