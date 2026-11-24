@@ -52,7 +52,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 
 入口自动读取可用 CPU affinity 和 cgroup CPU 配额，单卡默认最多 4 个 Ray CPU，四卡最多 8 个；四卡训练至少需要 5 个。自动选择容器允许的 CPU 编号，不假定一定是 0–3。启动计划的 cpu_resources 记录实际选择。Ray RPC 服务/客户端线程池各设为 2，BLAS 线程池为 1；这些设置在子进程启动前生效，避免按宿主机 CPU 数扩张。手动传入超出训练 CPU 配额的设置会在启动前报错。
 
-    bash scripts/h200/train_eval_qwen3_1_7b.sh --stage all --devices 0 --profile conservative --parameter-token-samples 64 --save-freq 10 --output runs/a100/qwen17-run1
+    bash scripts/h200/train_eval_qwen3_1_7b.sh --devices 0 --profile conservative --parameter-token-samples 64 --save-freq 10 --output runs/a100/qwen17-run1
 
 命令自动选择 CPU。已有可续训的 checkpoint 时，使用原 `--output` 加 `--resume`。程序从 `training/hydra/.hydra/config.yaml` 恢复参数梯度诊断和保存间隔。例如，原实验每个测量点抽 256 个 token、每 10 轮保存一次，续训沿用这两个值。若只迁移了 checkpoint，可显式传入原实验的 `--parameter-token-gradients sampled --parameter-token-samples 256 --save-freq 10`。
 
@@ -79,24 +79,24 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 ## 七个独立入口
 
 ```bash
-bash scripts/h200/train_eval_deepseek_coder_1_3b.sh --stage all --devices 0 --output runs/h200/deepseek13-full
-bash scripts/h200/train_eval_deepseek_coder_6_7b.sh --stage all --devices 0 --output runs/h200/deepseek67-full
-bash scripts/h200/train_eval_deepseek_coder_33b.sh --stage all --devices 0,1,2,3 --output runs/h200/deepseek33-full
-bash scripts/h200/train_eval_qwen3_1_7b.sh --stage all --devices 0 --output runs/h200/qwen17-full
-bash scripts/h200/train_eval_qwen3_4b.sh --stage all --devices 0 --output runs/h200/qwen4-full
-bash scripts/h200/train_eval_qwen3_8b.sh --stage all --devices 0,1,2,3 --output runs/h200/qwen8-full
-bash scripts/h200/train_eval_gemma3_12b.sh --stage all --devices 0,1,2,3 --output runs/h200/gemma12-full
+bash scripts/h200/train_eval_deepseek_coder_1_3b.sh
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh
+bash scripts/h200/train_eval_deepseek_coder_33b.sh
+bash scripts/h200/train_eval_qwen3_1_7b.sh
+bash scripts/h200/train_eval_qwen3_4b.sh
+bash scripts/h200/train_eval_qwen3_8b.sh
+bash scripts/h200/train_eval_gemma3_12b.sh
 ```
 
 单组入口默认训练一个 FULL 后评测。DeepSeek 默认 Code pass@8（LiveCodeBench、HumanEval+），每题生成 8 个回答，结果写入 `eval/code_pass8/`。Qwen/Gemma 默认数学六项 Mean@8。训练与评测 GPU 相同，单卡 TP=1、四卡 TP=4。`--devices` 指定 GPU，`--task` 切换任务。单独运行一组 RQ4 可用下文的 `--rq4-strategy`。
 
 ```bash
-bash scripts/h200/train_eval_qwen3_4b.sh --stage all --devices 2 \
+bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
   --micro-batch-size 2 --teacher-micro-batch-size 2 \
   --rollout-max-num-seqs 64 --output runs/h200/qwen4-custom
 
 # 训练和生成完成后自动判题，成功后打包。
-bash scripts/h200/train_eval_deepseek_coder_33b.sh --stage all \
+bash scripts/h200/train_eval_deepseek_coder_33b.sh \
   --devices 0,1,2,3 --output runs/h200/deepseek33-run1
 ```
 
@@ -110,7 +110,7 @@ bash scripts/h200/train_eval_deepseek_coder_33b.sh --stage all \
 
 默认自动打包，**只收集实验数据，不包含任何模型权重或 checkpoint**。评测汇总、生成回答与评分、训练/验证记录、诊断 NPZ/NPY、运行配置和日志会保留；模型目录、私有凭据、链接和嵌套 ZIP 会排除。原始结果不删除。
 
-整套 `--output runs/h200-suite/run1` 完成后生成 `runs/h200-suite/run1-results.zip`；上面的 Qwen 8B FULL 命令生成 `runs/h200/8b-qwen8-full-results.zip`。终端打印 `[DOWNLOAD ZIP]` 路径，在服务器文件浏览器中选下载，或用本地 `scp` 获取。下载方法见[快速开始](../../README.md#4-看进度下载结果)。
+整套 `--output runs/h200-suite/run1` 完成后生成 `runs/h200-suite/run1-results.zip`；上面的 Qwen 8B FULL 命令生成 `runs/h200/8b/8b-math-paired-full-results.zip`。终端打印 `[DOWNLOAD ZIP]` 路径，在服务器文件浏览器中选下载，或用本地 `scp` 获取。下载方法见[快速开始](../../README.md#4-看进度下载结果)。
 
 总调度只在全部 GPU 阶段和 CPU 判题完成后打一次总包，并先释放 GPU 锁；独立脚本每个成功阶段打包，清单会标记阶段。已有实验或中途结果可手动打包，完全不需要加载模型：
 

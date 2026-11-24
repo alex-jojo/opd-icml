@@ -51,12 +51,10 @@ free -h
 df -h .
 ```
 
-直接运行下面这一条命令。假设分给你的 GPU 为 `0,1,2,3`：
+分配到四张 GPU 后，直接运行：
 
 ```bash
-bash scripts/h200/run_all.sh \
-  --devices 0,1,2,3 \
-  --output runs/h200-suite/run1
+bash scripts/h200/run_all.sh
 ```
 
 本命令使用下表中的七组学生与教师配对。每组用同一 GPU 配置评测 FULL 早停点。四个数学模型和 DeepSeek-Coder 1.3B 还会用该配置训练和评测复用策略。
@@ -71,28 +69,28 @@ bash scripts/h200/run_all.sh \
 | Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 0,1,2,3 | 第3阶段：独占四卡 |
 | DeepSeek-Coder-33B-Base → 33B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0,1,2,3 | 第4阶段：独占四卡 |
 
-表中 GPU 编号对应 `--devices 0,1,2,3` 且允许四组并行时的分配。前四组分别使用 GPU 0、1、2、3；后三组依次使用全部四张卡。若 CPU/主存预算使并行数下降，调度器会复用前面的 GPU 槽位，实际分配会在正式启动时自动打印；更换 `--devices` 时按传入顺序对应。
+表中 GPU 编号以可见设备为 `0,1,2,3` 且允许四组并行为例。前四组分别使用 GPU 0、1、2、3；后三组依次使用全部四张卡。若 CPU/主存预算使并行数下降，调度器会复用前面的 GPU 槽位，实际分配会在正式启动时自动打印；更换 `--devices` 时按传入顺序对应。
 
-总入口自动准备模型和数据、调度各组并打包结果。整套从头运行时使用新的 `--output` 目录，例如第二次改为 `runs/h200-suite/run2`。总入口暂不支持中断后续训。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘，33B 训练还需要充分主存。H200 吞吐与显存峰值尚未实测。
+总入口自动准备模型和数据、调度各组并打包结果。整套从头运行时使用新的 `--output` 目录，例如第二次加 `--output runs/h200-suite-run2`。总入口暂不支持中断后续训。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘，33B 训练还需要充分主存。H200 吞吐与显存峰值尚未实测。
 
 ### 单独跑一个模型或策略
 
-在含 `train.py` 的目录中选一行执行。`--stage all` 会训练 FULL、评测终点和早停点、评测未训练的 Base，成功后把训练记录和评测结果一起打包。单卡示例使用 GPU 0，可将 `--devices` 改为实际分配的卡号。
+在含 `train.py` 的目录中选一行执行。脚本默认训练 FULL，随后评测终点、早停点和未训练的 Base，成功后把训练记录和评测结果一起打包。脚本按模型选用前一张或前四张可见 GPU，优先使用作业的 `CUDA_VISIBLE_DEVICES`。再次从头运行同一模型时，用 `--output` 指定新的输出目录。
 
 | 学生模型 | 单独启动 FULL |
 | --- | --- |
-| DeepSeek-Coder 1.3B | `bash scripts/h200/train_eval_deepseek_coder_1_3b.sh --stage all --devices 0 --output runs/h200/deepseek13-full` |
-| Qwen3 1.7B | `bash scripts/h200/train_eval_qwen3_1_7b.sh --stage all --devices 0 --output runs/h200/qwen17-full` |
-| Qwen3 4B | `bash scripts/h200/train_eval_qwen3_4b.sh --stage all --devices 0 --output runs/h200/qwen4-full` |
-| DeepSeek-Coder 6.7B | `bash scripts/h200/train_eval_deepseek_coder_6_7b.sh --stage all --devices 0 --output runs/h200/deepseek67-full` |
-| Qwen3 8B | `bash scripts/h200/train_eval_qwen3_8b.sh --stage all --devices 0,1,2,3 --output runs/h200/qwen8-full` |
-| Gemma3 12B | `bash scripts/h200/train_eval_gemma3_12b.sh --stage all --devices 0,1,2,3 --output runs/h200/gemma12-full` |
-| DeepSeek-Coder 33B | `bash scripts/h200/train_eval_deepseek_coder_33b.sh --stage all --devices 0,1,2,3 --output runs/h200/deepseek33-full` |
+| DeepSeek-Coder 1.3B | `bash scripts/h200/train_eval_deepseek_coder_1_3b.sh` |
+| Qwen3 1.7B | `bash scripts/h200/train_eval_qwen3_1_7b.sh` |
+| Qwen3 4B | `bash scripts/h200/train_eval_qwen3_4b.sh` |
+| DeepSeek-Coder 6.7B | `bash scripts/h200/train_eval_deepseek_coder_6_7b.sh` |
+| Qwen3 8B | `bash scripts/h200/train_eval_qwen3_8b.sh` |
+| Gemma3 12B | `bash scripts/h200/train_eval_gemma3_12b.sh` |
+| DeepSeek-Coder 33B | `bash scripts/h200/train_eval_deepseek_coder_33b.sh` |
 
-单独跑 Reuse 时，在对应模型的命令中加 `--rq4-strategy reuse`，并换一个输出目录。整套实验包含 Qwen3 1.7B、4B、8B、Gemma3 12B 和 DeepSeek-Coder 1.3B 的 Reuse。以 Qwen3 1.7B 为例：
+单独跑 Reuse 时，在对应模型的命令中加 `--rq4-strategy reuse`，脚本会使用单独的 Reuse 输出目录。整套实验包含 Qwen3 1.7B、4B、8B、Gemma3 12B 和 DeepSeek-Coder 1.3B 的 Reuse。以 Qwen3 1.7B 为例：
 
 ```bash
-bash scripts/h200/train_eval_qwen3_1_7b.sh --stage all --devices 0 --rq4-strategy reuse --output runs/h200/qwen17-reuse
+bash scripts/h200/train_eval_qwen3_1_7b.sh --rq4-strategy reuse
 ```
 
 ### 正式实验的训练与记录
@@ -115,16 +113,16 @@ RQ4 比较结果在整个实验 ZIP 的 `rq4_comparison.json`。各规模内的�
 在另一个终端、同一项目目录下：
 
 ```bash
-cat runs/h200-suite/run1/status.json
-tail -F runs/h200-suite/run1/4b/logs/train.log
+cat runs/h200-suite/status.json
+tail -F runs/h200-suite/4b/logs/train.log
 ```
 
-单模型运行完成后，下载终端 `[DOWNLOAD ZIP]` 打印的文件。例如，上面的 Qwen3 1.7B FULL 命令生成 `runs/h200/1.7b-qwen17-full-results.zip`，包内的 `qwen17-full/eval/final_mean8.summary.json` 是终点成绩。
+单模型运行完成后，下载终端 `[DOWNLOAD ZIP]` 打印的文件。例如，上面的 Qwen3 1.7B FULL 命令生成 `runs/h200/1.7b/1.7b-math-paired-full-results.zip`，包内的 `math-paired-full/eval/final_mean8.summary.json` 是终点成绩。
 
 整套运行全部成功后，下载以下文件：
 
 ```text
-runs/h200-suite/run1-results.zip
+runs/h200-suite-results.zip
 ```
 
 ZIP 包含训练统计、表征和参数梯度数据、生成回答、评测结果、配置和日志。模型权重仅用于服务器端合并与评测，默认在该组评测成功后清理。需要保留权重时，启动命令加 `--keep-model-files`。
