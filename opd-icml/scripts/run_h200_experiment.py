@@ -36,7 +36,7 @@ EXPERIMENTS = {
     '1.7b': Experiment('math', 1),
     '4b': Experiment('math', 1),
     '8b': Experiment('math', 4),
-    'gemma3-12b': Experiment('math', 4),
+    'gemma3-12b': Experiment('math', 2),
 }
 
 # Throughput starting points; no change to sample counts, precision or diagnostics.
@@ -64,7 +64,7 @@ def parser():
     p.add_argument('--save-freq', type=int, help='Resumable checkpoint every N rounds (passed to train.py)')
     p.add_argument('--resume', action='store_true', help='Continue training in an existing --output from its latest checkpoint')
     p.add_argument('--model-artifacts-root', type=Path, help='Keep the deletable weights (training checkpoints and merged model) under <root>/<run name>/ instead of inside the run; symlinks are left in the run directory')
-    p.add_argument('--devices', help='Exactly one/four GPU IDs or UUIDs; otherwise use CUDA_VISIBLE_DEVICES. Ignored for CPU-only grade')
+    p.add_argument('--devices', help='Exactly one/two/four GPU IDs or UUIDs; otherwise use CUDA_VISIBLE_DEVICES. Ignored for CPU-only grade')
     p.add_argument('--output', type=Path, help='Pipeline root; contains training/, merged/, eval/, logs/')
     for name in ('student', 'teacher', 'cache-dir', 'model-dir', 'data', 'val-data'):
         p.add_argument('--' + name, type=Path)

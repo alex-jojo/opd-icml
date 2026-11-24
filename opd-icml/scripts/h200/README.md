@@ -1,12 +1,12 @@
 # H200 高级运行参考
 
-首次部署和完整七组启动见[快速开始](../../README.md)。以下命令仅在单独运行、调参或恢复评测时使用；均在已激活的 Python 3.10 环境中执行。
+首次部署和默认四组启动见[快速开始](../../README.md)。以下命令仅在单独运行、调参或恢复评测时使用；均在已激活的 Python 3.10 环境中执行。
 
 所有模型、数据、配置、输出和 ZIP 路径均以项目根目录（含 `train.py` 的目录）为基准；例如 `models/student`、`data/benchmarks.jsonl`、`runs/h200-suite/run1`。入口会自行定位项目根目录，从其他工作目录启动也适用。项目外资源可写为 `../shared/...`，运行计划与新生成的路径标记保存相对路径。
 
 所有入口继承当前终端的 `WANDB_API_KEY`、`WANDB_MODE`、`WANDB_PROJECT` 和可选的 `WANDB_ENTITY`。无需配置文件；设置方法见[快速开始](../../README.md#2-登录模型账号设置-wb)。
 
-默认七组的输出目录、逐步记录、评测文件和清理时机见[实验保存说明](./实验保存说明.md)。
+默认四组的输出目录、逐步记录、评测文件和清理时机见[实验保存说明](./实验保存说明.md)。
 
 ## 整套实验
 
@@ -16,13 +16,13 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 --output runs/h200-suite/run1
 
 # 只选部分模型；仍指定服务器上的四张卡。
 bash scripts/h200/run_all.sh --devices 0,1,2,3 \
-  --scales 1.7b 4b 8b --output runs/h200-suite/qwen
+  --scales 4b gemma3-12b --output runs/h200-suite/math
 
 # 恢复原来的保守批处理与卸载设置。
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-七组模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。七组模型均在各自的 FULL 训练中保存早停权重。四个数学模型和 DeepSeek-Coder 1.3B 各另跑一次复用训练。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+可选模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。当前默认四组为 DeepSeek-Coder 1.3B/6.7B、Qwen3 4B、Gemma3 12B；其中两组数学与 DeepSeek-Coder 1.3B 各另跑一次复用，共 7 次训练、15 行含 Base 的评测结果。1.7B、8B 和 33B 仅在显式选择时运行。各组 FULL 保存共享早停权重。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出128-token抽样估计的 hidden 梯度能量占比和64-token抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
@@ -40,7 +40,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 
 每次测量用该步的种子把已有的 128 条训练回答分为 4 组，每组 32 条。`subset_train_rows` 给出各组的 batch 行号。`pairs` 保存六对不同子集的全模型参数梯度余弦、完整 hidden 空间内的平均 token 梯度余弦，以及中心化 hidden 梯度协方差前 4 个方向的重合度 ‖VₐᵀVᵦ‖²_F / 4。`means` 和 `valid_pairs` 分别给出三项指标的均值和有效对子数。零范数的余弦、有效秩不足 4 的重合度记为 `null`，计算均值时跳过。各观测点的 JSON 自动进入结果 ZIP。较大的训练子集矩阵只在更新前检查点 10、30、60、100 保存，这四处直接复用详细诊断的计算结果。
 
-流程：先顺序准备共享数据、benchmark和模型，避免并行写入；DeepSeek1.3B、Qwen1.7B、Qwen4B、DeepSeek6.7B按独立单卡槽运行，最多四个并行。全部单卡GPU阶段完成后，Qwen8B→32B、Gemma12B、DeepSeek33B依次独占四卡。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
+流程：先顺序准备共享数据、benchmark和模型，避免并行写入；默认 DeepSeek1.3B、Qwen4B、DeepSeek6.7B 按独立单卡槽并行。单卡 GPU 阶段全部完成后，Gemma12B 使用前两张卡依次跑 FULL 和 Reuse。显式选择的 Qwen1.7B 加入单卡队列；Qwen8B→32B 和 DeepSeek33B 使用四卡串行阶段。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
 `--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU用于判题；单卡训练槽最多分配4个CPU，四卡训练最多分配8个CPU；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
 
@@ -69,7 +69,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 | Qwen4B | 1 | Math | 2 | 2 | 64 | 关/关 |
 | DeepSeek6.7B | 1 | Code | 1 | 1 | 32 | 开/开 |
 | Qwen8B→32B | 4 | Math | 2 | 2 | 32 | 开/开 |
-| Gemma12B | 4 | Math | 2 | 2 | 32 | 开/开 |
+| Gemma12B | 2 | Math | 2 | 2 | 32 | 开/开 |
 | DeepSeek33B | 4 | Code | 1 | 1 | 16 | 开/开 |
 
 默认 `--profile throughput` 通过现有设置控制批处理与卸载，梯度检查点、rollout显存比例0.30及评测并发64保留。小模型关闭阶段卸载以减少搬运，大模型保留。`--profile conservative` 恢复学生/教师micro-batch=1、并发16及两项卸载。没有启用量化或新的编译路径。**尚无真实H200显存/速度实测，不承诺最优吞吐；批处理及生成调度变化可能改变浮点规约和采样轨迹。**
@@ -88,7 +88,7 @@ bash scripts/h200/train_eval_qwen3_8b.sh
 bash scripts/h200/train_eval_gemma3_12b.sh
 ```
 
-单组入口默认训练一个 FULL 后评测。DeepSeek 默认 Code pass@8（LiveCodeBench、HumanEval+），每题生成 8 个回答，结果写入 `eval/code_pass8/`。Qwen/Gemma 默认数学六项 Mean@8。训练与评测 GPU 相同，单卡 TP=1、四卡 TP=4。`--devices` 指定 GPU，`--task` 切换任务。单独运行一组 RQ4 可用下文的 `--rq4-strategy`。
+单组入口默认训练一个 FULL 后评测。DeepSeek 默认 Code pass@8（LiveCodeBench、HumanEval+），每题生成 8 个回答，结果写入 `eval/code_pass8/`。Qwen/Gemma 默认数学六项 Mean@8。训练与评测 GPU 相同，单卡 TP=1、Gemma 双卡 TP=2、四卡 TP=4。`--devices` 指定 GPU，`--task` 切换任务。单独运行一组 RQ4 可用下文的 `--rq4-strategy`。
 
 ```bash
 bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
@@ -164,7 +164,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 
 独立评测成功后，默认在其他 4B 实验 ZIP 所在目录生成 `runs/h200/4b/4b-math-base-results.zip`。自定义 `--output` 时，ZIP 保存在该输出目录旁。终端的 `[DOWNLOAD ZIP]` 会打印实际路径。`--no-package` 可关闭打包。
 
-默认 H200 套件对全部七个原始学生模型各测一次 Base，每组在 `<规模>/eval/base/` 保存，和训练结果进入同一 ZIP。四组数学沿用表 3 五项 Mean@8，RQ4 采用严格判分；三组 DeepSeek 用相同的 chat 提示和双 EOS，评测 LiveCodeBench、HumanEval+ 的 pass@8，GPU 生成后由 CPU 判题。七组各有 Base、FULL、早停三行，四个数学模型和 DeepSeek-Coder 1.3B 各增加一行复用，共 26 行结果、12 次训练。
+默认 H200 套件对四个选中学生模型各测一次 Base，每组在 `<规模>/eval/base/` 保存，和训练结果进入同一 ZIP。四组数学沿用表 3 五项 Mean@8，RQ4 采用严格判分；三组 DeepSeek 用相同的 chat 提示和双 EOS，评测 LiveCodeBench、HumanEval+ 的 pass@8，GPU 生成后由 CPU 判题。默认四组各有 Base、FULL、早停三行；Qwen4B、Gemma12B 和 DeepSeek1.3B 各增加一行复用，共 15 行结果、7 次训练。显式选择全部七组时为 26 行结果、12 次训练。
 
 单独补测用 `python scripts/evaluate_base.py --scale <规模>`，可用 `--output` 指定目标，默认单独打 ZIP。代码任务使用与训练后评测相同的已准备 benchmark 目录（可用 `python scripts/prepare_code_benchmarks.py` 准备），支持 `--generate-only` 和 `--grade-only`。单独运行时请设置与该组一致的可见 GPU。原有 4B 脚本继续可用。
 

@@ -25,6 +25,7 @@ from cpu_resources import available_cpu_ids, default_ray_cpus
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b', 'deepseek-coder-6.7b']
 LARGE = ['8b', 'gemma3-12b', 'deepseek-coder-33b']
+DEFAULT_SCALES = ['deepseek-coder-1.3b', '4b', 'deepseek-coder-6.7b', 'gemma3-12b']
 GIB = 1024**3
 
 
@@ -47,7 +48,7 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--devices', help='Four GPU IDs/UUIDs, in scheduling order')
     p.add_argument('--output', type=Path, default=Path('runs/h200-suite'))
-    p.add_argument('--scales', nargs='+', choices=EXPERIMENTS, default=SMALL + LARGE)
+    p.add_argument('--scales', nargs='+', choices=EXPERIMENTS, default=DEFAULT_SCALES)
     p.add_argument('--max-parallel-small', type=int, choices=[1, 2, 3, 4], default=4)
     p.add_argument('--profile', choices=['throughput', 'conservative'], default='throughput')
     p.add_argument('--parameter-token-gradients', choices=['sampled', 'exact-all'], default='sampled')
@@ -133,7 +134,7 @@ def build_suite(args, environment, cpus, free_gib):
         cores = training_cpus[slot::slots]
         for strategy in strategies(scale):
             queues[slot].append(job(scale, [devices[slot]], cores, slots, strategy))
-    large = [job(s, devices, training_cpus, 1, strategy) for s in LARGE if s in args.scales
+    large = [job(s, devices[:EXPERIMENTS[s].gpus], training_cpus, 1, strategy) for s in LARGE if s in args.scales
              for strategy in strategies(s)]
     prepare = []
     if any(EXPERIMENTS[s].task == 'math' for s in args.scales):
@@ -158,7 +159,7 @@ def print_execution_schedule(plan):
                          f"stage 1, GPU queue position {position}"))
     for stage, job in enumerate(plan['large'], 2):
         rows.append((job['name'], ','.join(job['devices']),
-                     f"stage {stage}, all selected GPUs"))
+                     f"stage {stage}, exclusive {len(job['devices'])}-GPU job"))
     print("\nModel                    | GPU IDs             | Execution order", flush=True)
     print("-" * 88, flush=True)
     for scale, ids, order in rows:
@@ -323,7 +324,7 @@ def schedule(plan, runner):
                     nxt = queue.pop(0)
                     pending[submit(gpu, nxt)] = (nxt, queue)
         for job in plan['large']:
-            # A four-GPU FULL can retain two checkpoints plus its merged model
+            # A multi-GPU FULL can retain two checkpoints plus its merged model
             # until CPU grading finishes. Reclaim them before training its reuse arm.
             for future, previous in list(grades.items()):
                 if previous['scale'] == job['scale']:
