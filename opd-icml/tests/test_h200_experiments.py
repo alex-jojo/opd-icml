@@ -14,12 +14,12 @@ import run_h200_experiment as h200
 
 CASES = [
     ('deepseek_coder_1_3b', 'deepseek-coder-1.3b', 'code', 1),
-    ('deepseek_coder_6_7b', 'deepseek-coder-6.7b', 'code', 1),
+    ('deepseek_coder_6_7b', 'deepseek-coder-6.7b', 'code', 2),
     ('deepseek_coder_33b', 'deepseek-coder-33b', 'code', 4),
     ('qwen3_1_7b', '1.7b', 'math', 1),
     ('qwen3_4b', '4b', 'math', 1),
     ('qwen3_8b', '8b', 'math', 4),
-    ('gemma3_12b', 'gemma3-12b', 'math', 4),
+    ('gemma3_12b', 'gemma3-12b', 'math', 2),
 ]
 
 
@@ -44,10 +44,10 @@ def test_seven_actual_shell_entry_points_keep_train_and_evaluation_gpus_equal(na
     plan = json.loads(result.stdout)
     assert plan['scale'] == scale and plan['task'] == task
     assert plan['training_gpus'] == plan['evaluation_gpus'] == plan['evaluation_tp'] == gpus
-    assert plan['cuda_visible_devices'] == ('3' if gpus == 1 else '3,1,2,0')
+    assert plan['cuda_visible_devices'] == ','.join(['3', '1', '2', '0'][:gpus])
     actual = plan['resolved_training']
     assert actual['gpu_count'] == actual['rollout_tensor_parallel_size'] == gpus
-    assert actual['hardware_profile'] == f'h200x{gpus}'
+    assert actual['hardware_profile'] == ('h200x1' if gpus == 1 else 'h200x4')
     assert actual['rollout_batch'] == actual['mini_batch_size'] == 128
     assert actual['rounds_cap'] == 106 and actual['updates_per_round'] == 1
     assert actual['parameter_token_gradients']['sample_size'] == 64
@@ -74,13 +74,13 @@ def test_explicit_devices_preserve_order_and_cannot_override_card_rule():
         h200.select_devices(1, '0,1,2,3', {})
 
 
-@pytest.mark.parametrize('scale,gpus', [('deepseek-coder-6.7b', 1), ('deepseek-coder-33b', 4)])
+@pytest.mark.parametrize('scale,gpus', [('deepseek-coder-6.7b', 2), ('deepseek-coder-33b', 4)])
 def test_new_deepseek_profiles_compose_and_pin_only_one_weight_format(scale, gpus):
     from hydra import compose, initialize_config_dir
     import train
     profile = ROOT / 'configs' / scale
     name, config = train.training_config(profile, 'paired-full', 'code')
-    overrides = train.apply_hardware_profile(config, f'h200x{gpus}')
+    overrides = train.apply_hardware_profile(config, 'h200x1' if gpus == 1 else 'h200x4', num_gpus=gpus, rollout_tp=gpus)
     search = 'hydra.searchpath=' + json.dumps(
         ['file://' + (ROOT / 'runtime/verl/trainer/config').as_posix()], ensure_ascii=False)
     with initialize_config_dir(config_dir=str(profile), version_base=None):
@@ -88,7 +88,7 @@ def test_new_deepseek_profiles_compose_and_pin_only_one_weight_format(scale, gpu
             '++' + key + '=' + json.dumps(value) for key, value in overrides.items()])
     assert cfg.trainer.n_gpus_per_node == cfg.actor_rollout_ref.rollout.tensor_model_parallel_size == gpus
     assert cfg.actor_rollout_ref.actor.policy_loss.replication17.distributed_world_size == gpus
-    assert cfg.data.opd_task == 'code' and cfg.data.max_response_length == 3072
+    assert cfg.data.opd_task == 'code' and cfg.data.max_response_length == 2048
     models = json.loads((profile / 'models.json').read_text())
     assert models['preparation'] == 'deepseek-coder-dual-eos-v2'
     for role, suffix in [('student', 'base'), ('teacher', 'instruct')]:
@@ -124,9 +124,9 @@ def test_pipeline_handoff_preserves_devices_and_can_retry_evaluation(name, scale
 
     def fake_run(command, environment, log):
         called.append(list(command))
-        assert environment['CUDA_VISIBLE_DEVICES'] == ('' if '--grade-only' in command else ('3' if gpus == 1 else '3,2,1,0'))
+        assert environment['CUDA_VISIBLE_DEVICES'] == ('' if '--grade-only' in command else ','.join(['3', '2', '1', '0'][:gpus]))
         if command == plan['train']:
-            actor = checkpoint_fixture(Path(plan['output']) / 'training', gpus)
+            actor = checkpoint_fixture(h200.project_absolute(plan['output']) / 'training', gpus)
             if plan['shared_early_stop']:
                 import rq4_results as rq4
                 run = h200.project_absolute(plan['output'])
@@ -143,7 +143,7 @@ def test_pipeline_handoff_preserves_devices_and_can_retry_evaluation(name, scale
         if 'verl.model_merger' in command:
             source = command[command.index('--local_dir') + 1]
             assert 'global_step_106' in source and '<latest>' not in source
-            merged = Path(command[command.index('--target_dir') + 1])
+            merged = h200.project_absolute(command[command.index('--target_dir') + 1])
             merged.mkdir()
             (merged / 'config.json').write_text('{}')
             (merged / 'model.safetensors').write_bytes(b'model')
@@ -250,3 +250,34 @@ def test_evaluation_endpoint_needs_only_one_cpu(tmp_path, stage, strategy, cap, 
     train = dry_run(tmp_path, '--stage', 'train', '--ray-num-cpus', '1')
     assert train.returncode != 0 and 'at least 2 Ray CPUs' in train.stderr
 
+
+
+@pytest.mark.parametrize('scale,task,gpus,prompt,strategy', [
+    ('deepseek-coder-1.3b', 'code', 1, 2048, 'full'),
+    ('deepseek-coder-1.3b', 'code', 1, 2048, 'reuse'),
+    ('4b', 'math', 1, 1024, 'full'),
+    ('4b', 'math', 1, 1024, 'reuse'),
+    ('deepseek-coder-6.7b', 'code', 2, 2048, 'full'),
+])
+def test_active_commands_keep_training_and_evaluation_lengths(scale, task, gpus, prompt, strategy):
+    import train
+    args = h200.parser().parse_args(['--scale', scale, '--rq4-strategy', strategy,
+                                    '--devices', ','.join(map(str, range(gpus)))])
+    plan = h200.build_plan(args, {})
+    _, cfg = train.training_config(ROOT / 'configs' / scale, 'paired-full', task)
+    train.paired_rq4_overrides(cfg, strategy)
+    rollout = cfg['actor_rollout_ref']['rollout']
+    assert cfg['data']['max_prompt_length'] == rollout['prompt_length'] == prompt
+    assert cfg['data']['max_response_length'] == rollout['response_length'] == 2048
+    assert (rollout['max_model_len'] or prompt + 2048) == prompt + 2048
+    assert cfg['trainer']['total_training_steps'] == (53 if strategy == 'reuse' else 106)
+    assert plan['stage'] == 'all' and plan['shared_early_stop'] == (strategy == 'full')
+    assert bool(plan['evaluate_base']) == (strategy == 'full')
+    assert plan['training_gpus'] == plan['evaluation_gpus'] == gpus
+    evaluation = plan['evaluate']
+    prompt_flag = '--max-prompt-tokens' if task == 'code' else '--max_prompt_tokens'
+    output_flag = '--max-tokens' if task == 'code' else '--max_tokens'
+    count_flag = '--samples' if task == 'code' else '--n'
+    assert evaluation[evaluation.index(prompt_flag) + 1] == ('4096' if task == 'code' else '1024')
+    assert evaluation[evaluation.index(output_flag) + 1] == '8192'
+    assert evaluation[evaluation.index(count_flag) + 1] == '8'
