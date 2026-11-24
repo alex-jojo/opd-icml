@@ -209,7 +209,7 @@ python train.py --task code --scale 8b --experiment early-stop
 python train.py --task code --scale gemma3-12b --experiment reuse
 ```
 
-`--task` 默认仍是 `math`。Code 默认读上述独立训练/验证文件，并输出到 `runs/code/<scale>/<experiment>/`；可用 `--data`、`--val-data`、`--output` 指定路径。Code 配置为 `configs/<scale>/code-<experiment>.yaml`，继承已有模型/实验设置，默认 prompt 上限 2,048、response 上限 3,072；超长 prompt 会被过滤，实际参与训练的题数可能少于原始 25,276。新模型两组仍默认 4 GPU，1.7B / 4B 沿用其基础配置的 GPU 数。较长 code 序列的资源开销需在服务器实测。
+`--task` 默认仍是 `math`。Code 默认读上述独立训练/验证文件，并输出到 `runs/code/<scale>/<experiment>/`；可用 `--data`、`--val-data`、`--output` 指定路径。Code 配置为 `configs/<scale>/code-<experiment>.yaml`，继承已有模型/实验设置，默认 prompt 上限 2,048、response 上限 2,048；超长 prompt 会被过滤，实际参与训练的题数可能少于原始 25,276。新模型两组仍默认 4 GPU，1.7B / 4B 沿用其基础配置的 GPU 数。较长 code 序列的资源开销需在服务器实测。
 
 蒸馏目标仍为学生 Top-16 支持上的 reverse KL；测试用例得分只用于监测，既不筛选训练 token，也不变成 PPO/GRPO 奖励。默认调用已有 PRIME Python 判题器，使用 Linux/Unix 训练环境，最多并发 8 个提交（`--code-workers` 可调整）。也可接已有 Sandbox Fusion 服务：
 

@@ -6,7 +6,7 @@
   "data": {
     "opd_task": "code",
     "max_prompt_length": 2048,
-    "max_response_length": 3072,
+    "max_response_length": 2048,
     "val_files": [
       "${oc.env:OPD_VALIDATION_DATA}"
     ],
@@ -15,8 +15,8 @@
   "actor_rollout_ref": {
     "rollout": {
       "prompt_length": 2048,
-      "response_length": 3072,
-      "max_model_len": 5120,
+      "response_length": 2048,
+      "max_model_len": 4096,
       "max_num_seqs": 64
     },
     "actor": {
