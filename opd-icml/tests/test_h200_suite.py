@@ -407,9 +407,11 @@ def test_execution_summary_explains_shared_gpu_queue(capsys):
 def test_default_suite_excludes_paused_models_and_keeps_all_explicit_choices(tmp_path):
     plan = plan_for(tmp_path)
     jobs = [j for q in plan['small_queues'] for j in q] + plan['large']
-    assert {j['scale'] for j in jobs} == {'4b', 'gemma3-12b', 'deepseek-coder-1.3b', 'deepseek-coder-6.7b'}
-    assert len(jobs) == 7
-    assert not any(j['scale'] in {'1.7b', '8b', 'deepseek-coder-33b'} for j in jobs)
+    assert {j['scale'] for j in jobs} == {'4b', 'deepseek-coder-1.3b', 'deepseek-coder-6.7b'}
+    assert len(jobs) == 5
+    prepared = [value(cmd, '--scale') for cmd in plan['prepare'] if '--scale' in cmd]
+    assert set(prepared) == {'4b', 'deepseek-coder-1.3b', 'deepseek-coder-6.7b'}
+    assert not any(j['scale'] in {'1.7b', '8b', 'gemma3-12b', 'deepseek-coder-33b'} for j in jobs)
     assert all(j['devices'] == ['3', '1'] for j in plan['large'])
     full = plan_for(tmp_path, ['--scales', *suite.SMALL, *suite.LARGE])
     for job in full['large']:

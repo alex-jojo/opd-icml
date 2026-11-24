@@ -25,7 +25,7 @@ from cpu_resources import available_cpu_ids, default_ray_cpus
 
 SMALL = ['deepseek-coder-1.3b', '1.7b', '4b']
 LARGE = ['deepseek-coder-6.7b', '8b', 'gemma3-12b', 'deepseek-coder-33b']
-DEFAULT_SCALES = ['deepseek-coder-1.3b', '4b', 'deepseek-coder-6.7b', 'gemma3-12b']
+DEFAULT_SCALES = ['deepseek-coder-1.3b', '4b', 'deepseek-coder-6.7b']
 GIB = 1024**3
 
 

@@ -2,7 +2,7 @@
 
 在四张 H200 上运行 OPD FULL 和 RQ4 策略对照，自动准备模型和数据、训练、评测并打包结果。
 
-**当前默认模型**：DeepSeek-Coder 1.3B、6.7B、Qwen3 4B 和 Gemma3 12B。Qwen3 1.7B、8B 和 DeepSeek-Coder 33B 暂不加入默认套件，单独入口及显式 `--scales` 选择仍保留。四组各训练一次 FULL；Qwen3 4B、Gemma3 12B 和 DeepSeek-Coder 1.3B 各另跑一次 Reuse，共 7 次训练。每组评测 Base、FULL 和共享早停点，加上三组 Reuse，共 15 行结果。DeepSeek-Coder 6.7B 和 Gemma 的训练与评测默认各使用两张 GPU。
+**当前默认模型**：DeepSeek-Coder 1.3B、Qwen3 4B 和 DeepSeek-Coder 6.7B。Qwen3 1.7B、8B、Gemma3 12B 和 DeepSeek-Coder 33B 暂不加入默认套件，单独入口及显式 `--scales` 选择仍保留。三组各训练一次 FULL；Qwen3 4B 和 DeepSeek-Coder 1.3B 各另跑一次 Reuse，共 5 次训练。每组评测 Base、FULL 和自适应早停点，加上两组 Reuse，共 11 行结果。DeepSeek-Coder 6.7B 的训练与评测使用两张 GPU。
 
 ## 1. 下载代码、安装环境（首次执行）
 
@@ -21,7 +21,7 @@ bash scripts/setup_h200.sh
 
 ## 2. 登录模型账号、设置 W&B
 
-默认套件包括 Gemma，需要 Hugging Face 账号已取得对应模型访问权限：
+默认三组不包含 Gemma。仅在显式选择 Gemma 时，需要 Hugging Face 账号已取得对应模型访问权限；如需登录，可设置：
 
 ```bash
 export HF_TOKEN='<YOUR_HF_TOKEN>'
@@ -57,19 +57,19 @@ df -h .
 bash scripts/h200/run_all.sh
 ```
 
-本机有四张 H200（GPU 0、1、2、3）。下表保留全部七组，删除线标记的三组暂不运行；本命令默认运行其余四组。FULL 完成后自动测评终点、共享早停点和 Base；标注 Reuse 的组还会接着训练并测评复用策略。
+本机有四张 H200（GPU 0、1、2、3）。下表保留全部七组，删除线标记的四组暂不运行；本命令默认运行其余三组。FULL 完成后自动测评终点、共享早停点和 Base；标注 Reuse 的组还会接着训练并测评复用策略。
 
 | 模型配对（学生 → 教师） | 训练数据 | 测评 benchmark | 指标 | GPU 编号 | 运行顺序 |
 |---|---|---|---|---|---|
-| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0 | 第一阶段：可并行，FULL → Reuse |
+| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0 | 第一阶段：可并行，FULL＋自适应早停＋Reuse |
 | ~~Qwen3-1.7B-Base → Qwen3-1.7B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
 | Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行，FULL → Reuse |
-| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0,1 | 第二阶段：两卡 FULL |
+| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0,1 | 第二阶段：两卡 FULL＋自适应早停 |
 | ~~Qwen3-8B-Base → Qwen3-32B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
-| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 0,1 | 第三阶段：两卡 FULL → Reuse |
+| ~~Gemma-3-12B-PT → Gemma-3-12B-IT~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
 | ~~DeepSeek-Coder-33B-Base → 33B-Instruct~~ | ~~Eurus-2-RL-Data，Code 子集~~ | ~~LiveCodeBench v6、HumanEval+~~ | ~~pass@8~~ | — | 暂不运行 |
 
-表中以 `--devices 0,1,2,3` 且 CPU/主存允许两组并行为例。第一阶段 DeepSeek1.3B 使用 GPU 0，Qwen4B 使用 GPU 1；随后 DeepSeek6.7B 使用 GPU 0、1，最后 Gemma 使用 GPU 0、1。两卡 GPU 任务串行，不会与单卡任务抢卡；Code 的 CPU 判题可与后续 GPU 任务重叠。当前默认计划的 GPU 2、3 空闲。替换 `--devices` 时按输入顺序映射；显式选择 8B 或 33B 时它们使用四卡。
+表中以 `--devices 0,1,2,3` 且 CPU/主存允许两组并行为例。第一阶段 DeepSeek1.3B 使用 GPU 0，Qwen4B 使用 GPU 1；随后 DeepSeek6.7B 使用 GPU 0、1。两卡 GPU 任务串行，不会与单卡任务抢卡；Code 的 CPU 判题可与后续 GPU 任务重叠。当前默认计划的 GPU 2、3 空闲。替换 `--devices` 时按输入顺序映射；显式选择 8B 或 33B 时它们使用四卡。
 
 总入口自动准备模型和数据、调度各组并打包结果。整套从头运行时使用新的 `--output` 目录，例如第二次加 `--output runs/h200-suite-run2`。总入口暂不支持中断后续训。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘，33B 训练还需要充分主存。H200 吞吐与显存峰值尚未实测。
 
@@ -84,10 +84,10 @@ bash scripts/h200/run_all.sh
 | Qwen3 4B | `bash scripts/h200/train_eval_qwen3_4b.sh` |
 | DeepSeek-Coder 6.7B | `bash scripts/h200/train_eval_deepseek_coder_6_7b.sh --devices 0,1` |
 | Qwen3 8B | `bash scripts/h200/train_eval_qwen3_8b.sh` |
-| Gemma3 12B | `bash scripts/h200/train_eval_gemma3_12b.sh` |
+| ~~Gemma3 12B（暂不运行）~~ | ~~`bash scripts/h200/train_eval_gemma3_12b.sh`~~ |
 | DeepSeek-Coder 33B | `bash scripts/h200/train_eval_deepseek_coder_33b.sh` |
 
-单独跑 Reuse 时，在对应模型的命令中加 `--rq4-strategy reuse`，脚本会使用单独的 Reuse 输出目录。默认套件包含 Qwen3 4B、Gemma3 12B 和 DeepSeek-Coder 1.3B 的 Reuse。以 Qwen3 4B 为例：
+单独跑 Reuse 时，在对应模型的命令中加 `--rq4-strategy reuse`，脚本会使用单独的 Reuse 输出目录。默认套件包含 Qwen3 4B 和 DeepSeek-Coder 1.3B 的 Reuse。以 Qwen3 4B 为例：
 
 ```bash
 bash scripts/h200/train_eval_qwen3_4b.sh --rq4-strategy reuse
