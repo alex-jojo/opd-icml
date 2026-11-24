@@ -54,7 +54,9 @@ df -h .
 分配到四张 GPU 后，直接运行：
 
 ```bash
-bash scripts/h200/run_all.sh
+bash scripts/h200/run_all.sh \
+  --devices 0,1,2,3 \
+  --output runs/h200-suite/run1
 ```
 
 本机有四张 H200（GPU 0、1、2、3）。下表保留全部七组，删除线标记的四组暂不运行；本命令默认运行其余三组。FULL 完成后自动测评终点、共享早停点和 Base；标注 Reuse 的组还会接着训练并测评复用策略。
@@ -63,7 +65,7 @@ bash scripts/h200/run_all.sh
 |---|---|---|---|---|---|
 | DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0 | 第一阶段：可并行，FULL＋自适应早停＋Reuse |
 | ~~Qwen3-1.7B-Base → Qwen3-1.7B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
-| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行，FULL → Reuse |
+| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行，FULL＋自适应早停＋Reuse |
 | DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0,1 | 第二阶段：两卡 FULL＋自适应早停 |
 | ~~Qwen3-8B-Base → Qwen3-32B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
 | ~~Gemma-3-12B-PT → Gemma-3-12B-IT~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
@@ -71,7 +73,7 @@ bash scripts/h200/run_all.sh
 
 表中以 `--devices 0,1,2,3` 且 CPU/主存允许两组并行为例。第一阶段 DeepSeek1.3B 使用 GPU 0，Qwen4B 使用 GPU 1；随后 DeepSeek6.7B 使用 GPU 0、1。两卡 GPU 任务串行，不会与单卡任务抢卡；Code 的 CPU 判题可与后续 GPU 任务重叠。当前默认计划的 GPU 2、3 空闲。替换 `--devices` 时按输入顺序映射；显式选择 8B 或 33B 时它们使用四卡。
 
-总入口自动准备模型和数据、调度各组并打包结果。整套从头运行时使用新的 `--output` 目录，例如第二次加 `--output runs/h200-suite-run2`。总入口暂不支持中断后续训。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘，33B 训练还需要充分主存。H200 吞吐与显存峰值尚未实测。
+总入口自动准备模型和数据、调度各组并打包结果。整套从头运行时使用新的 `--output` 目录，例如第二次改为 `--output runs/h200-suite/run2`。总入口暂不支持中断后续训。模型缓存、checkpoint、合并模型和统计数据会占用较多磁盘，33B 训练还需要充分主存。H200 吞吐与显存峰值尚未实测。
 
 ### 单独跑一个模型或策略
 
@@ -87,17 +89,53 @@ bash scripts/h200/run_all.sh
 | ~~Gemma3 12B（暂不运行）~~ | ~~`bash scripts/h200/train_eval_gemma3_12b.sh`~~ |
 | DeepSeek-Coder 33B | `bash scripts/h200/train_eval_deepseek_coder_33b.sh` |
 
-单独跑 Reuse 时，在对应模型的命令中加 `--rq4-strategy reuse`，脚本会使用单独的 Reuse 输出目录。默认套件包含 Qwen3 4B 和 DeepSeek-Coder 1.3B 的 Reuse。以 Qwen3 4B 为例：
+#### 当前三组的分开启动命令
+
+下面的命令与整套入口二选一，避免重复运行。DeepSeek1.3B 和 Qwen4B 可分别在两个终端并行执行；每组先完成 FULL（含自适应早停点和 Base 测评），再运行 Reuse。同一 GPU 上的两条命令按顺序执行，上一条成功后再执行下一条。
+
+**DeepSeek-Coder 1.3B：GPU 0，FULL＋自适应早停＋Reuse**
 
 ```bash
-bash scripts/h200/train_eval_qwen3_4b.sh --rq4-strategy reuse
+bash scripts/h200/train_eval_deepseek_coder_1_3b.sh \
+  --devices 0 \
+  --output runs/h200/deepseek13-full
+
+bash scripts/h200/train_eval_deepseek_coder_1_3b.sh \
+  --devices 0 \
+  --rq4-strategy reuse \
+  --output runs/h200/deepseek13-reuse
 ```
+
+**Qwen3 4B：GPU 1，FULL＋自适应早停＋Reuse**
+
+```bash
+bash scripts/h200/train_eval_qwen3_4b.sh \
+  --devices 1 \
+  --output runs/h200/qwen4-full
+
+bash scripts/h200/train_eval_qwen3_4b.sh \
+  --devices 1 \
+  --rq4-strategy reuse \
+  --output runs/h200/qwen4-reuse
+```
+
+**DeepSeek-Coder 6.7B：GPU 0、1，FULL＋自适应早停**
+
+等上面两组完成、GPU 0 和 1 都空闲后再执行：
+
+```bash
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
+  --devices 0,1 \
+  --output runs/h200/deepseek67-full
+```
+
+自适应早停点由 FULL 训练自动保存并测评，FULL 随后继续到第 106 步，不需要另开一次训练。当前计划不包含 DeepSeek6.7B 的 Reuse。以上合计 3 次 FULL 和 2 次 Reuse 训练；每次从头运行都使用新的输出目录。
 
 ### 正式实验的训练与记录
 
 各组 FULL 共用 `paired-full` 诊断配置，均做 106 次参数更新，全局 batch 为 128，学习率为 1e-5。FULL 每轮生成 128 条新回答并更新一次。Reuse 每批回答更新两次，53 轮共做 106 次更新。
 
-每轮的训练输入、学生回答和评分写入 `training/training_records/<轮号>.jsonl`。每次参数更新抽样 128 个 token 记录隐藏层梯度统计。在更新 1、5、10、…、105、106，默认从该步样本中取 64 个 token 计算全模型参数梯度能量。逐步汇总在 `training/training_records/rq1_step_XXXX.json`，其中参数梯度能量只在观测步有值。数学组另记答案提取与判分，代码组另记代码测试与执行结果。各字段和评测文件见[实验保存说明](scripts/h200/实验保存说明.md)。
+每轮的训练输入、学生回答和评分写入 `training/training_records/<轮号>.jsonl`。每次参数更新抽样 128 个 token 记录 token 分数、能量及分组统计；RQ2 总体 hidden 梯度谱保留全量有效 token。在更新 1、5、10、…、105、106，默认从该步样本中取 64 个 token 计算全模型参数梯度能量。逐步汇总在 `training/training_records/rq1_step_XXXX.json`，其中参数梯度能量只在观测步有值。数学组另记答案提取与判分，代码组另记代码测试与执行结果。各字段和评测文件见[实验保存说明](scripts/h200/实验保存说明.md)。
 
 2026-11-21 的 Qwen3 1.7B 单卡 A100 训练包 `1.7b-qwen17-recorded-20step-20261121-121845-results.zip` 使用了单独的配置。它覆盖 20 次更新，在第 1、5、10、15、20 步各抽 32 个参数梯度 token，包含训练和固定验证记录。上面的 H200 FULL 命令采用 106 次更新、每个观测步 64 个参数梯度 token，并在训练后运行最终 benchmark 评测。
 
@@ -113,8 +151,8 @@ RQ4 比较结果在整个实验 ZIP 的 `rq4_comparison.json`。各规模内的�
 在另一个终端、同一项目目录下：
 
 ```bash
-cat runs/h200-suite/status.json
-tail -F runs/h200-suite/4b/logs/train.log
+cat runs/h200-suite/run1/status.json
+tail -F runs/h200-suite/run1/4b/logs/train.log
 ```
 
 单模型运行完成后，下载终端 `[DOWNLOAD ZIP]` 打印的文件。例如，上面的 Qwen3 1.7B FULL 命令生成 `runs/h200/1.7b/1.7b-math-paired-full-results.zip`，包内的 `math-paired-full/eval/final_mean8.summary.json` 是终点成绩。
@@ -122,7 +160,7 @@ tail -F runs/h200-suite/4b/logs/train.log
 整套运行全部成功后，下载以下文件：
 
 ```text
-runs/h200-suite-results.zip
+runs/h200-suite/run1-results.zip
 ```
 
 ZIP 包含训练统计、表征和参数梯度数据、生成回答、评测结果、配置和日志。模型权重仅用于服务器端合并与评测，默认在该组评测成功后清理。需要保留权重时，启动命令加 `--keep-model-files`。
