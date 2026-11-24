@@ -27,11 +27,11 @@ def value(command, option):
 
 def test_parallel_plan_has_disjoint_gpu_cpu_and_aggregate_memory_budgets(tmp_path):
     plan = plan_for(tmp_path)
-    assert plan['small_parallelism'] == 3
+    assert plan['small_parallelism'] == 2
     small = [q[0] for q in plan['small_queues']]
-    assert [j['devices'] for j in small] == [['3'], ['1'], ['2']]
+    assert [j['devices'] for j in small] == [['3'], ['1']]
     groups = [set(j['cpu_ids']) for j in small]+[set(plan['grade_cpus'])]
-    assert sum(map(len, groups)) == len(set.union(*groups)) == 20
+    assert sum(map(len, groups)) == len(set.union(*groups)) == 16
     for option, cap in [('--gradient-cache-gib', 64), ('--ray-object-store-gib', 16)]:
         assert sum(float(value(j['command'], option)) for j in small) <= cap
     for job in small+plan['large']:
@@ -43,7 +43,7 @@ def test_parallel_plan_has_disjoint_gpu_cpu_and_aggregate_memory_budgets(tmp_pat
 def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     plan = plan_for(tmp_path, free=180, cpus=24)
     assert plan['small_parallelism'] == 1
-    assert len(plan['small_queues'][0]) == 5
+    assert len(plan['small_queues'][0]) == 4
     assert all(value(j['command'], '--parameter-token-samples') == '64' for j in plan['small_queues'][0])
 
 
@@ -416,11 +416,23 @@ def test_default_suite_excludes_paused_models_and_keeps_all_explicit_choices(tmp
         assert len(job['devices']) == h200.EXPERIMENTS[job['scale']].gpus
 
 
-def test_gemma_two_gpu_plan_keeps_train_and_evaluation_on_same_devices(tmp_path):
-    args = h200.parser().parse_args(['--scale', 'gemma3-12b', '--devices', '2,3', '--output', str(tmp_path)])
+@pytest.mark.parametrize('scale', ['gemma3-12b', 'deepseek-coder-6.7b'])
+def test_two_gpu_plan_keeps_train_and_evaluation_on_same_devices(tmp_path, scale):
+    args = h200.parser().parse_args(['--scale', scale, '--devices', '0,1', '--output', str(tmp_path)])
     plan = h200.build_plan(args, {})
     assert plan['training_gpus'] == plan['evaluation_gpus'] == 2
     assert plan['rollout_tp'] == plan['evaluation_tp'] == 2
-    assert plan['cuda_visible_devices'] == '2,3'
+    assert plan['cuda_visible_devices'] == '0,1'
     assert value(plan['train'], '--num-gpus') == '2'
     assert value(plan['train'], '--rollout-tp-size') == '2'
+
+
+def test_coder67_is_only_in_two_gpu_serial_stage(tmp_path):
+    plan = plan_for(tmp_path, ['--devices', '0,1,2,3'])
+    assert all(j['scale'] != 'deepseek-coder-6.7b' for q in plan['small_queues'] for j in q)
+    coder = [j for j in plan['large'] if j['scale'] == 'deepseek-coder-6.7b']
+    assert len(coder) == 1 and coder[0]['devices'] == ['0', '1']
+    assert coder[0]['grade'] and coder[0]['rq4_strategy'] == 'full'
+    args = h200.parser().parse_args(['--scale', 'deepseek-coder-6.7b', '--devices', '0'])
+    with pytest.raises(ValueError, match='2 distinct visible GPUs'):
+        h200.build_plan(args, {})

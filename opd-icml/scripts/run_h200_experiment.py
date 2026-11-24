@@ -31,7 +31,7 @@ class Experiment:
 # The threshold applies to the STUDENT, including the 8B -> 32B pair.
 EXPERIMENTS = {
     'deepseek-coder-1.3b': Experiment('code', 1),
-    'deepseek-coder-6.7b': Experiment('code', 1),
+    'deepseek-coder-6.7b': Experiment('code', 2),
     'deepseek-coder-33b': Experiment('code', 4),
     '1.7b': Experiment('math', 1),
     '4b': Experiment('math', 1),

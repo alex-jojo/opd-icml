@@ -40,7 +40,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 
 每次测量用该步的种子把已有的 128 条训练回答分为 4 组，每组 32 条。`subset_train_rows` 给出各组的 batch 行号。`pairs` 保存六对不同子集的全模型参数梯度余弦、完整 hidden 空间内的平均 token 梯度余弦，以及中心化 hidden 梯度协方差前 4 个方向的重合度 ‖VₐᵀVᵦ‖²_F / 4。`means` 和 `valid_pairs` 分别给出三项指标的均值和有效对子数。零范数的余弦、有效秩不足 4 的重合度记为 `null`，计算均值时跳过。各观测点的 JSON 自动进入结果 ZIP。较大的训练子集矩阵只在更新前检查点 10、30、60、100 保存，这四处直接复用详细诊断的计算结果。
 
-流程：先顺序准备共享数据、benchmark和模型，避免并行写入；默认 DeepSeek1.3B、Qwen4B、DeepSeek6.7B 按独立单卡槽并行。单卡 GPU 阶段全部完成后，Gemma12B 使用前两张卡依次跑 FULL 和 Reuse。显式选择的 Qwen1.7B 加入单卡队列；Qwen8B→32B 和 DeepSeek33B 使用四卡串行阶段。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
+流程：先顺序准备共享数据、benchmark和模型，避免并行写入；默认 DeepSeek1.3B、Qwen4B 按独立单卡槽并行。单卡 GPU 阶段完成后，DeepSeek6.7B 使用前两张卡跑 FULL，随后 Gemma12B 使用前两张卡依次跑 FULL 和 Reuse。显式选择的 Qwen1.7B 加入单卡队列；Qwen8B→32B 和 DeepSeek33B 使用四卡串行阶段。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
 `--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU用于判题；单卡训练槽最多分配4个CPU，四卡训练最多分配8个CPU；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
 
@@ -67,7 +67,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 | DeepSeek1.3B | 1 | Code | 2 | 2 | 64 | 关/关 |
 | Qwen1.7B | 1 | Math | 2 | 2 | 64 | 关/关 |
 | Qwen4B | 1 | Math | 2 | 2 | 64 | 关/关 |
-| DeepSeek6.7B | 1 | Code | 1 | 1 | 32 | 开/开 |
+| DeepSeek6.7B | 2 | Code | 1 | 1 | 32 | 开/开 |
 | Qwen8B→32B | 4 | Math | 2 | 2 | 32 | 开/开 |
 | Gemma12B | 2 | Math | 2 | 2 | 32 | 开/开 |
 | DeepSeek33B | 4 | Code | 1 | 1 | 16 | 开/开 |
@@ -80,7 +80,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 
 ```bash
 bash scripts/h200/train_eval_deepseek_coder_1_3b.sh
-bash scripts/h200/train_eval_deepseek_coder_6_7b.sh
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh --devices 0,1
 bash scripts/h200/train_eval_deepseek_coder_33b.sh
 bash scripts/h200/train_eval_qwen3_1_7b.sh
 bash scripts/h200/train_eval_qwen3_4b.sh
@@ -88,7 +88,7 @@ bash scripts/h200/train_eval_qwen3_8b.sh
 bash scripts/h200/train_eval_gemma3_12b.sh
 ```
 
-单组入口默认训练一个 FULL 后评测。DeepSeek 默认 Code pass@8（LiveCodeBench、HumanEval+），每题生成 8 个回答，结果写入 `eval/code_pass8/`。Qwen/Gemma 默认数学六项 Mean@8。训练与评测 GPU 相同，单卡 TP=1、Gemma 双卡 TP=2、四卡 TP=4。`--devices` 指定 GPU，`--task` 切换任务。单独运行一组 RQ4 可用下文的 `--rq4-strategy`。
+单组入口默认训练一个 FULL 后评测。DeepSeek 默认 Code pass@8（LiveCodeBench、HumanEval+），每题生成 8 个回答，结果写入 `eval/code_pass8/`。Qwen/Gemma 默认数学六项 Mean@8。训练与评测 GPU 相同，单卡 TP=1、DeepSeek6.7B/Gemma 双卡 TP=2、四卡 TP=4。`--devices` 指定 GPU，`--task` 切换任务。单独运行一组 RQ4 可用下文的 `--rq4-strategy`。
 
 ```bash
 bash scripts/h200/train_eval_qwen3_4b.sh --devices 2 \
