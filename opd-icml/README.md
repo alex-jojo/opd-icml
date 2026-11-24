@@ -77,22 +77,22 @@ bash scripts/h200/run_all.sh \
 
 ### 单独跑一个模型或策略
 
-在含 `train.py` 的目录中选一行执行。每条命令默认训练该模型的 FULL，评测终点、同一条训练轨迹选出的早停点和未训练的 Base。单卡示例使用 GPU 0，可将 `--devices` 改为实际分配的卡号。
+在含 `train.py` 的目录中选一行执行。`--stage all` 会训练 FULL、评测终点和早停点、评测未训练的 Base，成功后把训练记录和评测结果一起打包。单卡示例使用 GPU 0，可将 `--devices` 改为实际分配的卡号。
 
 | 学生模型 | 单独启动 FULL |
 | --- | --- |
-| DeepSeek-Coder 1.3B | `bash scripts/h200/train_eval_deepseek_coder_1_3b.sh --devices 0 --output runs/h200/deepseek13-full` |
-| Qwen3 1.7B | `bash scripts/h200/train_eval_qwen3_1_7b.sh --devices 0 --output runs/h200/qwen17-full` |
-| Qwen3 4B | `bash scripts/h200/train_eval_qwen3_4b.sh --devices 0 --output runs/h200/qwen4-full` |
-| DeepSeek-Coder 6.7B | `bash scripts/h200/train_eval_deepseek_coder_6_7b.sh --devices 0 --output runs/h200/deepseek67-full` |
-| Qwen3 8B | `bash scripts/h200/train_eval_qwen3_8b.sh --devices 0,1,2,3 --output runs/h200/qwen8-full` |
-| Gemma3 12B | `bash scripts/h200/train_eval_gemma3_12b.sh --devices 0,1,2,3 --output runs/h200/gemma12-full` |
-| DeepSeek-Coder 33B | `bash scripts/h200/train_eval_deepseek_coder_33b.sh --devices 0,1,2,3 --output runs/h200/deepseek33-full` |
+| DeepSeek-Coder 1.3B | `bash scripts/h200/train_eval_deepseek_coder_1_3b.sh --stage all --devices 0 --output runs/h200/deepseek13-full` |
+| Qwen3 1.7B | `bash scripts/h200/train_eval_qwen3_1_7b.sh --stage all --devices 0 --output runs/h200/qwen17-full` |
+| Qwen3 4B | `bash scripts/h200/train_eval_qwen3_4b.sh --stage all --devices 0 --output runs/h200/qwen4-full` |
+| DeepSeek-Coder 6.7B | `bash scripts/h200/train_eval_deepseek_coder_6_7b.sh --stage all --devices 0 --output runs/h200/deepseek67-full` |
+| Qwen3 8B | `bash scripts/h200/train_eval_qwen3_8b.sh --stage all --devices 0,1,2,3 --output runs/h200/qwen8-full` |
+| Gemma3 12B | `bash scripts/h200/train_eval_gemma3_12b.sh --stage all --devices 0,1,2,3 --output runs/h200/gemma12-full` |
+| DeepSeek-Coder 33B | `bash scripts/h200/train_eval_deepseek_coder_33b.sh --stage all --devices 0,1,2,3 --output runs/h200/deepseek33-full` |
 
 单独跑 Reuse 时，在对应模型的命令中加 `--rq4-strategy reuse`，并换一个输出目录。整套实验包含 Qwen3 1.7B、4B、8B、Gemma3 12B 和 DeepSeek-Coder 1.3B 的 Reuse。以 Qwen3 1.7B 为例：
 
 ```bash
-bash scripts/h200/train_eval_qwen3_1_7b.sh --devices 0 --rq4-strategy reuse --output runs/h200/qwen17-reuse
+bash scripts/h200/train_eval_qwen3_1_7b.sh --stage all --devices 0 --rq4-strategy reuse --output runs/h200/qwen17-reuse
 ```
 
 ### 正式实验的训练与记录
@@ -119,7 +119,9 @@ cat runs/h200-suite/run1/status.json
 tail -F runs/h200-suite/run1/4b/logs/train.log
 ```
 
-全部成功结束后，在服务器文件浏览器下载：
+单模型运行完成后，下载终端 `[DOWNLOAD ZIP]` 打印的文件。例如，上面的 Qwen3 1.7B FULL 命令生成 `runs/h200/1.7b-qwen17-full-results.zip`，包内的 `qwen17-full/eval/final_mean8.summary.json` 是终点成绩。
+
+整套运行全部成功后，下载以下文件：
 
 ```text
 runs/h200-suite/run1-results.zip
