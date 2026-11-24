@@ -57,14 +57,17 @@ df -h .
 bash scripts/h200/run_all.sh
 ```
 
-本命令默认运行下表四组。FULL 完成后自动测评终点、共享早停点和 Base；标注 Reuse 的组还会接着训练并测评复用策略。
+本机有四张 H200（GPU 0、1、2、3）。下表保留全部七组，删除线标记的三组暂不运行；本命令默认运行其余四组。FULL 完成后自动测评终点、共享早停点和 Base；标注 Reuse 的组还会接着训练并测评复用策略。
 
 | 模型配对（学生 → 教师） | 训练数据 | 测评 benchmark | 指标 | GPU 编号 | 运行顺序 |
 |---|---|---|---|---|---|
-| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus Code | LiveCodeBench v6、HumanEval+ | pass@8 | 0 | 第一阶段：FULL 后 Reuse |
-| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：FULL 后 Reuse |
-| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus Code | LiveCodeBench v6、HumanEval+ | pass@8 | 2 | 第一阶段：FULL |
-| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 0,1 | 单卡任务完成后：FULL 后 Reuse |
+| DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0 | 第一阶段：可并行，FULL → Reuse |
+| ~~Qwen3-1.7B-Base → Qwen3-1.7B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
+| Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行，FULL → Reuse |
+| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 2 | 第一阶段：可并行，FULL |
+| ~~Qwen3-8B-Base → Qwen3-32B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
+| Gemma-3-12B-PT → Gemma-3-12B-IT | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 0,1 | 单卡任务完成后：FULL → Reuse |
+| ~~DeepSeek-Coder-33B-Base → 33B-Instruct~~ | ~~Eurus-2-RL-Data，Code 子集~~ | ~~LiveCodeBench v6、HumanEval+~~ | ~~pass@8~~ | — | 暂不运行 |
 
 表中以 `--devices 0,1,2,3` 且 CPU/主存允许三组并行为例。GPU 3 在当前默认计划中空闲；Gemma 独立阶段仅使用 GPU 0、1。CPU/主存不足时单卡并行数会降低，实际编号在启动时打印。替换 `--devices` 时按输入顺序映射。总入口仍接收四张卡的列表，显式选择 8B 或 33B 时它们使用四卡。
 
