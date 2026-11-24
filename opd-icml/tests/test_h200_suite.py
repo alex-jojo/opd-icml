@@ -51,10 +51,10 @@ def test_low_memory_reduces_parallelism_without_reducing_diagnostics(tmp_path):
     suite.SMALL + suite.LARGE, ['deepseek-coder-6.7b', 'deepseek-coder-33b'],
     ['deepseek-coder-1.3b', '8b', 'deepseek-coder-33b'],
 ])
-def test_suite_schedules_reuse_for_math_and_smallest_coder(tmp_path, scales):
+def test_suite_schedules_reuse_for_math_and_active_coders(tmp_path, scales):
     plan = plan_for(tmp_path, ['--scales', *scales])
     jobs = [job for queue in [*plan['small_queues'], plan['large']] for job in queue]
-    reuse = {'1.7b', '4b', '8b', 'gemma3-12b', 'deepseek-coder-1.3b'} & set(scales)
+    reuse = {'1.7b', '4b', '8b', 'gemma3-12b', 'deepseek-coder-1.3b', 'deepseek-coder-6.7b'} & set(scales)
     assert set(plan['reuse_scales']) == reuse
     for scale in scales:
         matching = [job for job in jobs if job['scale'] == scale]
@@ -408,7 +408,9 @@ def test_default_suite_excludes_paused_models_and_keeps_all_explicit_choices(tmp
     plan = plan_for(tmp_path)
     jobs = [j for q in plan['small_queues'] for j in q] + plan['large']
     assert {j['scale'] for j in jobs} == {'4b', 'deepseek-coder-1.3b', 'deepseek-coder-6.7b'}
-    assert len(jobs) == 5
+    assert len(jobs) == 6
+    for scale in suite.DEFAULT_SCALES:
+        assert [j['rq4_strategy'] for j in jobs if j['scale'] == scale] == ['full', 'reuse']
     prepared = [value(cmd, '--scale') for cmd in plan['prepare'] if '--scale' in cmd]
     assert set(prepared) == {'4b', 'deepseek-coder-1.3b', 'deepseek-coder-6.7b'}
     assert not any(j['scale'] in {'1.7b', '8b', 'gemma3-12b', 'deepseek-coder-33b'} for j in jobs)
@@ -433,8 +435,12 @@ def test_coder67_is_only_in_two_gpu_serial_stage(tmp_path):
     plan = plan_for(tmp_path, ['--devices', '0,1,2,3'])
     assert all(j['scale'] != 'deepseek-coder-6.7b' for q in plan['small_queues'] for j in q)
     coder = [j for j in plan['large'] if j['scale'] == 'deepseek-coder-6.7b']
-    assert len(coder) == 1 and coder[0]['devices'] == ['0', '1']
-    assert coder[0]['grade'] and coder[0]['rq4_strategy'] == 'full'
+    assert len(coder) == 2
+    assert [j['rq4_strategy'] for j in coder] == ['full', 'reuse']
+    assert all(j['devices'] == ['0', '1'] and j['grade'] for j in coder)
+    assert coder[0]['shared_early_stop'] and coder[0]['evaluate_base']
+    assert not coder[1]['shared_early_stop'] and not coder[1]['evaluate_base']
+    assert coder[0]['output'] != coder[1]['output']
     args = h200.parser().parse_args(['--scale', 'deepseek-coder-6.7b', '--devices', '0'])
     with pytest.raises(ValueError, match='2 distinct visible GPUs'):
         h200.build_plan(args, {})

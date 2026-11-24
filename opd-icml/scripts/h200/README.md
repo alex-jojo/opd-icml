@@ -22,7 +22,7 @@ bash scripts/h200/run_all.sh --devices 0,1,2,3 \
 bash scripts/h200/run_all.sh --profile conservative --output runs/h200-suite/conservative
 ```
 
-可选模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。当前默认三组为 DeepSeek-Coder 1.3B/6.7B、Qwen3 4B；Qwen4B 与 DeepSeek1.3B 各另跑一次复用，共 5 次训练、11 行含 Base 的评测结果。1.7B、8B、Gemma12B 和 33B 仅在显式选择时运行。各组 FULL 保存共享早停权重。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
+可选模型的 paired-full 基线均为 106 轮、每轮一次更新、全局 batch/mini-batch=128、学习率 1e-5。当前默认三组为 DeepSeek-Coder 1.3B/6.7B、Qwen3 4B；三组各另跑一次复用，共 6 次训练、12 行含 Base 的评测结果。1.7B、8B、Gemma12B 和 33B 仅在显式选择时运行。各组 FULL 保存共享早停权重。默认在第 1、5、10、…、105、106 次参数更新前抽样 64 个 token（16 个来自缓存 KL 最高的十分位，另 48 个来自其余位置），分别计算全模型参数梯度能量。有效位置少于 64 个时全部测量。`--parameter-token-gradients exact-all` 可显式切换到原全量观测模式。
 
 每次更新的 RQ1 记录位于 `training/training_records/rq1_step_XXXX.json`，随结果 ZIP 导出。`thresholds.kl_p90` 是第 1 步全部有效 token 的 KL 第 90 百分位数，后续步沿用它。`groups.kl_above_step1_p90.fraction` 是当前训练 KL 达到该固定阈值的比例。`groups.kl_top10.quantities` 分别给出128-token抽样估计的 hidden 梯度能量占比和64-token抽样估计的参数梯度能量占比。`samples` 中的列按 token 对齐，包含回答行、位置、token ID、训练 KL、能量和权重。复算参数占比时，用 `sampling_weight * parameter_gradient_energy` 得到每条样本的加权能量，再用 `in_current_kl_top10` 选中项的和除以全部项的和。`sampling_stratum` 标记抽样时的层，成员判定使用本步训练 KL。
 
@@ -40,7 +40,7 @@ RQ3 的配对验证结果在 `training/training_records/rq3/checkpoint_XXX.json`
 
 每次测量用该步的种子把已有的 128 条训练回答分为 4 组，每组 32 条。`subset_train_rows` 给出各组的 batch 行号。`pairs` 保存六对不同子集的全模型参数梯度余弦、完整 hidden 空间内的平均 token 梯度余弦，以及中心化 hidden 梯度协方差前 4 个方向的重合度 ‖VₐᵀVᵦ‖²_F / 4。`means` 和 `valid_pairs` 分别给出三项指标的均值和有效对子数。零范数的余弦、有效秩不足 4 的重合度记为 `null`，计算均值时跳过。各观测点的 JSON 自动进入结果 ZIP。较大的训练子集矩阵只在更新前检查点 10、30、60、100 保存，这四处直接复用详细诊断的计算结果。
 
-流程：先顺序准备共享数据、benchmark和模型，避免并行写入；默认 DeepSeek1.3B、Qwen4B 按独立单卡槽并行。单卡 GPU 阶段完成后，DeepSeek6.7B 使用前两张卡跑 FULL。Gemma12B 仅显式选择时使用前两张卡跑 FULL 和 Reuse。显式选择的 Qwen1.7B 加入单卡队列；Qwen8B→32B 和 DeepSeek33B 使用四卡串行阶段。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
+流程：先顺序准备共享数据、benchmark和模型，避免并行写入；默认 DeepSeek1.3B、Qwen4B 按独立单卡槽并行。单卡 GPU 阶段完成后，DeepSeek6.7B 使用前两张卡依次跑 FULL 和 Reuse；FULL 判题与默认权重清理完成后才启动 Reuse。Gemma12B 仅显式选择时使用前两张卡跑 FULL 和 Reuse。显式选择的 Qwen1.7B 加入单卡队列；Qwen8B→32B 和 DeepSeek33B 使用四卡串行阶段。Code生成完全部benchmark便释放GPU，将判题提交到单独CPU队列，与后续训练/生成重叠；最多同时判一个实验，全部判题完成后整套才成功结束。Math保留现有Mean@8生成和评分流程。
 
 `--max-parallel-small 1|2|3|4` 控制并行上限；CPU或主存不足时自动减少同时运行的实验数，统计不缩水。各槽使用独立GPU、CPU affinity、Ray本地集群和短临时路径。预留1–8个CPU用于判题；单卡训练槽最多分配4个CPU，四卡训练最多分配8个CPU；训练至少保留每个GPU worker一个Ray CPU，另加TaskRunner的一个。只有6个CPU线程时，四卡阶段分配5个给训练、1个给判题，避免等待无法满足的资源请求。BLAS线程数设为1，避免嵌套线程池。
 
@@ -164,13 +164,26 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/evaluate_base.py --scale deepseek-co
 
 独立评测成功后，默认在其他 4B 实验 ZIP 所在目录生成 `runs/h200/4b/4b-math-base-results.zip`。自定义 `--output` 时，ZIP 保存在该输出目录旁。终端的 `[DOWNLOAD ZIP]` 会打印实际路径。`--no-package` 可关闭打包。
 
-默认 H200 套件对三个选中学生模型各测一次 Base，每组在 `<规模>/eval/base/` 保存，和训练结果进入同一 ZIP。四组数学沿用表 3 五项 Mean@8，RQ4 采用严格判分；三组 DeepSeek 用相同的 chat 提示和双 EOS，评测 LiveCodeBench、HumanEval+ 的 pass@8，GPU 生成后由 CPU 判题。默认三组各有 Base、FULL、早停三行；Qwen4B 和 DeepSeek1.3B 各增加一行复用，共 11 行结果、5 次训练。显式选择全部七组时为 26 行结果、12 次训练。
+默认 H200 套件对三个选中学生模型各测一次 Base，每组在 `<规模>/eval/base/` 保存，和训练结果进入同一 ZIP。四组数学沿用表 3 五项 Mean@8，RQ4 采用严格判分；三组 DeepSeek 用相同的 chat 提示和双 EOS，评测 LiveCodeBench、HumanEval+ 的 pass@8，GPU 生成后由 CPU 判题。默认三组各有 Base、FULL、早停三行；三组各增加一行复用，共 12 行结果、6 次训练。显式选择全部七组时为 27 行结果、13 次训练。
 
 单独补测用 `python scripts/evaluate_base.py --scale <规模>`，可用 `--output` 指定目标，默认单独打 ZIP。代码任务使用与训练后评测相同的已准备 benchmark 目录（可用 `python scripts/prepare_code_benchmarks.py` 准备），支持 `--generate-only` 和 `--grade-only`。单独运行时请设置与该组一致的可见 GPU。原有 4B 脚本继续可用。
 
 ## RQ4 策略对照
 
-总入口为每个所选模型运行 FULL，并为选中的数学模型和 DeepSeek-Coder 1.3B 在相同 GPU 配置上接着运行复用。早停成绩来自同一条 FULL 轨迹。运行 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 会执行四次训练，产出两个规模各三行策略结果。单模型默认入口和显式 `--rq4-strategy full` 同样会评测早停点；显式 `--rq4-strategy early-stop` 仍可单独训练至早停。
+DeepSeek-Coder 6.7B 的独立命令如下，FULL 完成后再执行 Reuse；两次使用不同输出目录。FULL 自动保存并测评 Adaptive early stop，无需额外启动早停训练。
+
+```bash
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
+  --devices 0,1 \
+  --output runs/h200/deepseek67-full
+
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
+  --devices 0,1 \
+  --rq4-strategy reuse \
+  --output runs/h200/deepseek67-reuse
+```
+
+总入口为每个所选模型运行 FULL，并为选中的数学模型和 DeepSeek-Coder 1.3B、6.7B 在相同 GPU 配置上接着运行复用。早停成绩来自同一条 FULL 轨迹。运行 `bash scripts/h200/run_all.sh --scales 1.7b 4b --output runs/h200-suite/rq4` 会执行四次训练，产出两个规模各三行策略结果。单模型默认入口和显式 `--rq4-strategy full` 同样会评测早停点；显式 `--rq4-strategy early-stop` 仍可单独训练至早停。
 
 * **早停**。每 5 次参数更新在固定 probe 上检查一次。从第 15 步起，窗口覆盖 t−10、t−5、t。`training/training_records/rq4/early_stop_XXX.json` 保存判定依据。首次触发时，FULL 把当前权重保存到 `training/checkpoints/early_stop/actor/`，然后继续训练。训练结束后对这份权重运行与 FULL 相同的评测。数学回答保存在 `eval/early-stop/final_mean8.jsonl`，代码回答及判题结果按题集保存在 `eval/early-stop/code_pass8/`。代码生成结束后释放临时合并模型，由 CPU 判题。到预算终点才选中最终模型时，共用 FULL 的权重和逐题结果。`training/training_records/rq4/early_stop_summary.json` 记录来源、实际步数、判定原因、回答路径和累计训练耗时，随结果 ZIP 导出。
 * **复用**。每次新 rollout 和教师目标供两次真实 AdamW 更新使用，53 次 rollout 共 106 次更新。在 rollout 第 5、10、…、50、53 轮，`reuse_round_XXX.json` 记录同一训练 batch 按有效 token 平均的 `kl_before_first`、`kl_after_first` 和 `kl_after_second`。最后一项用第二次更新后的学生重新前向计算。`second_gain = kl_after_first - kl_after_second`，正值表示第二步进一步降低了 KL。

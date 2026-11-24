@@ -2,7 +2,7 @@
 
 在四张 H200 上运行 OPD FULL 和 RQ4 策略对照，自动准备模型和数据、训练、评测并打包结果。
 
-**当前默认模型**：DeepSeek-Coder 1.3B、Qwen3 4B 和 DeepSeek-Coder 6.7B。Qwen3 1.7B、8B、Gemma3 12B 和 DeepSeek-Coder 33B 暂不加入默认套件，单独入口及显式 `--scales` 选择仍保留。三组各训练一次 FULL；Qwen3 4B 和 DeepSeek-Coder 1.3B 各另跑一次 Reuse，共 5 次训练。每组评测 Base、FULL 和自适应早停点，加上两组 Reuse，共 11 行结果。DeepSeek-Coder 6.7B 的训练与评测使用两张 GPU。
+**当前默认模型**：DeepSeek-Coder 1.3B、Qwen3 4B 和 DeepSeek-Coder 6.7B。Qwen3 1.7B、8B、Gemma3 12B 和 DeepSeek-Coder 33B 暂不加入默认套件，单独入口及显式 `--scales` 选择仍保留。三组各训练一次 FULL 和一次 Reuse，共 6 次训练。每组评测 Base、FULL、Adaptive early stop 和 Reuse，共 12 行结果。DeepSeek-Coder 6.7B 的训练与评测使用两张 GPU。
 
 ## 1. 下载代码、安装环境（首次执行）
 
@@ -66,7 +66,7 @@ bash scripts/h200/run_all.sh \
 | DeepSeek-Coder-1.3B-Base → 1.3B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0 | 第一阶段：可并行，FULL＋自适应早停＋Reuse |
 | ~~Qwen3-1.7B-Base → Qwen3-1.7B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
 | Qwen3-4B-Base → Qwen3-4B | DAPO14k | MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23 | Mean@8 | 1 | 第一阶段：可并行，FULL＋自适应早停＋Reuse |
-| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0,1 | 第二阶段：两卡 FULL＋自适应早停 |
+| DeepSeek-Coder-6.7B-Base → 6.7B-Instruct | Eurus-2-RL-Data，Code 子集 | LiveCodeBench v6、HumanEval+ | pass@8 | 0,1 | 第二阶段：两卡 FULL＋自适应早停＋Reuse |
 | ~~Qwen3-8B-Base → Qwen3-32B~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
 | ~~Gemma-3-12B-PT → Gemma-3-12B-IT~~ | ~~DAPO14k~~ | ~~MATH500、HMMT25、HMMT26、AIME26、Minerva、AMC23~~ | ~~Mean@8~~ | — | 暂不运行 |
 | ~~DeepSeek-Coder-33B-Base → 33B-Instruct~~ | ~~Eurus-2-RL-Data，Code 子集~~ | ~~LiveCodeBench v6、HumanEval+~~ | ~~pass@8~~ | — | 暂不运行 |
@@ -119,7 +119,7 @@ bash scripts/h200/train_eval_qwen3_4b.sh \
   --output runs/h200/qwen4-reuse
 ```
 
-**DeepSeek-Coder 6.7B：GPU 0、1，FULL＋自适应早停**
+**DeepSeek-Coder 6.7B：GPU 0、1，FULL＋自适应早停＋Reuse**
 
 等上面两组完成、GPU 0 和 1 都空闲后再执行：
 
@@ -127,9 +127,14 @@ bash scripts/h200/train_eval_qwen3_4b.sh \
 bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
   --devices 0,1 \
   --output runs/h200/deepseek67-full
+
+bash scripts/h200/train_eval_deepseek_coder_6_7b.sh \
+  --devices 0,1 \
+  --rq4-strategy reuse \
+  --output runs/h200/deepseek67-reuse
 ```
 
-自适应早停点由 FULL 训练自动保存并测评，FULL 随后继续到第 106 步，不需要另开一次训练。当前计划不包含 DeepSeek6.7B 的 Reuse。以上合计 3 次 FULL 和 2 次 Reuse 训练；每次从头运行都使用新的输出目录。
+自适应早停点由 FULL 训练自动保存并测评，FULL 随后继续到第 106 步，不需要另开一次训练。DeepSeek6.7B 的 FULL 完成测评和默认权重清理后，再启动同两张 GPU 上的 Reuse。以上合计 3 次 FULL 和 3 次 Reuse 训练；每次从头运行都使用新的输出目录。
 
 ### 正式实验的训练与记录
 

@@ -122,7 +122,7 @@ def build_suite(args, environment, cpus, free_gib):
                     command=cmd+['--stage', 'train-generate'],
                     grade=grade+['--stage', 'grade'] if spec.task == 'code' else None)
     reuse_scales = [scale for scale in args.scales
-                    if EXPERIMENTS[scale].task == 'math' or scale == 'deepseek-coder-1.3b']
+                    if EXPERIMENTS[scale].task == 'math' or scale in ('deepseek-coder-1.3b', 'deepseek-coder-6.7b')]
 
     def strategies(scale):
         return ('full', 'reuse') if scale in reuse_scales else ('full',)

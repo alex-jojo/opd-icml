@@ -258,6 +258,7 @@ def test_evaluation_endpoint_needs_only_one_cpu(tmp_path, stage, strategy, cap, 
     ('4b', 'math', 1, 1024, 'full'),
     ('4b', 'math', 1, 1024, 'reuse'),
     ('deepseek-coder-6.7b', 'code', 2, 2048, 'full'),
+    ('deepseek-coder-6.7b', 'code', 2, 2048, 'reuse'),
 ])
 def test_active_commands_keep_training_and_evaluation_lengths(scale, task, gpus, prompt, strategy):
     import train
